@@ -36,8 +36,13 @@ export function ServiceSelector({ onConfirm }: ServiceSelectorProps) {
       { name: 'Coupe Simple Enfant', basePrice: 2000 },
       { name: 'Contour Enfant', basePrice: 1500 },
     ],
-    teinture: [{ name: 'Teinture', basePrice: 6000 },
-      { name: 'coupe+Teinture', basePrice: 8000 }
+    teinture: [{ name: 'Teinture rouge', basePrice: 8000 },
+      { name: 'Teinture rouge', basePrice: 10000 },
+
+      { name: 'coupe+Teinture blanc', basePrice: 12000 },
+      { name: 'coupe+Teinture blanc', basePrice: 15000 },
+
+      { name: 'coupe+Teinture', basePrice: 10000 },
     ],
     produitSeul: [{ name: 'Produit Seul', basePrice: 0 }], // Nouveau service
   };
