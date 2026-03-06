@@ -60,6 +60,8 @@ const productOptions = [
   { name: 'Brosse', price: 6000 },
 
   { name: 'Éponge', price: 2000 },
+  { name: 'Éponge', price: 2500 },
+
   { name: 'Dureg', price: 2000 },
   { name: 'Dureg', price: 3000 },
 
