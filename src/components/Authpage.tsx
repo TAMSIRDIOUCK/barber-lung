@@ -51,16 +51,32 @@ interface AuthPageProps {
   onAuthSuccess?: () => void;
 }
 
-// ── FIX : utilise import.meta.env (Vite) au lieu de process.env (Node) ──
+// ── CORRECTION PRINCIPALE : getBaseUrl robuste ──
+// Priorité : variable d'env explicite > window.location.origin (si valide) > fallback
 const getBaseUrl = (): string => {
-  if (typeof window !== 'undefined' && window.location.origin !== 'null') {
+  // 1. Variable explicite dans .env (VITE_APP_URL=https://monsite.com)
+  const appUrl = import.meta.env.VITE_APP_URL;
+  if (appUrl) return appUrl.replace(/\/$/, ''); // retire le slash final si présent
+
+  // 2. Vercel auto-inject
+  const vercelUrl = import.meta.env.VITE_VERCEL_URL;
+  if (vercelUrl) return `https://${vercelUrl}`;
+
+  // 3. window.location.origin — seulement si c'est une vraie origine HTTP/HTTPS
+  //    (évite chrome-error://, null, about:blank, etc.)
+  if (
+    typeof window !== 'undefined' &&
+    window.location.origin &&
+    window.location.origin !== 'null' &&
+    (window.location.origin.startsWith('http://') ||
+      window.location.origin.startsWith('https://'))
+  ) {
     return window.location.origin;
   }
-  // Fallback Vite-native (variable à préfixer VITE_ dans .env)
-  const vercelUrl = import.meta.env.VITE_VERCEL_URL;
-  if (vercelUrl) {
-    return `https://${vercelUrl}`;
-  }
+
+  // 4. Fallback dev — utilise le port réel de Vite (souvent 5173, parfois 3000)
+  //    On préfère 5173 (défaut Vite). Si tu utilises le port 3000, change ici
+  //    ou définis VITE_APP_URL=http://localhost:3000 dans ton .env.local
   return 'http://localhost:5173';
 };
 
@@ -277,14 +293,10 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
       console.log('Réponse inscription:', data);
 
-      // Session immédiate (email auto-confirmé) → onAuthStateChange gère la redirection
       if (data.user && data.session) {
         console.log('✅ Inscription avec session immédiate');
         await ensureProfile(data.user.id, cleanName, phone.trim(), cleanEmail);
-        // Redirection automatique via onAuthStateChange (SIGNED_IN)
-      }
-      // Confirmation email requise
-      else if (data.user) {
+      } else if (data.user) {
         console.log('📧 Email de confirmation envoyé');
         await ensureProfile(data.user.id, cleanName, phone.trim(), cleanEmail);
         setVerifEmail(cleanEmail);
@@ -336,7 +348,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
           data.user.user_metadata?.phone ?? '',
           cleanEmail
         );
-        // Redirection automatique via onAuthStateChange (SIGNED_IN)
       }
     } catch (e: any) {
       setError(translateError(e?.message ?? ''));
