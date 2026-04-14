@@ -51,33 +51,26 @@ interface AuthPageProps {
   onAuthSuccess?: () => void;
 }
 
-// ── CORRECTION PRINCIPALE : getBaseUrl robuste ──
-// Priorité : variable d'env explicite > window.location.origin (si valide) > fallback
+// ── CORRECTION : getBaseUrl robuste et sans ambiguïté de port ──
+// Priorité : VITE_APP_URL (depuis .env.local) > Vercel > dev localhost:5173 > production origin
 const getBaseUrl = (): string => {
-  // 1. Variable explicite dans .env (VITE_APP_URL=https://monsite.com)
+  // 1. Variable explicite — priorité absolue (prod, preview, staging, dev)
+  //    Définis VITE_APP_URL=http://localhost:5173 dans .env.local
   const appUrl = import.meta.env.VITE_APP_URL;
-  if (appUrl) return appUrl.replace(/\/$/, ''); // retire le slash final si présent
+  if (appUrl) return appUrl.replace(/\/$/, '');
 
   // 2. Vercel auto-inject
   const vercelUrl = import.meta.env.VITE_VERCEL_URL;
   if (vercelUrl) return `https://${vercelUrl}`;
 
-  // 3. window.location.origin — seulement si c'est une vraie origine HTTP/HTTPS
-  //    (évite chrome-error://, null, about:blank, etc.)
-  if (
-    typeof window !== 'undefined' &&
-    window.location.origin &&
-    window.location.origin !== 'null' &&
-    (window.location.origin.startsWith('http://') ||
-      window.location.origin.startsWith('https://'))
-  ) {
-    return window.location.origin;
+  // 3. En développement Vite : on évite window.location.origin
+  //    qui peut valoir "chrome-error://chromewebdata" ou "null" dans certains contextes
+  if (import.meta.env.DEV) {
+    return 'http://localhost:5173';
   }
 
-  // 4. Fallback dev — utilise le port réel de Vite (souvent 5173, parfois 3000)
-  //    On préfère 5173 (défaut Vite). Si tu utilises le port 3000, change ici
-  //    ou définis VITE_APP_URL=http://localhost:3000 dans ton .env.local
-  return 'http://localhost:5173';
+  // 4. Production uniquement : là, window.location.origin est toujours une vraie URL HTTP/HTTPS
+  return window.location.origin;
 };
 
 export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
