@@ -14,6 +14,7 @@ interface BarberStat {
   name: string;
   count: number;
   total: number;
+  photo: string;
 }
 
 interface PeriodStats {
@@ -30,6 +31,9 @@ type PeriodType = 'week' | 'month' | 'year';
 
 const JOURS = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
 const MOIS = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
+
+// Cache pour les photos des coiffeurs
+const barberPhotoCache: Record<string, string> = {};
 
 function getWeekStart(date: Date): Date {
   const d = new Date(date);
@@ -87,6 +91,7 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
     transactionCount: 0, expenseCount: 0, chartData: [], barberStats: [],
   });
   const [loading, setLoading] = useState(false);
+  const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
 
   const getTargetPeriodStart = useCallback((): Date => {
     const base = new Date();
@@ -182,11 +187,40 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
       const tList = transactions || [];
       const eList = expenses || [];
 
+      // Récupérer les noms des coiffeurs pour charger leurs photos
+      const barberNames = tList.map(t => t.barber_name).filter(name => name && name !== 'Non défini');
+      const uniqueNames = [...new Set(barberNames.filter(name => !barberPhotoCache[name]))];
+      
+      if (uniqueNames.length > 0) {
+        try {
+          const { data: barberData, error: barberError } = await supabase
+            .from('barbers')
+            .select('name, photo')
+            .in('name', uniqueNames)
+            .eq('user_id', userId);
+          
+          if (!barberError && barberData) {
+            barberData.forEach((barber: { name: string; photo: string }) => {
+              barberPhotoCache[barber.name] = barber.photo;
+            });
+          }
+        } catch (err) {
+          console.error('Erreur chargement photos:', err);
+        }
+      }
+
       // ── Stats par coiffeur ──
       const barberMap: Record<string, BarberStat> = {};
       tList.forEach(t => {
         const name = t.barber_name || 'Non défini';
-        if (!barberMap[name]) barberMap[name] = { name, count: 0, total: 0 };
+        if (!barberMap[name]) {
+          barberMap[name] = { 
+            name, 
+            count: 0, 
+            total: 0, 
+            photo: barberPhotoCache[name] || '' 
+          };
+        }
         barberMap[name].count += 1;
         barberMap[name].total += Number(t.amount);
       });
@@ -312,6 +346,10 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
     }
   })();
 
+  const handleImageError = (barberName: string) => {
+    setImageErrors(prev => ({ ...prev, [barberName]: true }));
+  };
+
   return (
     <div className="space-y-5 sm:space-y-8">
 
@@ -384,52 +422,66 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
             </div>
           </div>
 
-          {/* ── Stats par coiffeur ── */}
+          {/* ── Stats par coiffeur AVEC PHOTOS ── */}
           {stats.barberStats.length > 0 && (
             <div>
               <h3 className="text-white text-lg sm:text-xl font-bold mb-3">
                 Coiffeurs — {periodLabel}
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {stats.barberStats.map(b => (
-                  <div key={b.name} className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 space-y-3">
-                    {/* Nom */}
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 bg-zinc-800 rounded-full flex items-center justify-center shrink-0">
-                        <span className="text-white text-xs font-bold uppercase">
-                          {b.name[0]}
-                        </span>
-                      </div>
-                      <p className="text-white font-bold capitalize truncate">{b.name}</p>
-                    </div>
-                    {/* Stats */}
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="bg-zinc-800 rounded-lg p-2.5">
-                        <p className="text-zinc-400 text-xs mb-0.5">Coupes</p>
-                        <p className="text-white font-bold text-lg">{b.count}</p>
-                      </div>
-                      <div className="bg-zinc-800 rounded-lg p-2.5">
-                        <p className="text-zinc-400 text-xs mb-0.5">Total</p>
-                        <p className="text-white font-bold text-sm">{formatCFA(b.total)}</p>
-                      </div>
-                    </div>
-                    {/* Barre de progression relative */}
-                    {stats.totalRevenue > 0 && (
-                      <div>
-                        <div className="flex justify-between text-xs text-zinc-500 mb-1">
-                          <span>Part du revenu</span>
-                          <span>{Math.round((b.total / stats.totalRevenue) * 100)}%</span>
-                        </div>
-                        <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-white rounded-full transition-all"
-                            style={{ width: `${Math.round((b.total / stats.totalRevenue) * 100)}%` }}
+                {stats.barberStats.map(b => {
+                  const hasImageError = imageErrors[b.name];
+                  const showPhoto = b.photo && !hasImageError;
+                  
+                  return (
+                    <div key={b.name} className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 space-y-3">
+                      {/* Nom avec photo */}
+                      <div className="flex items-center gap-3">
+                        {showPhoto ? (
+                          <img 
+                            src={b.photo} 
+                            alt={b.name}
+                            className="w-10 h-10 rounded-full object-cover border border-zinc-600"
+                            onError={() => handleImageError(b.name)}
                           />
+                        ) : (
+                          <div className="w-10 h-10 bg-zinc-800 rounded-full flex items-center justify-center shrink-0">
+                            <span className="text-white text-sm font-bold uppercase">
+                              {b.name.charAt(0)}
+                            </span>
+                          </div>
+                        )}
+                        <p className="text-white font-bold capitalize truncate">{b.name}</p>
+                      </div>
+                      {/* Stats */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="bg-zinc-800 rounded-lg p-2.5">
+                          <p className="text-zinc-400 text-xs mb-0.5">Coupes</p>
+                          <p className="text-white font-bold text-lg">{b.count}</p>
+                        </div>
+                        <div className="bg-zinc-800 rounded-lg p-2.5">
+                          <p className="text-zinc-400 text-xs mb-0.5">Total</p>
+                          <p className="text-white font-bold text-sm">{formatCFA(b.total)}</p>
                         </div>
                       </div>
-                    )}
-                  </div>
-                ))}
+                      {/* Barre de progression relative */}
+                      {stats.totalRevenue > 0 && (
+                        <div>
+                          <div className="flex justify-between text-xs text-zinc-500 mb-1">
+                            <span>Part du revenu</span>
+                            <span>{Math.round((b.total / stats.totalRevenue) * 100)}%</span>
+                          </div>
+                          <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-white rounded-full transition-all"
+                              style={{ width: `${Math.round((b.total / stats.totalRevenue) * 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

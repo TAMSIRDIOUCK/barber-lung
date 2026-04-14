@@ -12,6 +12,7 @@ export interface Transaction {
   transaction_date?: string;
   transaction_date_sec?: string;
   barber_name?: string;
+  barber_photo?: string; // Ajout du champ photo
   user_id?: string;
 }
 
@@ -19,6 +20,9 @@ interface TransactionHistoryProps {
   userId: string;
   refreshTrigger: number;
 }
+
+// Cache pour les photos des coiffeurs
+const barberPhotoCache: Record<string, string> = {};
 
 function getDayStart(date: Date): Date {
   const d = new Date(date);
@@ -61,6 +65,7 @@ function toTransactionRow(t: Transaction) {
     transaction_date: t.transaction_date ?? null,
     transaction_date_sec: t.transaction_date_sec ?? null,
     barber_name: t.barber_name ?? null,
+    barber_photo: t.barber_photo ?? null,
     user_id: t.user_id ?? null,
   };
 }
@@ -77,6 +82,7 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [showToast, setShowToast] = useState(false);
+  const [barberPhotos, setBarberPhotos] = useState<Record<string, string>>({});
 
   const formatCFA = (v: number) =>
     v.toLocaleString('fr-FR', { style: 'currency', currency: 'XOF' });
@@ -89,6 +95,32 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
     base.setDate(base.getDate() + dayOffset);
     return base;
   }, [dayOffset]);
+
+  // Fonction pour récupérer les photos des coiffeurs
+  const fetchBarberPhotos = useCallback(async (barberNames: string[]) => {
+    const uniqueNames = [...new Set(barberNames.filter(name => name && name.trim() !== '' && !barberPhotoCache[name]))];
+    
+    if (uniqueNames.length === 0) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('barbers')
+        .select('name, photo')
+        .in('name', uniqueNames)
+        .eq('user_id', userId);
+      
+      if (!error && data) {
+        const newPhotos: Record<string, string> = {};
+        data.forEach((barber: { name: string; photo: string }) => {
+          newPhotos[barber.name] = barber.photo;
+          barberPhotoCache[barber.name] = barber.photo;
+        });
+        setBarberPhotos(prev => ({ ...prev, ...newPhotos }));
+      }
+    } catch (err) {
+      console.error('Erreur chargement photos:', err);
+    }
+  }, [userId]);
 
   const loadTransactions = useCallback(async () => {
     setLoading(true);
@@ -118,12 +150,21 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
 
       setTransactions(active || []);
       setDeletedTransactions(deleted || []);
+
+      // Récupérer les noms des coiffeurs pour charger leurs photos
+      const barberNames = [
+        ...(active || []).map(t => t.barber_name),
+        ...(deleted || []).map(t => t.barber_name)
+      ].filter(name => name && name.trim() !== '');
+      
+      fetchBarberPhotos(barberNames);
+      
     } catch (err) {
       console.error('Erreur chargement:', err);
     } finally {
       setLoading(false);
     }
-  }, [userId, targetDayStart]);
+  }, [userId, targetDayStart, fetchBarberPhotos]);
 
   useEffect(() => { loadTransactions(); }, [loadTransactions, refreshTrigger]);
 
@@ -200,19 +241,17 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
   }), [transactions]);
 
   const barberStats = useMemo(() => {
-    const map: Record<string, { count: number; total: number }> = {};
+    const map: Record<string, { count: number; total: number; photo: string }> = {};
     
     transactions.forEach(t => {
-      // Si un coiffeur est sélectionné, c'est un service
       if (t.barber_name && t.barber_name.trim() !== '') {
         const name = t.barber_name;
-        if (!map[name]) map[name] = { count: 0, total: 0 };
+        if (!map[name]) map[name] = { count: 0, total: 0, photo: barberPhotos[name] || '' };
         map[name].count++;
         map[name].total += Number(t.amount || 0);
       } else {
-        // Pas de coiffeur = produit
         if (!map['🛍️ Produits']) {
-          map['🛍️ Produits'] = { count: 0, total: 0 };
+          map['🛍️ Produits'] = { count: 0, total: 0, photo: '' };
         }
         map['🛍️ Produits'].count++;
         map['🛍️ Produits'].total += Number(t.amount || 0);
@@ -220,7 +259,7 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
     });
     
     return Object.entries(map).sort((a, b) => b[1].total - a[1].total);
-  }, [transactions]);
+  }, [transactions, barberPhotos]);
 
   const ds = targetDayStart();
   const isCurrent = isCurrentDay(ds);
@@ -237,9 +276,10 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
 
   const getItemCategory = (transaction: Transaction) => {
     if (transaction.barber_name && transaction.barber_name.trim() !== '') {
-      return `✂️ ${transaction.barber_name}`;
+      const photo = barberPhotos[transaction.barber_name] || barberPhotoCache[transaction.barber_name];
+      return { name: transaction.barber_name, photo };
     }
-    return '🛍️ Produit';
+    return { name: 'Produit', photo: null };
   };
 
   return (
@@ -290,9 +330,18 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {barberStats.map(([name, s]) => (
               <div key={name} className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 space-y-2">
-                <p className="text-white font-bold capitalize">{name}</p>
+                <div className="flex items-center gap-3">
+                  {s.photo && (
+                    <img 
+                      src={s.photo} 
+                      alt={name}
+                      className="w-10 h-10 rounded-full object-cover border border-zinc-600"
+                    />
+                  )}
+                  <p className="text-white font-bold capitalize">{name}</p>
+                </div>
                 <div className="flex justify-between text-sm">
-                  <span className="text-zinc-400">{name === 'Nbrs' ? 'Nbrs' : 'Nbrs'}</span>
+                  <span className="text-zinc-400">Nombre</span>
                   <span className="text-white font-semibold">{s.count}</span>
                 </div>
                 <div className="flex justify-between text-sm"> 
@@ -324,22 +373,41 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
                   <th className="px-4 py-3">Montant</th>
                   <th className="px-4 py-3">Heure</th>
                   <th className="px-4 py-3"></th>
-                 </tr>
+                </tr>
               </thead>
               <tbody>
                 {allSorted.map(({ t, deleted }) => {
+                  const category = getItemCategory(t);
                   const isProduct = !t.barber_name || t.barber_name.trim() === '';
                   return (
                     <tr key={t.id} className={`border-b border-zinc-800 text-sm transition ${deleted ? 'opacity-50 bg-red-950/20' : 'hover:bg-zinc-800'}`}>
                       <td className="px-4 py-3">
-                        <span className={deleted ? 'line-through text-zinc-500' : ''}>{getItemName(t)}</span>
-                        {t.with_teinture && !deleted && !isProduct && (
-                          <span className="ml-1 text-yellow-400 text-xs">+ Teinture</span>
-                        )}
-                        {deleted && <span className="ml-2 inline-flex items-center gap-1 text-red-400 text-xs font-medium bg-red-900/40 px-2 py-0.5 rounded-full border border-red-800">🗑 Supprimé</span>}
+                        <div className="flex items-center gap-2">
+                          {!isProduct && category.photo && !deleted && (
+                            <img 
+                              src={category.photo} 
+                              alt={category.name}
+                              className="w-6 h-6 rounded-full object-cover"
+                            />
+                          )}
+                          <span className={deleted ? 'line-through text-zinc-500' : ''}>{getItemName(t)}</span>
+                          {t.with_teinture && !deleted && !isProduct && (
+                            <span className="ml-1 text-yellow-400 text-xs">+ Teinture</span>
+                          )}
+                          {deleted && <span className="ml-2 inline-flex items-center gap-1 text-red-400 text-xs font-medium bg-red-900/40 px-2 py-0.5 rounded-full border border-red-800">🗑 Supprimé</span>}
+                        </div>
                       </td>
                       <td className={`px-4 py-3 ${deleted ? 'line-through text-zinc-600' : ''}`}>
-                        {getItemCategory(t)}
+                        <div className="flex items-center gap-2">
+                          {!isProduct && category.photo && !deleted && (
+                            <img 
+                              src={category.photo} 
+                              alt={category.name}
+                              className="w-5 h-5 rounded-full object-cover"
+                            />
+                          )}
+                          <span>{isProduct ? '🛍️ Produit' : `✂️ ${category.name}`}</span>
+                        </div>
                       </td>
                       <td className={`px-4 py-3 font-bold ${deleted ? 'line-through text-zinc-600' : 'text-green-400'}`}>
                         {formatCFA(Number(t.amount))}
@@ -369,19 +437,36 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
           {/* Mobile */}
           <div className="sm:hidden space-y-3">
             {allSorted.map(({ t, deleted }) => {
+              const category = getItemCategory(t);
               const isProduct = !t.barber_name || t.barber_name.trim() === '';
               return (
                 <div key={t.id} className={`rounded-xl p-4 transition-all border ${deleted ? 'bg-red-950/20 border-red-900 opacity-60' : 'bg-zinc-900 border-zinc-700'}`}>
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex-1 min-w-0">
-                      <p className={`font-bold text-sm truncate ${deleted ? 'line-through text-zinc-500' : 'text-white'}`}>
-                        {getItemName(t)}
-                        {t.with_teinture && !deleted && !isProduct && (
-                          <span className="ml-1 text-yellow-400 text-xs">+ Teinture</span>
+                      <div className="flex items-center gap-2">
+                        {!isProduct && category.photo && !deleted && (
+                          <img 
+                            src={category.photo} 
+                            alt={category.name}
+                            className="w-8 h-8 rounded-full object-cover"
+                          />
                         )}
-                      </p>
-                      <p className={`text-xs capitalize mt-0.5 ${deleted ? 'line-through text-zinc-600' : 'text-zinc-400'}`}>
-                        {getItemCategory(t)}
+                        <p className={`font-bold text-sm truncate ${deleted ? 'line-through text-zinc-500' : 'text-white'}`}>
+                          {getItemName(t)}
+                          {t.with_teinture && !deleted && !isProduct && (
+                            <span className="ml-1 text-yellow-400 text-xs">+ Teinture</span>
+                          )}
+                        </p>
+                      </div>
+                      <p className={`text-xs capitalize mt-0.5 flex items-center gap-1 ${deleted ? 'line-through text-zinc-600' : 'text-zinc-400'}`}>
+                        {!isProduct && category.photo && !deleted && (
+                          <img 
+                            src={category.photo} 
+                            alt={category.name}
+                            className="w-4 h-4 rounded-full object-cover"
+                          />
+                        )}
+                        <span>{isProduct ? '🛍️ Produit' : `✂️ ${category.name}`}</span>
                       </p>
                       {deleted && <p className="text-red-400 text-xs mt-2 flex items-center gap-1 font-medium bg-red-900/40 px-2 py-1 rounded-full w-fit border border-red-800">🗑 Supprimé</p>}
                     </div>
