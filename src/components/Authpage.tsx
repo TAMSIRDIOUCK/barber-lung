@@ -51,26 +51,26 @@ interface AuthPageProps {
   onAuthSuccess?: () => void;
 }
 
-// ── CORRECTION : getBaseUrl robuste et sans ambiguïté de port ──
-// Priorité : VITE_APP_URL (depuis .env.local) > Vercel > dev localhost:5173 > production origin
+// ── URL de base FIABLE pour la redirection OAuth ──
+// Utilise d'abord VITE_APP_URL (à définir sur Vercel), puis le dev local, puis l'origin du navigateur.
 const getBaseUrl = (): string => {
-  // 1. Variable explicite — priorité absolue (prod, preview, staging, dev)
-  //    Définis VITE_APP_URL=http://localhost:5173 dans .env.local
-  const appUrl = import.meta.env.VITE_APP_URL;
-  if (appUrl) return appUrl.replace(/\/$/, '');
+  // 1. Variable explicite (prioritaire, fiable partout)
+  const explicitUrl = import.meta.env.VITE_APP_URL;
+  if (explicitUrl) return explicitUrl.replace(/\/$/, '');
 
-  // 2. Vercel auto-inject
-  const vercelUrl = import.meta.env.VITE_VERCEL_URL;
-  if (vercelUrl) return `https://${vercelUrl}`;
-
-  // 3. En développement Vite : on évite window.location.origin
-  //    qui peut valoir "chrome-error://chromewebdata" ou "null" dans certains contextes
+  // 2. En développement local Vite
   if (import.meta.env.DEV) {
     return 'http://localhost:5173';
   }
 
-  // 4. Production uniquement : là, window.location.origin est toujours une vraie URL HTTP/HTTPS
-  return window.location.origin;
+  // 3. En production : window.location.origin devrait être correct
+  if (typeof window !== 'undefined' && window.location.origin && !window.location.origin.includes('chrome-error')) {
+    return window.location.origin;
+  }
+
+  // 4. Fallback (normalement jamais atteint – URL de ton site Vercel)
+  console.warn('⚠️ Impossible de déterminer l’URL de base, utilisation de la valeur par défaut');
+  return 'https://barber-lunge.vercel.app';
 };
 
 export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
@@ -193,6 +193,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     setError('');
     setLoading(true);
     try {
+      // Nettoyer l'URL des éventuels fragments résiduels
       if (window.location.hash || window.location.search.includes('code')) {
         window.history.replaceState({}, document.title, window.location.pathname);
       }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, ChangeEvent } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Trash2, RotateCcw, X } from 'lucide-react';
+import { Plus, Trash2, RotateCcw, X, AlertCircle } from 'lucide-react';
 
 interface Barber {
   id: string;
@@ -31,6 +31,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
   const [preview, setPreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
+  const [validationError, setValidationError] = useState('');
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -62,7 +63,17 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
   }, [userId]);
 
   const handleAddBarber = async () => {
-    if (!newName || !newFile) return;
+    // Validation
+    if (!newName.trim()) {
+      setValidationError('Le nom du coiffeur est obligatoire.');
+      return;
+    }
+    if (!newFile) {
+      setValidationError('Veuillez sélectionner une photo.');
+      return;
+    }
+    setValidationError('');
+
     setIsUploading(true);
     try {
       const fileName = `${userId}/${Date.now()}-${newFile.name}`;
@@ -73,7 +84,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
       const { data } = supabase.storage.from('barbers').getPublicUrl(fileName);
       const { error: insertError } = await supabase
         .from('barbers')
-        .insert([{ name: newName, photo: data.publicUrl, user_id: userId }]);
+        .insert([{ name: newName.trim(), photo: data.publicUrl, user_id: userId }]);
       if (insertError) throw insertError;
       await fetchBarbers();
       if (mounted.current) {
@@ -81,6 +92,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         setNewName(''); 
         setNewFile(null); 
         setPreview(null);
+        setValidationError('');
       }
     } catch (error) {
       console.error('Erreur ajout coiffeur:', error);
@@ -152,12 +164,20 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
       setNewFile(file);
       if (preview) URL.revokeObjectURL(preview);
       setPreview(URL.createObjectURL(file));
+      setValidationError(''); // Efface l'erreur quand un fichier est choisi
     }
+  };
+
+  const handleNameChange = (value: string) => {
+    setNewName(value);
+    if (validationError && value.trim()) setValidationError('');
   };
 
   useEffect(() => {
     return () => { if (preview) URL.revokeObjectURL(preview); };
   }, [preview]);
+
+  const isFormValid = newName.trim() !== '' && newFile !== null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -270,13 +290,13 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               {/* Champ nom */}
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Nom du coiffeur
+                  Nom du coiffeur <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="text"
                   placeholder="Ex: Jean Dupont"
                   value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  onChange={(e) => handleNameChange(e.target.value)}
                   className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
                   autoFocus
                 />
@@ -285,7 +305,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               {/* Champ photo */}
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Photo
+                  Photo <span className="text-red-400">*</span>
                 </label>
                 <div className="relative">
                   <input
@@ -297,11 +317,19 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                 </div>
               </div>
 
+              {/* Message d'erreur */}
+              {validationError && (
+                <div className="flex items-center gap-2 text-red-400 text-sm bg-red-950/30 p-3 rounded-xl">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{validationError}</span>
+                </div>
+              )}
+
               {/* Boutons */}
               <div className="flex gap-3 pt-4">
                 <button
                   onClick={handleAddBarber}
-                  disabled={isUploading || !newName || !newFile}
+                  disabled={isUploading || !isFormValid}
                   className="flex-1 bg-white text-black py-3 rounded-xl font-semibold hover:bg-gray-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {isUploading ? 'Ajout en cours...' : 'Ajouter'}
@@ -312,6 +340,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                     setPreview(null);
                     setNewName('');
                     setNewFile(null);
+                    setValidationError('');
                   }}
                   className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition"
                 >
