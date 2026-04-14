@@ -348,7 +348,7 @@ export function SubscribePage({
                   {
                     id: 'orange_money',
                     label: 'Orange Money',
-                    logo: './assets/orange.png',
+                    logo: '/assets/orange.png',
                   },
                 ].map((m) => (
                   <button
