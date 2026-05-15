@@ -1,3 +1,4 @@
+// src/components/RevenuePage.tsx
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -43,46 +44,58 @@ function getWeekStart(date: Date): Date {
   d.setHours(0, 0, 0, 0);
   return d;
 }
+
 function getWeekEnd(weekStart: Date): Date {
   const end = new Date(weekStart);
   end.setDate(weekStart.getDate() + 6);
   end.setHours(23, 59, 59, 999);
   return end;
 }
+
 function formatWeekLabel(weekStart: Date): string {
   const end = getWeekEnd(weekStart);
   const fmtDay = (d: Date) => d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
   return `${fmtDay(weekStart)} → ${fmtDay(end)}`;
 }
+
 function isCurrentWeek(weekStart: Date): boolean {
   return weekStart.toDateString() === getWeekStart(new Date()).toDateString();
 }
+
 function getMonthStart(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
 }
+
 function getMonthEnd(monthStart: Date): Date {
   return new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0, 23, 59, 59, 999);
 }
+
 function formatMonthLabel(monthStart: Date): string {
   return monthStart.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
 }
+
 function isCurrentMonth(monthStart: Date): boolean {
   const now = new Date();
   return monthStart.getMonth() === now.getMonth() && monthStart.getFullYear() === now.getFullYear();
 }
+
 function getYearStart(date: Date): Date {
   return new Date(date.getFullYear(), 0, 1, 0, 0, 0, 0);
 }
+
 function getYearEnd(yearStart: Date): Date {
   return new Date(yearStart.getFullYear(), 11, 31, 23, 59, 59, 999);
 }
+
 function formatYearLabel(yearStart: Date): string {
   return yearStart.getFullYear().toString();
 }
+
 function isCurrentYear(yearStart: Date): boolean {
   return yearStart.getFullYear() === new Date().getFullYear();
 }
 
+// ⚠️ IMPORTANT : Utilisez "export default function" ou "export default" à la fin
 export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps) {
   const [periodType, setPeriodType] = useState<PeriodType>('week');
   const [offset, setOffset] = useState(0);
@@ -435,7 +448,6 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
                   
                   return (
                     <div key={b.name} className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 space-y-3">
-                      {/* Nom avec photo */}
                       <div className="flex items-center gap-3">
                         {showPhoto ? (
                           <img 
@@ -453,7 +465,6 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
                         )}
                         <p className="text-white font-bold capitalize truncate">{b.name}</p>
                       </div>
-                      {/* Stats */}
                       <div className="grid grid-cols-2 gap-2">
                         <div className="bg-zinc-800 rounded-lg p-2.5">
                           <p className="text-zinc-400 text-xs mb-0.5">Coupes</p>
@@ -464,7 +475,6 @@ export default function RevenuePage({ userId, refreshTrigger }: RevenuePageProps
                           <p className="text-white font-bold text-sm">{formatCFA(b.total)}</p>
                         </div>
                       </div>
-                      {/* Barre de progression relative */}
                       {stats.totalRevenue > 0 && (
                         <div>
                           <div className="flex justify-between text-xs text-zinc-500 mb-1">
