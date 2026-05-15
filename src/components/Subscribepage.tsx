@@ -37,8 +37,11 @@ export function SubscribePage({
 
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
 
+  // Récupérer l'URL de la fonction Edge depuis les variables d'environnement
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const edgeFunctionUrl = `${supabaseUrl}/functions/v1/initiate-payment`;
+
   useEffect(() => {
-    // Vérifier si l'utilisateur a déjà utilisé un essai gratuit
     const checkFreeTrialUsage = async () => {
       const { data, error } = await supabase
         .from('subscriptions')
@@ -87,7 +90,6 @@ export function SubscribePage({
     setLoading(true);
 
     try {
-      // Vérifier une dernière fois si l'utilisateur a déjà utilisé l'essai gratuit
       const { data: existingTrial, error: checkError } = await supabase
         .from('subscriptions')
         .select('id')
@@ -99,7 +101,6 @@ export function SubscribePage({
         throw new Error('Vous avez déjà utilisé votre essai gratuit');
       }
 
-      // Créer l'abonnement gratuit directement actif
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
         .insert([{
@@ -115,7 +116,6 @@ export function SubscribePage({
 
       if (subErr) throw new Error('Erreur création abonnement : ' + subErr.message);
 
-      // Rediriger directement vers le dashboard
       onSubscribed();
 
     } catch (e: any) {
@@ -153,22 +153,19 @@ export function SubscribePage({
 
       setSubscriptionId(sub.id);
 
-      const res = await fetch(
-        'https://vzhcjvvgpbtfolxnpapy.supabase.co/functions/v1/initiate-payment',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            subscription_id: sub.id,
-            amount: selectedPlan.price,
-            phone,
-            method: paymentMethod,
-            customer_name: salonName,
-            customer_email: userEmail,
-            description: `Abonnement ${selectedPlan.name} - La Coupe`,
-          }),
-        }
-      );
+      const res = await fetch(edgeFunctionUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription_id: sub.id,
+          amount: selectedPlan.price,
+          phone,
+          method: paymentMethod,
+          customer_name: salonName,
+          customer_email: userEmail,
+          description: `Abonnement ${selectedPlan.name} - La Coupe`,
+        }),
+      });
 
       const data = await res.json();
 
