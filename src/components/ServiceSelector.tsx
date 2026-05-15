@@ -1,6 +1,6 @@
 // src/components/ServiceSelector.tsx
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Scissors, Sparkles, Baby, X, Printer, Box, Plus, Trash2, Edit2 } from 'lucide-react';
+import { Scissors, Sparkles, Baby, X, Printer, Box, Plus, Trash2, Edit2, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { BarberManager } from './BarberManager';
 import type { AuthUser } from './Clientapp';
@@ -17,8 +17,30 @@ interface ServiceSelectorProps {
   onConfirm: (serviceName: string, amount: number, options: any) => void;
 }
 
-function InlineAddForm({ onAdd, placeholder = "Nom" }: { onAdd: (name: string, price: number) => Promise<string | null>; placeholder?: string }) {
-  const [open, setOpen] = useState(false);
+// Composant Modal Portal pour empêcher le scroll
+function ModalPortal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, []);
+
+  return (
+    <div 
+      className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+      style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }}
+    >
+      <div onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Modal d'ajout simplifié (remplace InlineAddForm)
+function AddModal({ onAdd, placeholder, onClose }: { onAdd: (name: string, price: number) => Promise<string | null>; placeholder: string; onClose: () => void }) {
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [error, setError] = useState('');
@@ -27,50 +49,98 @@ function InlineAddForm({ onAdd, placeholder = "Nom" }: { onAdd: (name: string, p
   const handleAdd = async () => {
     const n = name.trim();
     const p = parseInt(price, 10);
-    if (!n) return setError('Nom requis');
-    if (isNaN(p) || p < 0) return setError('Prix invalide');
+    if (!n) {
+      setError('Nom requis');
+      return;
+    }
+    if (isNaN(p) || p < 0) {
+      setError('Prix invalide');
+      return;
+    }
     setLoading(true);
     const err = await onAdd(n, p);
     setLoading(false);
-    if (err) return setError(err);
-    setName(''); setPrice(''); setError(''); setOpen(false);
+    if (err) {
+      setError(err);
+      return;
+    }
+    onClose();
   };
 
-  if (!open) return (
-    <button onClick={() => setOpen(true)}
-      className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm mt-3 transition">
-      <Plus className="w-4 h-4" /> Ajouter {placeholder}
-    </button>
-  );
-
   return (
-    <div className="mt-3 flex flex-col gap-2">
-      <div className="flex flex-col sm:flex-row gap-2">
-        <input autoFocus type="text" placeholder={placeholder} value={name}
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-          className="flex-1 min-w-0 bg-zinc-800 text-white text-sm rounded-lg px-3 py-2 border border-zinc-600 focus:outline-none focus:border-white" />
-        <input type="number" placeholder="Prix" value={price}
-          onChange={(e) => setPrice(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-          className="w-full sm:w-28 bg-zinc-800 text-white text-sm rounded-lg px-3 py-2 border border-zinc-600 focus:outline-none focus:border-white" />
-        <div className="flex gap-2">
-          <button onClick={handleAdd} disabled={loading}
-            className="bg-white text-black rounded-lg px-3 py-2 hover:bg-zinc-200 transition disabled:opacity-50">
-            <Plus className="w-4 h-4" />
-          </button>
-          <button onClick={() => { setOpen(false); setError(''); }}
-            className="text-zinc-500 hover:text-white transition px-2">
-            <X className="w-4 h-4" />
+    <ModalPortal onClose={onClose}>
+      <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-bold text-white">Ajouter {placeholder}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-white">
+            <X className="w-5 h-5" />
           </button>
         </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Nom <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="text"
+              placeholder={`Nom du ${placeholder}`}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
+              autoFocus
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Prix <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="number"
+              placeholder="Prix en CFA"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
+            />
+          </div>
+
+          {error && (
+            <div className="flex items-center gap-2 text-red-400 text-sm bg-red-950/30 p-3 rounded-xl">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-4">
+            <button
+              onClick={handleAdd}
+              disabled={loading}
+              className="flex-1 bg-white text-black py-3 rounded-xl font-semibold hover:bg-gray-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Ajout en cours...' : 'Ajouter'}
+            </button>
+            <button
+              onClick={onClose}
+              className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
       </div>
-      {error && <p className="text-red-400 text-xs">{error}</p>}
-    </div>
+    </ModalPortal>
   );
 }
 
 function ConfirmationDialog({ message, onConfirm, onCancel }: { message: string; onConfirm: () => void; onCancel: () => void }) {
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, []);
+
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div className="bg-zinc-900 rounded-2xl p-6 max-w-sm w-full border border-zinc-700">
@@ -150,6 +220,13 @@ function EditModal({ item, type, onSave, onClose }: {
   const [price, setPrice] = useState(item.price?.toString() || item.basePrice?.toString() || '');
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, []);
+
   const handleSave = async () => {
     const newName = name.trim();
     const newPrice = parseInt(price, 10);
@@ -198,6 +275,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
   const [editModal, setEditModal] = useState<{ item: any; type: 'service' | 'product' | 'soin' | 'teinture'; category?: string } | null>(null);
   const [activeActionItem, setActiveActionItem] = useState<string | null>(null);
+  const [addModal, setAddModal] = useState<{ type: string; onAdd: (name: string, price: number) => Promise<string | null>; placeholder: string } | null>(null);
   const ticketRef = useRef<HTMLDivElement>(null);
 
   const [services, setServices] = useState<Record<string, Service[]>>({
@@ -535,7 +613,12 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
               <ServiceItem key={service.id} service={service} category={selectedCategory} />
             ))}
           </div>
-          <InlineAddForm onAdd={(name, price) => addService(selectedCategory, name, price)} placeholder="service" />
+          <button 
+            onClick={() => setAddModal({ type: 'service', onAdd: (name, price) => addService(selectedCategory, name, price), placeholder: 'service' })}
+            className="flex items-center gap-2 text-zinc-400 hover:text-white text-sm mt-3 transition"
+          >
+            <Plus className="w-4 h-4" /> Ajouter un service
+          </button>
         </div>
       )}
 
@@ -565,7 +648,15 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
 
           {/* Produits */}
           <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
-            <h4 className="text-white font-bold mb-3 sm:mb-4">Produits</h4>
+            <div className="flex justify-between items-center mb-3">
+              <h4 className="text-white font-bold">Produits</h4>
+              <button 
+                onClick={() => setAddModal({ type: 'product', onAdd: addProduct, placeholder: 'produit' })}
+                className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
+              >
+                <Plus className="w-3 h-3" /> Ajouter
+              </button>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
               {productOptions.map((p) => (
                 <ActionItem
@@ -587,12 +678,19 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
                 </ActionItem>
               ))}
             </div>
-            <InlineAddForm onAdd={addProduct} placeholder="produit" />
           </div>
 
           {/* Soins */}
           <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
-            <h4 className="text-white font-bold mb-3 sm:mb-4">Soins</h4>
+            <div className="flex justify-between items-center mb-3">
+              <h4 className="text-white font-bold">Soins</h4>
+              <button 
+                onClick={() => setAddModal({ type: 'soin', onAdd: addSoin, placeholder: 'soin' })}
+                className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
+              >
+                <Plus className="w-3 h-3" /> Ajouter
+              </button>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
               {soinOptions.map((s) => (
                 <ActionItem
@@ -614,15 +712,22 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
                 </ActionItem>
               ))}
             </div>
-            <InlineAddForm onAdd={addSoin} placeholder="soin" />
           </div>
 
           {/* Teinture supp */}
           {selectedCategory !== 'teinture' && selectedCategory !== 'produitSeul' && (
             <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
-              <h4 className="text-white font-bold mb-3 sm:mb-4">Teinture</h4>
+              <div className="flex justify-between items-center mb-3">
+                <h4 className="text-white font-bold">Teinture</h4>
+                <button 
+                  onClick={() => setAddModal({ type: 'teinture', onAdd: addTeintureSupp, placeholder: 'option teinture' })}
+                  className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
+                >
+                  <Plus className="w-3 h-3" /> Ajouter
+                </button>
+              </div>
               {teintureSuppOptions.length === 0 && (
-                <p className="text-zinc-500 text-sm mb-3"></p>
+                <p className="text-zinc-500 text-sm mb-3">Aucune option teinture</p>
               )}
               {teintureSuppOptions.map((t) => (
                 <ActionItem
@@ -642,7 +747,6 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
                   </label>
                 </ActionItem>
               ))}
-              <InlineAddForm onAdd={addTeintureSupp} placeholder="option teinture" />
             </div>
           )}
 
@@ -660,7 +764,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
 
       {/* ── Ticket ── */}
       {ticketData && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+        <ModalPortal onClose={() => setTicketData(null)}>
           <div className="bg-white rounded-2xl p-6 sm:p-8 w-full max-w-md relative shadow-2xl max-h-[90vh] overflow-y-auto">
             <button onClick={() => setTicketData(null)} className="absolute top-4 right-4 text-zinc-500 hover:text-zinc-700">
               <X className="w-6 h-6" />
@@ -723,7 +827,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
               <Printer className="w-5 h-5" /> IMPRIMER LE TICKET
             </button>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
       {confirmDialog && (
@@ -746,6 +850,15 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
             setEditModal(null);
           }}
           onClose={() => setEditModal(null)}
+        />
+      )}
+
+      {/* Modal d'ajout */}
+      {addModal && (
+        <AddModal
+          onAdd={addModal.onAdd}
+          placeholder={addModal.placeholder}
+          onClose={() => setAddModal(null)}
         />
       )}
     </div>

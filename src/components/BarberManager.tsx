@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, ChangeEvent } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Trash2, RotateCcw, X, AlertCircle, Edit2 } from 'lucide-react';
+import { Plus, Trash2, RotateCcw, X, AlertCircle, Edit2, Camera, Upload } from 'lucide-react';
 
 interface Barber {
   id: string;
@@ -22,6 +22,28 @@ interface BarberManagerProps {
   selectedBarberName?: string | null;
 }
 
+// Modal Portal pour empêcher le scroll
+function ModalPortal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = 'unset';
+    };
+  }, []);
+
+  return (
+    <div 
+      className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+      style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }}
+    >
+      <div onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 // Hook personnalisé pour détecter l'appui long (uniquement sur mobile/tactile)
 function useLongPress(onLongPress: () => void, onClick: () => void) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -30,7 +52,6 @@ function useLongPress(onLongPress: () => void, onClick: () => void) {
   const touchStartY = useRef(0);
 
   const start = (e: React.TouchEvent | React.MouseEvent) => {
-    // Enregistrer la position pour détecter le déplacement
     if ('touches' in e) {
       touchStartX.current = e.touches[0].clientX;
       touchStartY.current = e.touches[0].clientY;
@@ -44,7 +65,6 @@ function useLongPress(onLongPress: () => void, onClick: () => void) {
   };
 
   const move = (e: React.TouchEvent | React.MouseEvent) => {
-    // Si l'utilisateur a déplacé son doigt, annuler l'appui long
     if ('touches' in e) {
       const deltaX = Math.abs(e.touches[0].clientX - touchStartX.current);
       const deltaY = Math.abs(e.touches[0].clientY - touchStartY.current);
@@ -63,7 +83,6 @@ function useLongPress(onLongPress: () => void, onClick: () => void) {
       timerRef.current = null;
     }
     
-    // Petit délai pour s'assurer que l'appui long n'a pas été déclenché
     setTimeout(() => {
       if (!isLongPress.current) {
         onClick();
@@ -71,20 +90,16 @@ function useLongPress(onLongPress: () => void, onClick: () => void) {
     }, 10);
   };
 
-  // Pour desktop, on utilise le clic normal
   const handleClick = () => {
     if (!('ontouchstart' in window)) {
       onClick();
     }
   };
 
-  // Détecter si c'est un appareil mobile
   const isTouchDevice = 'ontouchstart' in window;
 
   if (!isTouchDevice) {
-    return {
-      onClick: handleClick,
-    };
+    return { onClick: handleClick };
   }
 
   return {
@@ -115,6 +130,81 @@ function ActionButtons({ onEdit, onDelete, isActive, isTouchDevice }: { onEdit: 
   );
 }
 
+// Composant pour l'upload de photo moderne
+function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: string | null; onPhotoChange: (file: File | null) => void; isEditing?: boolean }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<string | null>(photo);
+  const [previewFile, setPreviewFile] = useState<string | null>(null);
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      onPhotoChange(file);
+      // Utiliser window.URL.createObjectURL au lieu de URL.createObjectURL
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setPreview(reader.result as string);
+        setPreviewFile(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleRemove = () => {
+    onPhotoChange(null);
+    setPreview(null);
+    setPreviewFile(null);
+  };
+
+  const displayImage = previewFile || preview || photo;
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div 
+        onClick={handleClick}
+        className="relative cursor-pointer group"
+      >
+        {displayImage ? (
+          <div className="relative">
+            <img
+              src={displayImage}
+              alt="Photo"
+              className="w-28 h-28 rounded-full object-cover border-4 border-zinc-600 group-hover:border-white transition-all"
+            />
+            <div className="absolute inset-0 bg-black/50 rounded-full opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center">
+              <Camera className="w-8 h-8 text-white" />
+            </div>
+          </div>
+        ) : (
+          <div className="w-28 h-28 rounded-full bg-zinc-800 border-4 border-dashed border-zinc-600 group-hover:border-white transition-all flex flex-col items-center justify-center gap-1">
+            <Upload className="w-8 h-8 text-zinc-500 group-hover:text-white transition-all" />
+            <span className="text-xs text-zinc-500 group-hover:text-white">Ajouter photo</span>
+          </div>
+        )}
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+        className="hidden"
+      />
+      {isEditing && displayImage && (
+        <button
+          onClick={handleRemove}
+          className="text-xs text-red-400 hover:text-red-300 transition"
+        >
+          Supprimer la photo
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function BarberManager({ userId, onSelect, selectedBarberName }: BarberManagerProps) {
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [deletedBarbers, setDeletedBarbers] = useState<DeletedBarber[]>([]);
@@ -122,16 +212,16 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
   const [editing, setEditing] = useState<Barber | null>(null);
   const [newName, setNewName] = useState('');
   const [newFile, setNewFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [activeActionItem, setActiveActionItem] = useState<string | null>(null);
+  const [addPhotoPreview, setAddPhotoPreview] = useState<string | null>(null);
+  const [editPhotoPreview, setEditPhotoPreview] = useState<string | null>(null);
 
   const mounted = useRef(true);
   const isTouchDevice = typeof window !== 'undefined' && 'ontouchstart' in window;
   
-  // Fermer les actions au clic ailleurs
   useEffect(() => {
     const handleClickOutside = () => setActiveActionItem(null);
     document.addEventListener('click', handleClickOutside);
@@ -193,8 +283,8 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
       if (mounted.current) {
         setAdding(false); 
         setNewName(''); 
-        setNewFile(null); 
-        setPreview(null);
+        setNewFile(null);
+        setAddPhotoPreview(null);
         setValidationError('');
       }
     } catch (error) {
@@ -240,7 +330,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         setEditing(null);
         setNewName('');
         setNewFile(null);
-        setPreview(null);
+        setEditPhotoPreview(null);
         setValidationError('');
       }
     } catch (error) {
@@ -308,55 +398,27 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
     }
   };
 
-  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setNewFile(file);
-      if (preview) URL.revokeObjectURL(preview);
-      setPreview(URL.createObjectURL(file));
-      setValidationError('');
-    }
-  };
-
-  const handleNameChange = (value: string) => {
-    setNewName(value);
-    if (validationError && value.trim()) setValidationError('');
-  };
-
   const openEditModal = (barber: Barber) => {
     setEditing(barber);
     setNewName(barber.name);
-    setPreview(barber.photo);
     setNewFile(null);
+    setEditPhotoPreview(null);
     setValidationError('');
     setActiveActionItem(null);
   };
 
-  useEffect(() => {
-    return () => { if (preview && preview !== editing?.photo) URL.revokeObjectURL(preview); };
-  }, [preview]);
-
-  // Fonction de sélection simplifiée
   const handleSelectBarber = (barber: Barber) => {
     onSelect(barber);
   };
 
-  // Composant Coiffeur
   const BarberItem = ({ barber }: { barber: Barber }) => {
     const isActive = activeActionItem === `barber-${barber.id}`;
     
     const longPressProps = useLongPress(
-      () => {
-        // Appui long - afficher les actions (uniquement sur mobile)
-        setActiveActionItem(`barber-${barber.id}`);
-      },
-      () => {
-        // Clic simple - sélectionner le coiffeur
-        handleSelectBarber(barber);
-      }
+      () => setActiveActionItem(`barber-${barber.id}`),
+      () => handleSelectBarber(barber)
     );
 
-    // Pour desktop, on utilise onClick directement
     const handleClick = () => {
       if (!isTouchDevice) {
         handleSelectBarber(barber);
@@ -387,7 +449,6 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
           {barber.name}
         </span>
         
-        {/* Boutons d'action */}
         <div className={`absolute -top-2 -right-2 ${!isTouchDevice ? 'opacity-0 group-hover:opacity-100' : ''}`}>
           <ActionButtons
             onEdit={() => openEditModal(barber)}
@@ -398,6 +459,34 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         </div>
       </div>
     );
+  };
+
+  // Gestionnaire pour l'ajout de photo dans le modal d'ajout
+  const handleAddPhotoChange = (file: File | null) => {
+    setNewFile(file);
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAddPhotoPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setAddPhotoPreview(null);
+    }
+  };
+
+  // Gestionnaire pour l'ajout de photo dans le modal d'édition
+  const handleEditPhotoChange = (file: File | null) => {
+    setNewFile(file);
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setEditPhotoPreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      setEditPhotoPreview(null);
+    }
   };
 
   return (
@@ -454,10 +543,10 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         </div>
       )}
 
-      {/* Modal d'ajout */}
+      {/* Modal d'ajout modernisé */}
       {adding && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setAdding(false)}>
-          <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+        <ModalPortal onClose={() => setAdding(false)}>
+          <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-bold text-white">Ajouter un coiffeur</h3>
               <button onClick={() => setAdding(false)} className="text-gray-400 hover:text-white">
@@ -465,16 +554,11 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               </button>
             </div>
 
-            <div className="space-y-4">
-              {preview && (
-                <div className="flex justify-center">
-                  <img
-                    src={preview}
-                    alt="Aperçu"
-                    className="w-24 h-24 rounded-full object-cover border-2 border-zinc-700"
-                  />
-                </div>
-              )}
+            <div className="space-y-5">
+              <PhotoUpload 
+                photo={addPhotoPreview}
+                onPhotoChange={handleAddPhotoChange}
+              />
 
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -484,24 +568,10 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                   type="text"
                   placeholder="Ex: Jean Dupont"
                   value={newName}
-                  onChange={(e) => handleNameChange(e.target.value)}
+                  onChange={(e) => setNewName(e.target.value)}
                   className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
                   autoFocus
                 />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Photo <span className="text-red-400">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileChange}
-                    className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-sm file:bg-white file:text-black hover:file:bg-gray-200"
-                  />
-                </div>
               </div>
 
               {validationError && (
@@ -522,9 +592,9 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                 <button
                   onClick={() => {
                     setAdding(false);
-                    setPreview(null);
                     setNewName('');
                     setNewFile(null);
+                    setAddPhotoPreview(null);
                     setValidationError('');
                   }}
                   className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition"
@@ -534,13 +604,13 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               </div>
             </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
 
-      {/* Modal d'édition */}
+      {/* Modal d'édition modernisé */}
       {editing && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setEditing(null)}>
-          <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6" onClick={(e) => e.stopPropagation()}>
+        <ModalPortal onClose={() => setEditing(null)}>
+          <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-bold text-white">Modifier le coiffeur</h3>
               <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-white">
@@ -548,16 +618,12 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               </button>
             </div>
 
-            <div className="space-y-4">
-              {preview && (
-                <div className="flex justify-center">
-                  <img
-                    src={preview}
-                    alt="Aperçu"
-                    className="w-24 h-24 rounded-full object-cover border-2 border-zinc-700"
-                  />
-                </div>
-              )}
+            <div className="space-y-5">
+              <PhotoUpload 
+                photo={editPhotoPreview || editing.photo}
+                onPhotoChange={handleEditPhotoChange}
+                isEditing={true}
+              />
 
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -567,24 +633,10 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                   type="text"
                   placeholder="Ex: Jean Dupont"
                   value={newName}
-                  onChange={(e) => handleNameChange(e.target.value)}
+                  onChange={(e) => setNewName(e.target.value)}
                   className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
                   autoFocus
                 />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Photo (laisser vide pour conserver l'actuelle)
-                </label>
-                <div className="relative">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileChange}
-                    className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-sm file:bg-white file:text-black hover:file:bg-gray-200"
-                  />
-                </div>
               </div>
 
               {validationError && (
@@ -605,9 +657,9 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                 <button
                   onClick={() => {
                     setEditing(null);
-                    setPreview(null);
                     setNewName('');
                     setNewFile(null);
+                    setEditPhotoPreview(null);
                     setValidationError('');
                   }}
                   className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition"
@@ -617,7 +669,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               </div>
             </div>
           </div>
-        </div>
+        </ModalPortal>
       )}
     </div>
   );
