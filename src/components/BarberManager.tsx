@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, ChangeEvent } from 'react';
 import { supabase } from '../lib/supabase';
-import { Plus, Trash2, RotateCcw, X, AlertCircle, Edit2, Camera, Upload } from 'lucide-react';
+import { Plus, Trash2, RotateCcw, X, AlertCircle, Edit2, Camera, Upload, MoreHorizontal } from 'lucide-react';
 
 interface Barber {
   id: string;
@@ -44,92 +44,6 @@ function ModalPortal({ children, onClose }: { children: React.ReactNode; onClose
   );
 }
 
-// Hook personnalisé pour détecter l'appui long (uniquement sur mobile/tactile)
-function useLongPress(onLongPress: () => void, onClick: () => void) {
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const isLongPress = useRef(false);
-  const touchStartX = useRef(0);
-  const touchStartY = useRef(0);
-
-  const start = (e: React.TouchEvent | React.MouseEvent) => {
-    if ('touches' in e) {
-      touchStartX.current = e.touches[0].clientX;
-      touchStartY.current = e.touches[0].clientY;
-    }
-    
-    isLongPress.current = false;
-    timerRef.current = setTimeout(() => {
-      isLongPress.current = true;
-      onLongPress();
-    }, 500);
-  };
-
-  const move = (e: React.TouchEvent | React.MouseEvent) => {
-    if ('touches' in e) {
-      const deltaX = Math.abs(e.touches[0].clientX - touchStartX.current);
-      const deltaY = Math.abs(e.touches[0].clientY - touchStartY.current);
-      if (deltaX > 10 || deltaY > 10) {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-          timerRef.current = null;
-        }
-      }
-    }
-  };
-
-  const end = (e: React.TouchEvent | React.MouseEvent) => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    
-    setTimeout(() => {
-      if (!isLongPress.current) {
-        onClick();
-      }
-    }, 10);
-  };
-
-  const handleClick = () => {
-    if (!('ontouchstart' in window)) {
-      onClick();
-    }
-  };
-
-  const isTouchDevice = 'ontouchstart' in window;
-
-  if (!isTouchDevice) {
-    return { onClick: handleClick };
-  }
-
-  return {
-    onTouchStart: start,
-    onTouchMove: move,
-    onTouchEnd: end,
-  };
-}
-
-function ActionButtons({ onEdit, onDelete, isActive, isTouchDevice }: { onEdit: () => void; onDelete: () => void; isActive: boolean; isTouchDevice: boolean }) {
-  return (
-    <div className={`flex gap-1 transition-all duration-200 ${isActive || !isTouchDevice ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
-      <button
-        onClick={(e) => { e.stopPropagation(); onEdit(); }}
-        className="bg-blue-500 hover:bg-blue-600 rounded-full p-1.5 transition-all shadow-lg"
-        title="Modifier"
-      >
-        <Edit2 className="w-3 h-3 text-white" />
-      </button>
-      <button
-        onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        className="bg-red-500 hover:bg-red-600 rounded-full p-1.5 transition-all shadow-lg"
-        title="Supprimer"
-      >
-        <Trash2 className="w-3 h-3 text-white" />
-      </button>
-    </div>
-  );
-}
-
 // Composant pour l'upload de photo moderne
 function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: string | null; onPhotoChange: (file: File | null) => void; isEditing?: boolean }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -140,7 +54,6 @@ function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: strin
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       onPhotoChange(file);
-      // Utiliser window.URL.createObjectURL au lieu de URL.createObjectURL
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreview(reader.result as string);
@@ -215,15 +128,20 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
   const [isUploading, setIsUploading] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
   const [validationError, setValidationError] = useState('');
-  const [activeActionItem, setActiveActionItem] = useState<string | null>(null);
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [addPhotoPreview, setAddPhotoPreview] = useState<string | null>(null);
   const [editPhotoPreview, setEditPhotoPreview] = useState<string | null>(null);
 
   const mounted = useRef(true);
-  const isTouchDevice = typeof window !== 'undefined' && 'ontouchstart' in window;
+  const menuRef = useRef<HTMLDivElement>(null);
   
+  // Fermer le menu au clic ailleurs
   useEffect(() => {
-    const handleClickOutside = () => setActiveActionItem(null);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setActiveMenuId(null);
+      }
+    };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
@@ -361,7 +279,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
       if (mounted.current) {
         setBarbers(barbers.filter((b) => b.id !== barberId));
         await fetchDeletedBarbers();
-        setActiveActionItem(null);
+        setActiveMenuId(null);
       }
     } catch (error) {
       console.error('Erreur suppression coiffeur:', error);
@@ -404,7 +322,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
     setNewFile(null);
     setEditPhotoPreview(null);
     setValidationError('');
-    setActiveActionItem(null);
+    setActiveMenuId(null);
   };
 
   const handleSelectBarber = (barber: Barber) => {
@@ -412,51 +330,74 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
   };
 
   const BarberItem = ({ barber }: { barber: Barber }) => {
-    const isActive = activeActionItem === `barber-${barber.id}`;
-    
-    const longPressProps = useLongPress(
-      () => setActiveActionItem(`barber-${barber.id}`),
-      () => handleSelectBarber(barber)
-    );
-
-    const handleClick = () => {
-      if (!isTouchDevice) {
-        handleSelectBarber(barber);
-      }
-    };
+    const isSelected = selectedBarberName === barber.name;
+    const isMenuOpen = activeMenuId === `barber-${barber.id}`;
 
     return (
       <div className="relative text-center group">
-        <div
-          {...(isTouchDevice ? longPressProps : { onClick: handleClick })}
-          className={`w-20 h-20 sm:w-24 sm:h-24 mx-auto rounded-full mb-2 transition-all cursor-pointer ${
-            selectedBarberName === barber.name
-              ? 'ring-4 ring-green-500 ring-offset-2 ring-offset-black scale-110'
-              : 'hover:scale-105'
-          }`}
-        >
-          <img
-            src={barber.photo}
-            alt={barber.name}
-            className="w-full h-full rounded-full object-cover border-2 border-zinc-700"
-          />
+        {/* Cercle vert - complètement invisible si non sélectionné */}
+        <div className="relative inline-block">
+          <div
+            onClick={() => handleSelectBarber(barber)}
+            className={`w-20 h-20 sm:w-24 sm:h-24 mx-auto rounded-full mb-2 transition-all cursor-pointer ${
+              isSelected
+                ? 'ring-4 ring-green-500 ring-offset-2 ring-offset-black scale-110'
+                : 'hover:scale-105'
+            }`}
+          >
+            <img
+              src={barber.photo}
+              alt={barber.name}
+              className="w-full h-full rounded-full object-cover border-2 border-zinc-700"
+            />
+          </div>
+          
+          {/* Bouton à 3 points - éloigné du cercle */}
+          <div 
+            className="absolute -top-1 -right-1 sm:-top-2 sm:-right-2"
+            ref={isMenuOpen ? menuRef : null}
+          >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenuId(isMenuOpen ? null : `barber-${barber.id}`);
+              }}
+              className="p-1.5 rounded-full bg-zinc-800 hover:bg-zinc-700 transition-colors shadow-lg border border-zinc-700"
+            >
+              <MoreHorizontal className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-zinc-400" />
+            </button>
+            
+            {/* Menu des actions */}
+            {isMenuOpen && (
+              <div className="absolute top-full right-0 mt-2 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[100px]">
+                <button
+                  onClick={() => {
+                    openEditModal(barber);
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Edit2 className="w-3 h-3" /> Modifier
+                </button>
+                <button
+                  onClick={() => {
+                    handleDeleteBarber(barber.id, barber.photo, barber.name);
+                  }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Trash2 className="w-3 h-3" /> Supprimer
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+        
         <span
           className={`block text-sm font-medium ${
-            selectedBarberName === barber.name ? 'text-green-400' : 'text-gray-300'
+            isSelected ? 'text-green-400' : 'text-gray-300'
           }`}
         >
           {barber.name}
         </span>
-        
-        <div className={`absolute -top-2 -right-2 ${!isTouchDevice ? 'opacity-0 group-hover:opacity-100' : ''}`}>
-          <ActionButtons
-            onEdit={() => openEditModal(barber)}
-            onDelete={() => handleDeleteBarber(barber.id, barber.photo, barber.name)}
-            isActive={isActive}
-            isTouchDevice={isTouchDevice}
-          />
-        </div>
       </div>
     );
   };
@@ -543,7 +484,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         </div>
       )}
 
-      {/* Modal d'ajout modernisé */}
+      {/* Modal d'ajout */}
       {adding && (
         <ModalPortal onClose={() => setAdding(false)}>
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">
@@ -607,7 +548,7 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         </ModalPortal>
       )}
 
-      {/* Modal d'édition modernisé */}
+      {/* Modal d'édition */}
       {editing && (
         <ModalPortal onClose={() => setEditing(null)}>
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">

@@ -1,7 +1,6 @@
 // src/components/ServiceSelector.tsx
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Scissors, Sparkles, Baby, X, Printer, Box, Plus, Trash2, Edit2, AlertCircle, MoreHorizontal } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { Scissors, Sparkles, Baby, X, Printer, Box, Plus, Trash2, Edit2, AlertCircle, MoreHorizontal, Check } from 'lucide-react';import { supabase } from '../lib/supabase';
 import { BarberManager } from './BarberManager';
 import type { AuthUser } from './Clientapp';
 
@@ -667,7 +666,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
             />
           </div>
 
-         {/* Produits */}
+        {/* Produits */}
 <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
   <div className="flex justify-between items-center mb-3">
     <h4 className="text-white font-bold">Produits</h4>
@@ -679,60 +678,79 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     </button>
   </div>
   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-    {productOptions.map((p) => (
-      <div key={p.id} className="relative bg-zinc-800 rounded-lg p-3">
-        {/* Bouton à 3 points - en haut à droite */}
-        <div className="absolute top-2 right-2">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setActiveMenuId(activeMenuId === `product-${p.id}` ? null : `product-${p.id}`);
-            }}
-            className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+    {productOptions.map((p) => {
+      const isSelected = selectedProducts.includes(p.name);
+      const isMenuOpen = activeMenuId === `product-${p.id}`;
+      
+      return (
+        <div 
+          key={p.id} 
+          className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+            isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+          }`}
+          onClick={() => toggleItem(p.name, selectedProducts, setSelectedProducts)}
+        >
+          {/* Bouton à 3 points */}
+          <div 
+            className="absolute top-2 right-2"
+            onClick={(e) => e.stopPropagation()}
           >
-            <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-          </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenuId(isMenuOpen ? null : `product-${p.id}`);
+              }}
+              className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+            >
+              <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+            </button>
+            
+            {isMenuOpen && (
+              <div 
+                className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={() => {
+                    setEditModal({ item: p, type: 'product' });
+                    setActiveMenuId(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Edit2 className="w-3 h-3" /> Modifier
+                </button>
+                <button
+                  onClick={() => {
+                    removeProduct(p.id!, p.name);
+                    setActiveMenuId(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Trash2 className="w-3 h-3" /> Supprimer
+                </button>
+              </div>
+            )}
+          </div>
           
-          {/* Menu des actions */}
-          {activeMenuId === `product-${p.id}` && (
-            <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]">
-              <button
-                onClick={() => {
-                  setEditModal({ item: p, type: 'product' });
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Edit2 className="w-3 h-3" /> Modifier
-              </button>
-              <button
-                onClick={() => {
-                  removeProduct(p.id!, p.name);
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Trash2 className="w-3 h-3" /> Supprimer
-              </button>
+          {/* Nom du produit */}
+          <div className="pr-6 mb-2">
+            <span className="text-white text-sm font-medium block break-all">{p.name}</span>
+          </div>
+          
+          {/* Prix et case à cocher - Case noire visible */}
+          <div className="flex justify-between items-center">
+            <span className="text-zinc-400 text-sm">{formatCFA(p.price)}</span>
+            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+              isSelected 
+                ? 'bg-black border-black' 
+                : 'bg-zinc-700 border-zinc-500'
+            }`}>
+              {isSelected && <Check className="w-3 h-3 text-white" />}
             </div>
-          )}
+          </div>
         </div>
-        
-        {/* Nom du produit */}
-        <div className="pr-6 mb-2">
-          <span className="text-white text-sm font-medium block break-all">{p.name}</span>
-        </div>
-        
-        {/* Prix et case à cocher en dessous */}
-        <label className="flex justify-between items-center cursor-pointer">
-          <span className="text-zinc-400 text-sm">{formatCFA(p.price)}</span>
-          <input type="checkbox" 
-            checked={selectedProducts.includes(p.name)}
-            onChange={() => toggleItem(p.name, selectedProducts, setSelectedProducts)}
-            className="w-5 h-5 accent-white" />
-        </label>
-      </div>
-    ))}
+      );
+    })}
   </div>
 </div>
 
@@ -748,60 +766,79 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     </button>
   </div>
   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-    {soinOptions.map((s) => (
-      <div key={s.id} className="relative bg-zinc-800 rounded-lg p-3">
-        {/* Bouton à 3 points - en haut à droite */}
-        <div className="absolute top-2 right-2">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setActiveMenuId(activeMenuId === `soin-${s.id}` ? null : `soin-${s.id}`);
-            }}
-            className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+    {soinOptions.map((s) => {
+      const isSelected = selectedSoins.includes(s.name);
+      const isMenuOpen = activeMenuId === `soin-${s.id}`;
+      
+      return (
+        <div 
+          key={s.id} 
+          className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+            isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+          }`}
+          onClick={() => toggleItem(s.name, selectedSoins, setSelectedSoins)}
+        >
+          {/* Bouton à 3 points */}
+          <div 
+            className="absolute top-2 right-2"
+            onClick={(e) => e.stopPropagation()}
           >
-            <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-          </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenuId(isMenuOpen ? null : `soin-${s.id}`);
+              }}
+              className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+            >
+              <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+            </button>
+            
+            {isMenuOpen && (
+              <div 
+                className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={() => {
+                    setEditModal({ item: s, type: 'soin' });
+                    setActiveMenuId(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Edit2 className="w-3 h-3" /> Modifier
+                </button>
+                <button
+                  onClick={() => {
+                    removeSoin(s.id!, s.name);
+                    setActiveMenuId(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Trash2 className="w-3 h-3" /> Supprimer
+                </button>
+              </div>
+            )}
+          </div>
           
-          {/* Menu des actions */}
-          {activeMenuId === `soin-${s.id}` && (
-            <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]">
-              <button
-                onClick={() => {
-                  setEditModal({ item: s, type: 'soin' });
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Edit2 className="w-3 h-3" /> Modifier
-              </button>
-              <button
-                onClick={() => {
-                  removeSoin(s.id!, s.name);
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Trash2 className="w-3 h-3" /> Supprimer
-              </button>
+          {/* Nom du soin */}
+          <div className="pr-6 mb-2">
+            <span className="text-white text-sm font-medium block break-all">{s.name}</span>
+          </div>
+          
+          {/* Prix et case à cocher - Case noire visible */}
+          <div className="flex justify-between items-center">
+            <span className="text-zinc-400 text-sm">{formatCFA(s.price)}</span>
+            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+              isSelected 
+                ? 'bg-black border-black' 
+                : 'bg-zinc-700 border-zinc-500'
+            }`}>
+              {isSelected && <Check className="w-3 h-3 text-white" />}
             </div>
-          )}
+          </div>
         </div>
-        
-        {/* Nom du soin */}
-        <div className="pr-6 mb-2">
-          <span className="text-white text-sm font-medium block break-all">{s.name}</span>
-        </div>
-        
-        {/* Prix et case à cocher en dessous */}
-        <label className="flex justify-between items-center cursor-pointer">
-          <span className="text-zinc-400 text-sm">{formatCFA(s.price)}</span>
-          <input type="checkbox" 
-            checked={selectedSoins.includes(s.name)}
-            onChange={() => toggleItem(s.name, selectedSoins, setSelectedSoins)}
-            className="w-5 h-5 accent-white" />
-        </label>
-      </div>
-    ))}
+      );
+    })}
   </div>
 </div>
 
@@ -820,60 +857,79 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     {teintureSuppOptions.length === 0 && (
       <p className="text-zinc-500 text-sm mb-3">Aucune option teinture</p>
     )}
-    {teintureSuppOptions.map((t) => (
-      <div key={t.id} className="relative bg-zinc-800 rounded-lg p-3">
-        {/* Bouton à 3 points - en haut à droite */}
-        <div className="absolute top-2 right-2">
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setActiveMenuId(activeMenuId === `teinture-${t.id}` ? null : `teinture-${t.id}`);
-            }}
-            className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+    {teintureSuppOptions.map((t) => {
+      const isSelected = withTeinture;
+      const isMenuOpen = activeMenuId === `teinture-${t.id}`;
+      
+      return (
+        <div 
+          key={t.id} 
+          className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+            isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+          }`}
+          onClick={() => setWithTeinture(!withTeinture)}
+        >
+          {/* Bouton à 3 points */}
+          <div 
+            className="absolute top-2 right-2"
+            onClick={(e) => e.stopPropagation()}
           >
-            <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-          </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenuId(isMenuOpen ? null : `teinture-${t.id}`);
+              }}
+              className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+            >
+              <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+            </button>
+            
+            {isMenuOpen && (
+              <div 
+                className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={() => {
+                    setEditModal({ item: t, type: 'teinture' });
+                    setActiveMenuId(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Edit2 className="w-3 h-3" /> Modifier
+                </button>
+                <button
+                  onClick={() => {
+                    removeTeintureSupp(t.id!, t.name);
+                    setActiveMenuId(null);
+                  }}
+                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                >
+                  <Trash2 className="w-3 h-3" /> Supprimer
+                </button>
+              </div>
+            )}
+          </div>
           
-          {/* Menu des actions */}
-          {activeMenuId === `teinture-${t.id}` && (
-            <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]">
-              <button
-                onClick={() => {
-                  setEditModal({ item: t, type: 'teinture' });
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Edit2 className="w-3 h-3" /> Modifier
-              </button>
-              <button
-                onClick={() => {
-                  removeTeintureSupp(t.id!, t.name);
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Trash2 className="w-3 h-3" /> Supprimer
-              </button>
+          {/* Nom de la teinture */}
+          <div className="pr-6 mb-2">
+            <span className="text-white text-sm font-medium block break-all">+ {t.name}</span>
+          </div>
+          
+          {/* Prix et case à cocher - Case noire visible */}
+          <div className="flex justify-between items-center">
+            <span className="text-zinc-400 text-sm">{formatCFA(t.price)}</span>
+            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+              isSelected 
+                ? 'bg-black border-black' 
+                : 'bg-zinc-700 border-zinc-500'
+            }`}>
+              {isSelected && <Check className="w-3 h-3 text-white" />}
             </div>
-          )}
+          </div>
         </div>
-        
-        {/* Nom de la teinture */}
-        <div className="pr-6 mb-2">
-          <span className="text-white text-sm font-medium block break-all">+ {t.name}</span>
-        </div>
-        
-        {/* Prix et case à cocher en dessous */}
-        <label className="flex justify-between items-center cursor-pointer">
-          <span className="text-zinc-400 text-sm">{formatCFA(t.price)}</span>
-          <input type="checkbox" 
-            checked={withTeinture}
-            onChange={(e) => setWithTeinture(e.target.checked)}
-            className="w-5 h-5 accent-white" />
-        </label>
-      </div>
-    ))}
+      );
+    })}
   </div>
 )}
 
