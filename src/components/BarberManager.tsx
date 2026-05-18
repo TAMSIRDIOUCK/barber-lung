@@ -1,3 +1,4 @@
+// src/components/BarberManager.tsx
 import { useState, useEffect, useRef, ChangeEvent } from 'react';
 import { supabase } from '../lib/supabase';
 import { Plus, Trash2, RotateCcw, X, AlertCircle, Edit2, Camera, Upload, MoreHorizontal } from 'lucide-react';
@@ -18,7 +19,7 @@ interface DeletedBarber {
 
 interface BarberManagerProps {
   userId: string;
-  onSelect: (barber: Barber) => void;
+  onSelect: (barber: Barber | null) => void;
   selectedBarberName?: string | null;
 }
 
@@ -35,7 +36,6 @@ function ModalPortal({ children, onClose }: { children: React.ReactNode; onClose
     <div 
       className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
       onClick={onClose}
-      style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 }}
     >
       <div onClick={(e) => e.stopPropagation()}>
         {children}
@@ -44,11 +44,10 @@ function ModalPortal({ children, onClose }: { children: React.ReactNode; onClose
   );
 }
 
-// Composant pour l'upload de photo moderne
+// Composant pour l'upload de photo
 function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: string | null; onPhotoChange: (file: File | null) => void; isEditing?: boolean }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(photo);
-  const [previewFile, setPreviewFile] = useState<string | null>(null);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -57,7 +56,6 @@ function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: strin
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreview(reader.result as string);
-        setPreviewFile(reader.result as string);
       };
       reader.readAsDataURL(file);
     }
@@ -67,27 +65,14 @@ function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: strin
     fileInputRef.current?.click();
   };
 
-  const handleRemove = () => {
-    onPhotoChange(null);
-    setPreview(null);
-    setPreviewFile(null);
-  };
-
-  const displayImage = previewFile || preview || photo;
+  const displayImage = preview || photo;
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <div 
-        onClick={handleClick}
-        className="relative cursor-pointer group"
-      >
+      <div onClick={handleClick} className="relative cursor-pointer group">
         {displayImage ? (
           <div className="relative">
-            <img
-              src={displayImage}
-              alt="Photo"
-              className="w-28 h-28 rounded-full object-cover border-4 border-zinc-600 group-hover:border-white transition-all"
-            />
+            <img src={displayImage} alt="Photo" className="w-28 h-28 rounded-full object-cover border-4 border-zinc-600 group-hover:border-white transition-all" />
             <div className="absolute inset-0 bg-black/50 rounded-full opacity-0 group-hover:opacity-100 transition-all flex items-center justify-center">
               <Camera className="w-8 h-8 text-white" />
             </div>
@@ -99,18 +84,9 @@ function PhotoUpload({ photo, onPhotoChange, isEditing = false }: { photo: strin
           </div>
         )}
       </div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleFileChange}
-        className="hidden"
-      />
+      <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
       {isEditing && displayImage && (
-        <button
-          onClick={handleRemove}
-          className="text-xs text-red-400 hover:text-red-300 transition"
-        >
+        <button onClick={() => { onPhotoChange(null); setPreview(null); }} className="text-xs text-red-400 hover:text-red-300 transition">
           Supprimer la photo
         </button>
       )}
@@ -135,7 +111,6 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
   const mounted = useRef(true);
   const menuRef = useRef<HTMLDivElement>(null);
   
-  // Fermer le menu au clic ailleurs
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
@@ -335,7 +310,6 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
 
     return (
       <div className="relative text-center group">
-        {/* Cercle vert - complètement invisible si non sélectionné */}
         <div className="relative inline-block">
           <div
             onClick={() => handleSelectBarber(barber)}
@@ -345,18 +319,10 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
                 : 'hover:scale-105'
             }`}
           >
-            <img
-              src={barber.photo}
-              alt={barber.name}
-              className="w-full h-full rounded-full object-cover border-2 border-zinc-700"
-            />
+            <img src={barber.photo} alt={barber.name} className="w-full h-full rounded-full object-cover border-2 border-zinc-700" />
           </div>
           
-          {/* Bouton à 3 points - éloigné du cercle */}
-          <div 
-            className="absolute -top-1 -right-1 sm:-top-2 sm:-right-2"
-            ref={isMenuOpen ? menuRef : null}
-          >
+          <div className="absolute -top-1 -right-1 sm:-top-2 sm:-right-2" ref={isMenuOpen ? menuRef : null}>
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -367,42 +333,25 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
               <MoreHorizontal className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-zinc-400" />
             </button>
             
-            {/* Menu des actions */}
             {isMenuOpen && (
               <div className="absolute top-full right-0 mt-2 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[100px]">
-                <button
-                  onClick={() => {
-                    openEditModal(barber);
-                  }}
-                  className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
+                <button onClick={() => { openEditModal(barber); }} className="w-full text-left px-3 py-1.5 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
                   <Edit2 className="w-3 h-3" /> Modifier
                 </button>
-                <button
-                  onClick={() => {
-                    handleDeleteBarber(barber.id, barber.photo, barber.name);
-                  }}
-                  className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
+                <button onClick={() => { handleDeleteBarber(barber.id, barber.photo, barber.name); }} className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
                   <Trash2 className="w-3 h-3" /> Supprimer
                 </button>
               </div>
             )}
           </div>
         </div>
-        
-        <span
-          className={`block text-sm font-medium ${
-            isSelected ? 'text-green-400' : 'text-gray-300'
-          }`}
-        >
+        <span className={`block text-sm font-medium ${isSelected ? 'text-green-400' : 'text-gray-300'}`}>
           {barber.name}
         </span>
       </div>
     );
   };
 
-  // Gestionnaire pour l'ajout de photo dans le modal d'ajout
   const handleAddPhotoChange = (file: File | null) => {
     setNewFile(file);
     if (file) {
@@ -416,7 +365,6 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
     }
   };
 
-  // Gestionnaire pour l'ajout de photo dans le modal d'édition
   const handleEditPhotoChange = (file: File | null) => {
     setNewFile(file);
     if (file) {
@@ -436,45 +384,26 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         {barbers.map((barber) => (
           <BarberItem key={barber.id} barber={barber} />
         ))}
-
-        <div
-          onClick={() => setAdding(true)}
-          className="flex flex-col justify-center items-center w-20 h-20 sm:w-24 sm:h-24 border-2 border-dashed border-zinc-600 rounded-full cursor-pointer text-gray-400 hover:text-white hover:border-white hover:scale-105 transition-all"
-        >
+        <div onClick={() => setAdding(true)} className="flex flex-col justify-center items-center w-20 h-20 sm:w-24 sm:h-24 border-2 border-dashed border-zinc-600 rounded-full cursor-pointer text-gray-400 hover:text-white hover:border-white hover:scale-105 transition-all">
           <Plus className="w-6 h-6 sm:w-8 sm:h-8 mb-1" />
           <span className="text-xs">Ajouter</span>
         </div>
       </div>
 
-      {/* Section coiffeurs supprimés */}
       {deletedBarbers.length > 0 && (
         <div className="border-t border-zinc-800 pt-4">
-          <button
-            onClick={() => setShowDeleted(!showDeleted)}
-            className="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-2 mb-3"
-          >
+          <button onClick={() => setShowDeleted(!showDeleted)} className="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-2 mb-3">
             {showDeleted ? '▼' : '▶'} Coiffeurs supprimés ({deletedBarbers.length})
           </button>
-          
           {showDeleted && (
             <div className="flex flex-wrap gap-4">
               {deletedBarbers.map((deleted) => (
                 <div key={deleted.id} className="relative text-center group">
                   <div className="w-16 h-16 sm:w-20 sm:h-20 mx-auto rounded-full mb-2">
-                    <img
-                      src={deleted.photo}
-                      alt={deleted.name}
-                      className="w-full h-full rounded-full object-cover border-2 border-zinc-700 opacity-60"
-                    />
+                    <img src={deleted.photo} alt={deleted.name} className="w-full h-full rounded-full object-cover border-2 border-zinc-700 opacity-60" />
                   </div>
-                  <span className="block text-sm text-gray-500">
-                    {deleted.name}
-                  </span>
-                  <button
-                    onClick={() => handleRestoreBarber(deleted)}
-                    className="absolute -top-2 -right-2 bg-green-500 hover:bg-green-600 rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-all"
-                    title="Restaurer"
-                  >
+                  <span className="block text-sm text-gray-500">{deleted.name}</span>
+                  <button onClick={() => handleRestoreBarber(deleted)} className="absolute -top-2 -right-2 bg-green-500 hover:bg-green-600 rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-all">
                     <RotateCcw className="w-3 h-3 text-white" />
                   </button>
                 </div>
@@ -484,129 +413,50 @@ export function BarberManager({ userId, onSelect, selectedBarberName }: BarberMa
         </div>
       )}
 
-      {/* Modal d'ajout */}
       {adding && (
         <ModalPortal onClose={() => setAdding(false)}>
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-bold text-white">Ajouter un coiffeur</h3>
-              <button onClick={() => setAdding(false)} className="text-gray-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setAdding(false)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-
             <div className="space-y-5">
-              <PhotoUpload 
-                photo={addPhotoPreview}
-                onPhotoChange={handleAddPhotoChange}
-              />
-
+              <PhotoUpload photo={addPhotoPreview} onPhotoChange={handleAddPhotoChange} />
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Nom du coiffeur <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: Jean Dupont"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
-                  autoFocus
-                />
+                <label className="block text-sm font-medium text-gray-300 mb-2">Nom du coiffeur <span className="text-red-400">*</span></label>
+                <input type="text" placeholder="Ex: Jean Dupont" value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors" autoFocus />
               </div>
-
-              {validationError && (
-                <div className="flex items-center gap-2 text-red-400 text-sm bg-red-950/30 p-3 rounded-xl">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  <span>{validationError}</span>
-                </div>
-              )}
-
+              {validationError && (<div className="flex items-center gap-2 text-red-400 text-sm bg-red-950/30 p-3 rounded-xl"><AlertCircle className="w-4 h-4" /><span>{validationError}</span></div>)}
               <div className="flex gap-3 pt-4">
-                <button
-                  onClick={handleAddBarber}
-                  disabled={isUploading || !newFile || !newName.trim()}
-                  className="flex-1 bg-white text-black py-3 rounded-xl font-semibold hover:bg-gray-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
+                <button onClick={handleAddBarber} disabled={isUploading || !newFile || !newName.trim()} className="flex-1 bg-white text-black py-3 rounded-xl font-semibold hover:bg-gray-200 transition disabled:opacity-50">
                   {isUploading ? 'Ajout en cours...' : 'Ajouter'}
                 </button>
-                <button
-                  onClick={() => {
-                    setAdding(false);
-                    setNewName('');
-                    setNewFile(null);
-                    setAddPhotoPreview(null);
-                    setValidationError('');
-                  }}
-                  className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition"
-                >
-                  Annuler
-                </button>
+                <button onClick={() => { setAdding(false); setNewName(''); setNewFile(null); setAddPhotoPreview(null); setValidationError(''); }} className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition">Annuler</button>
               </div>
             </div>
           </div>
         </ModalPortal>
       )}
 
-      {/* Modal d'édition */}
       {editing && (
         <ModalPortal onClose={() => setEditing(null)}>
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-bold text-white">Modifier le coiffeur</h3>
-              <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-
             <div className="space-y-5">
-              <PhotoUpload 
-                photo={editPhotoPreview || editing.photo}
-                onPhotoChange={handleEditPhotoChange}
-                isEditing={true}
-              />
-
+              <PhotoUpload photo={editPhotoPreview || editing.photo} onPhotoChange={handleEditPhotoChange} isEditing={true} />
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  Nom du coiffeur <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: Jean Dupont"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors"
-                  autoFocus
-                />
+                <label className="block text-sm font-medium text-gray-300 mb-2">Nom du coiffeur <span className="text-red-400">*</span></label>
+                <input type="text" placeholder="Ex: Jean Dupont" value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white transition-colors" autoFocus />
               </div>
-
-              {validationError && (
-                <div className="flex items-center gap-2 text-red-400 text-sm bg-red-950/30 p-3 rounded-xl">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                  <span>{validationError}</span>
-                </div>
-              )}
-
+              {validationError && (<div className="flex items-center gap-2 text-red-400 text-sm bg-red-950/30 p-3 rounded-xl"><AlertCircle className="w-4 h-4" /><span>{validationError}</span></div>)}
               <div className="flex gap-3 pt-4">
-                <button
-                  onClick={handleEditBarber}
-                  disabled={isUploading || !newName.trim()}
-                  className="flex-1 bg-white text-black py-3 rounded-xl font-semibold hover:bg-gray-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                >
+                <button onClick={handleEditBarber} disabled={isUploading || !newName.trim()} className="flex-1 bg-white text-black py-3 rounded-xl font-semibold hover:bg-gray-200 transition disabled:opacity-50">
                   {isUploading ? 'Modification en cours...' : 'Modifier'}
                 </button>
-                <button
-                  onClick={() => {
-                    setEditing(null);
-                    setNewName('');
-                    setNewFile(null);
-                    setEditPhotoPreview(null);
-                    setValidationError('');
-                  }}
-                  className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition"
-                >
-                  Annuler
-                </button>
+                <button onClick={() => { setEditing(null); setNewName(''); setNewFile(null); setEditPhotoPreview(null); setValidationError(''); }} className="flex-1 bg-zinc-800 text-white py-3 rounded-xl font-semibold hover:bg-zinc-700 transition">Annuler</button>
               </div>
             </div>
           </div>

@@ -1,35 +1,27 @@
-import { useState } from 'react';
-import { Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X, Share2, Check } from 'lucide-react';
+// src/App.tsx
+import { useState, useEffect } from 'react';
+import { Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X, Share2, Check, Shield } from 'lucide-react';
 import { ServiceSelector } from './components/ServiceSelector';
 import TransactionHistory from './components/TransactionHistory';
 import RevenuePage from './components/RevenuePage';
 import ExpensesPage from './components/ExpensesPage';
+import { AdminPanel } from './components/AdminPanel';
+import { supabase } from './lib/supabase';
 import type { AuthUser } from './components/Clientapp';
 
-type Page = 'home' | 'revenue' | 'expenses';
-export interface ServiceOption { withTeinture?: boolean; withSoin?: boolean; }
+type Page = 'home' | 'revenue' | 'expenses' | 'admin';
 
 interface AppProps {
   authUser: AuthUser;
   onLogout: () => void;
 }
 
-// ── Logos paiement ──────────────────────────────────────────────────────────
-
 function WaveLogo() {
   return (
     <svg width="52" height="22" viewBox="0 0 52 22" fill="none" xmlns="http://www.w3.org/2000/svg">
       <rect width="52" height="22" rx="4" fill="#1A73E8"/>
-      <text
-        x="26" y="15"
-        textAnchor="middle"
-        fontFamily="'Arial Rounded MT Bold', 'Arial Black', sans-serif"
-        fontWeight="800" fontSize="12" fill="#FFFFFF" letterSpacing="0.5"
-      >wave</text>
-      <path
-        d="M10 18 Q13 16 16 18 Q19 20 22 18 Q25 16 28 18 Q31 20 34 18 Q37 16 40 18 Q43 20 46 18"
-        stroke="#FFFFFF" strokeWidth="1.2" strokeLinecap="round" fill="none" opacity="0.5"
-      />
+      <text x="26" y="15" textAnchor="middle" fontFamily="'Arial Rounded MT Bold', 'Arial Black', sans-serif" fontWeight="800" fontSize="12" fill="#FFFFFF" letterSpacing="0.5">wave</text>
+      <path d="M10 18 Q13 16 16 18 Q19 20 22 18 Q25 16 28 18 Q31 20 34 18 Q37 16 40 18 Q43 20 46 18" stroke="#FFFFFF" strokeWidth="1.2" strokeLinecap="round" fill="none" opacity="0.5"/>
     </svg>
   );
 }
@@ -40,14 +32,8 @@ function OrangeMoneyLogo() {
       <rect width="72" height="22" rx="4" fill="#FF6600"/>
       <circle cx="11" cy="11" r="7" fill="none" stroke="#FFFFFF" strokeWidth="1.8"/>
       <circle cx="11" cy="11" r="3.5" fill="#FFFFFF" opacity="0.4"/>
-      <text x="44" y="9" textAnchor="middle"
-        fontFamily="'Arial Black', 'Arial', sans-serif"
-        fontWeight="900" fontSize="6.5" fill="#FFFFFF" letterSpacing="0.3"
-      >ORANGE</text>
-      <text x="44" y="17" textAnchor="middle"
-        fontFamily="'Arial Black', 'Arial', sans-serif"
-        fontWeight="900" fontSize="6.5" fill="#FFFFFF" letterSpacing="0.3"
-      >MONEY</text>
+      <text x="44" y="9" textAnchor="middle" fontFamily="'Arial Black', 'Arial', sans-serif" fontWeight="900" fontSize="6.5" fill="#FFFFFF" letterSpacing="0.3">ORANGE</text>
+      <text x="44" y="17" textAnchor="middle" fontFamily="'Arial Black', 'Arial', sans-serif" fontWeight="900" fontSize="6.5" fill="#FFFFFF" letterSpacing="0.3">MONEY</text>
     </svg>
   );
 }
@@ -56,17 +42,11 @@ function PaymentBadges() {
   return (
     <div className="flex items-center justify-center gap-2 mt-2">
       <span className="text-zinc-600 text-xs">Paiement :</span>
-      <div className="bg-zinc-800 rounded-lg px-2 py-1 border border-zinc-700">
-        <WaveLogo />
-      </div>
-      <div className="bg-zinc-800 rounded-lg px-2 py-1 border border-zinc-700">
-        <OrangeMoneyLogo />
-      </div>
+      <div className="bg-zinc-800 rounded-lg px-2 py-1 border border-zinc-700"><WaveLogo /></div>
+      <div className="bg-zinc-800 rounded-lg px-2 py-1 border border-zinc-700"><OrangeMoneyLogo /></div>
     </div>
   );
 }
-
-// ───────────────────────────────────────────────────────────────────────────
 
 function App({ authUser, onLogout }: AppProps) {
   const [currentPage, setCurrentPage] = useState<Page>('home');
@@ -74,6 +54,29 @@ function App({ authUser, onLogout }: AppProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [salonName] = useState<string>('LE COUPE');
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [checkingAdmin, setCheckingAdmin] = useState(true);
+
+  useEffect(() => {
+    const checkAdminRole = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles_v3')
+          .select('role')
+          .eq('id', authUser.id)
+          .single();
+
+        if (!error && data) {
+          setIsAdmin(data.role === 'admin');
+        }
+      } catch (err) {
+        console.error('Erreur vérification rôle admin:', err);
+      } finally {
+        setCheckingAdmin(false);
+      }
+    };
+    checkAdminRole();
+  }, [authUser.id]);
 
   const handleServiceConfirm = async () => setRefreshTrigger(prev => prev + 1);
   const handleExpenseAdded = () => setRefreshTrigger(prev => prev + 1);
@@ -96,25 +99,31 @@ function App({ authUser, onLogout }: AppProps) {
     } catch {}
   };
 
-  const pages = [
-    { id: 'home' as Page, label: 'Services', Icon: Scissors },
-    { id: 'revenue' as Page, label: 'Revenus', Icon: TrendingUp },
-    { id: 'expenses' as Page, label: 'Dépenses', Icon: DollarSign },
+  const userPages: { id: Page; label: string; Icon: any }[] = [
+    { id: 'home', label: 'Services', Icon: Scissors },
+    { id: 'revenue', label: 'Revenus', Icon: TrendingUp },
+    { id: 'expenses', label: 'Dépenses', Icon: DollarSign },
   ];
+
+  const pages = isAdmin 
+    ? [...userPages, { id: 'admin' as Page, label: 'Admin', Icon: Shield }]
+    : userPages;
 
   const expiryDate = new Date(authUser.subscription.expires_at).toLocaleDateString('fr-FR', {
     day: '2-digit', month: 'short', year: 'numeric'
   });
 
-  return (
-    /*
-     * FIX 1 : overflow-x-hidden empêche le débordement horizontal.
-     * FIX 2 : min-h-[100dvh] utilise la hauteur dynamique du viewport
-     *         (prend en compte la barre du navigateur sur mobile).
-     */
-    <div className="min-h-[100dvh] bg-zinc-950 overflow-x-hidden">
+  if (checkingAdmin) {
+    return (
+      <div className="min-h-[100dvh] bg-zinc-950 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
+      </div>
+    );
+  }
 
-      {/* ── HEADER DESKTOP ── */}
+  return (
+    <div className="min-h-[100dvh] bg-zinc-950 overflow-x-hidden">
+      {/* HEADER DESKTOP */}
       <header className="hidden md:block bg-black border-b border-zinc-800 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
@@ -124,7 +133,6 @@ function App({ authUser, onLogout }: AppProps) {
               </div>
               <span className="text-white font-bold tracking-widest text-sm uppercase">LE COUPE</span>
             </div>
-
             <nav className="flex items-center gap-1">
               {pages.map(({ id, label, Icon }) => (
                 <button key={id} onClick={() => navigate(id)}
@@ -135,10 +143,8 @@ function App({ authUser, onLogout }: AppProps) {
                 </button>
               ))}
             </nav>
-
             <div className="flex items-center gap-3">
-              <button onClick={handleShare}
-                className="flex items-center gap-1.5 text-zinc-400 hover:text-white transition text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700">
+              <button onClick={handleShare} className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700">
                 {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5" />}
                 <span className="text-xs">{copied ? 'Copié !' : 'Partager'}</span>
               </button>
@@ -153,13 +159,9 @@ function App({ authUser, onLogout }: AppProps) {
                     {(authUser.fullName || authUser.email)[0].toUpperCase()}
                   </span>
                 </div>
-                <span className="text-zinc-400 text-sm max-w-[120px] truncate">
-                  {authUser.fullName || authUser.email}
-                </span>
+                <span className="text-zinc-400 text-sm truncate max-w-[120px]">{authUser.fullName || authUser.email}</span>
               </div>
-              <button onClick={onLogout}
-                className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800"
-                title="Déconnexion">
+              <button onClick={onLogout} className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800">
                 <LogOut className="w-4 h-4" />
               </button>
             </div>
@@ -167,12 +169,8 @@ function App({ authUser, onLogout }: AppProps) {
         </div>
       </header>
 
-      {/* ── HEADER MOBILE ── */}
+      {/* HEADER MOBILE */}
       <header className="md:hidden bg-black border-b border-zinc-800 sticky top-0 z-40">
-        {/*
-         * FIX 3 : w-full + max-w-full garantit que le header ne dépasse jamais
-         *         la largeur de l'écran.
-         */}
         <div className="flex items-center justify-between px-4 h-14 w-full max-w-full">
           <div className="flex items-center gap-2 min-w-0">
             <div className="bg-white w-7 h-7 rounded-lg flex items-center justify-center shrink-0">
@@ -185,13 +183,11 @@ function App({ authUser, onLogout }: AppProps) {
               <Crown className="w-3 h-3 text-yellow-400" />
               <span className="text-white text-xs font-semibold">{authUser.subscription.plan_name}</span>
             </div>
-            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="text-zinc-400 hover:text-white p-1.5">
+            <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-zinc-400 hover:text-white p-1.5">
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
           </div>
         </div>
-
         {mobileMenuOpen && (
           <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full">
             {pages.map(({ id, label, Icon }) => (
@@ -203,39 +199,27 @@ function App({ authUser, onLogout }: AppProps) {
               </button>
             ))}
             <div className="pt-2 border-t border-zinc-800 mt-2 space-y-2">
-              <button onClick={handleShare}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition">
+              <button onClick={handleShare} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition">
                 {copied ? <Check className="w-4 h-4 text-green-400" /> : <Share2 className="w-4 h-4" />}
                 {copied ? 'Lien copié !' : "Partager l'application"}
               </button>
               <div className="flex items-center justify-between px-3 py-2">
                 <div className="min-w-0 mr-2">
-                  {/* FIX 4 : truncate pour que l'email long ne casse pas le layout */}
                   <p className="text-white text-sm font-medium truncate">{authUser.fullName || authUser.email}</p>
                   <p className="text-zinc-500 text-xs">Expire le {expiryDate}</p>
                 </div>
-                <button onClick={onLogout}
-                  className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm transition shrink-0">
+                <button onClick={onLogout} className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm transition shrink-0">
                   <LogOut className="w-4 h-4" /> Déconnexion
                 </button>
               </div>
-              <div className="px-3 pb-1">
-                <PaymentBadges />
-              </div>
+              <div className="px-3 pb-1"><PaymentBadges /></div>
             </div>
           </div>
         )}
       </header>
 
-      {/* ── MAIN ── */}
-      {/*
-       * FIX 5 : pb-[calc(4rem+env(safe-area-inset-bottom))] donne de l'espace
-       *         en bas pour la bottom nav + le safe-area des iPhones (notch/home bar).
-       *         w-full + overflow-x-hidden évite tout débordement horizontal.
-       */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6
-                       pb-[calc(4rem+env(safe-area-inset-bottom))]
-                       md:pb-8 w-full overflow-x-hidden">
+      {/* MAIN */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
         {currentPage === 'home' && (
           <div className="space-y-8">
             <div className="text-center pt-2">
@@ -243,38 +227,24 @@ function App({ authUser, onLogout }: AppProps) {
               <p className="text-zinc-500 text-sm mt-1">Choisissez une catégorie pour commencer</p>
               <PaymentBadges />
             </div>
-            <ServiceSelector
-              userId={authUser.id}
-              salonName={salonName}
-              authUser={authUser}
-              onConfirm={handleServiceConfirm}
-            />
+            <ServiceSelector userId={authUser.id} salonName={salonName} authUser={authUser} onConfirm={handleServiceConfirm} />
             <TransactionHistory userId={authUser.id} refreshTrigger={refreshTrigger} />
           </div>
         )}
         {currentPage === 'revenue' && <RevenuePage userId={authUser.id} refreshTrigger={refreshTrigger} />}
         {currentPage === 'expenses' && <ExpensesPage userId={authUser.id} onExpenseAdded={handleExpenseAdded} />}
+        {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
       </main>
 
-      {/* ── BOTTOM NAV MOBILE ── */}
-      {/*
-       * FIX 6 : pb-[env(safe-area-inset-bottom)] gère la "home bar" des iPhones
-       *         pour que la nav ne soit pas collée au bord physique.
-       *         left-0 right-0 (au lieu de width:100%) évite tout débordement.
-       */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40
-                      bg-black border-t border-zinc-800
-                      pb-[env(safe-area-inset-bottom)]">
+      {/* BOTTOM NAV MOBILE */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-around px-2 py-2">
           {pages.map(({ id, label, Icon }) => (
-            <button key={id} onClick={() => navigate(id)}
-              className="flex flex-col items-center gap-1 px-5 py-1">
+            <button key={id} onClick={() => navigate(id)} className="flex flex-col items-center gap-1 px-5 py-1">
               <div className={`p-1.5 rounded-xl transition-all ${currentPage === id ? 'bg-white' : ''}`}>
                 <Icon className={`w-5 h-5 ${currentPage === id ? 'text-black' : 'text-zinc-600'}`} />
               </div>
-              <span className={`text-xs font-medium ${currentPage === id ? 'text-white' : 'text-zinc-600'}`}>
-                {label}
-              </span>
+              <span className={`text-xs font-medium ${currentPage === id ? 'text-white' : 'text-zinc-600'}`}>{label}</span>
             </button>
           ))}
         </div>
