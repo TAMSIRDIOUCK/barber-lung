@@ -51,26 +51,36 @@ interface AuthPageProps {
   onAuthSuccess?: () => void;
 }
 
-// ── URL de base FIABLE pour la redirection OAuth ──
-// Utilise d'abord VITE_APP_URL (à définir sur Vercel), puis le dev local, puis l'origin du navigateur.
 const getBaseUrl = (): string => {
-  // 1. Variable explicite (prioritaire, fiable partout)
   const explicitUrl = import.meta.env.VITE_APP_URL;
   if (explicitUrl) return explicitUrl.replace(/\/$/, '');
 
-  // 2. En développement local Vite
   if (import.meta.env.DEV) {
     return 'http://localhost:5173';
   }
 
-  // 3. En production : window.location.origin devrait être correct
   if (typeof window !== 'undefined' && window.location.origin && !window.location.origin.includes('chrome-error')) {
     return window.location.origin;
   }
 
-  // 4. Fallback (normalement jamais atteint – URL de ton site Vercel)
   console.warn('⚠️ Impossible de déterminer l’URL de base, utilisation de la valeur par défaut');
   return 'https://barber-lunge.vercel.app';
+};
+
+// Fonction pour valider le numéro de téléphone sénégalais
+const validatePhoneNumber = (phone: string): boolean => {
+  const cleanPhone = phone.replace(/\s/g, '');
+  const phoneRegex = /^(77|78|76|70|75)[0-9]{7}$/;
+  return phoneRegex.test(cleanPhone);
+};
+
+// Fonction pour formater le numéro de téléphone
+const formatPhoneNumber = (phone: string): string => {
+  const clean = phone.replace(/\s/g, '');
+  if (clean.length === 9) {
+    return `${clean.slice(0, 2)} ${clean.slice(2, 5)} ${clean.slice(5, 7)} ${clean.slice(7, 9)}`;
+  }
+  return phone;
 };
 
 export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
@@ -89,7 +99,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
   const [verifEmail, setVerifEmail]                   = useState('');
   const [isProcessingCallback, setIsProcessingCallback] = useState(false);
 
-  // Gérer le callback OAuth et la réinitialisation
   useEffect(() => {
     const handleCallback = async () => {
       const hash = window.location.hash;
@@ -121,7 +130,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     handleCallback();
   }, [onAuthSuccess]);
 
-  // Source de vérité UNIQUE pour la redirection : onAuthStateChange
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -193,7 +201,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     setError('');
     setLoading(true);
     try {
-      // Nettoyer l'URL des éventuels fragments résiduels
       if (window.location.hash || window.location.search.includes('code')) {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
@@ -251,10 +258,18 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
   const handleRegister = async () => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanName  = fullName.trim();
+    const cleanPhone = phone.trim();
 
     if (!cleanName)                   return setError('Nom du salon requis');
     if (!cleanEmail)                  return setError('Email requis');
     if (!cleanEmail.includes('@'))    return setError('Email invalide');
+    
+    // Validation du téléphone - OBLIGATOIRE
+    if (!cleanPhone)                  return setError('Numéro de téléphone requis');
+    if (!validatePhoneNumber(cleanPhone)) {
+      return setError('Numéro de téléphone invalide. Format attendu: 77 123 45 67 ou 771234567');
+    }
+    
     if (!password)                    return setError('Mot de passe requis');
     if (password.length < 6)          return setError('Mot de passe trop court (6 caractères minimum)');
     if (password !== confirmPassword) return setError('Les mots de passe ne correspondent pas');
@@ -268,7 +283,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
         email: cleanEmail,
         password,
         options: {
-          data: { full_name: cleanName, phone: phone.trim() },
+          data: { full_name: cleanName, phone: cleanPhone },
           emailRedirectTo: redirectUrl,
         },
       });
@@ -289,10 +304,10 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
       if (data.user && data.session) {
         console.log('✅ Inscription avec session immédiate');
-        await ensureProfile(data.user.id, cleanName, phone.trim(), cleanEmail);
+        await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail);
       } else if (data.user) {
         console.log('📧 Email de confirmation envoyé');
-        await ensureProfile(data.user.id, cleanName, phone.trim(), cleanEmail);
+        await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail);
         setVerifEmail(cleanEmail);
         setShowVerification(true);
         setSuccess(`Un email de confirmation a été envoyé à ${cleanEmail}. Vérifiez votre boîte mail.`);
@@ -500,7 +515,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                   <>
                     <div>
                       <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
-                        Nom du salon
+                        Nom du salon <span className="text-red-400">*</span>
                       </label>
                       <input
                         type="text"
@@ -512,21 +527,34 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                     </div>
                     <div>
                       <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
-                        Téléphone <span className="text-zinc-600 normal-case font-normal">(optionnel)</span>
+                        Téléphone <span className="text-red-400">*</span>
                       </label>
                       <input
                         type="tel"
                         value={phone}
                         onChange={(e) => setPhone(e.target.value)}
-                        placeholder="+221 77 000 00 00"
+                        onBlur={() => {
+                          if (phone.trim()) {
+                            const formatted = phone.replace(/\s/g, '');
+                            if (validatePhoneNumber(formatted)) {
+                              setPhone(formatPhoneNumber(formatted));
+                            }
+                          }
+                        }}
+                        placeholder="77 123 45 67"
                         className="w-full bg-zinc-800 text-white rounded-xl px-4 py-3 border border-zinc-600 focus:outline-none focus:border-white transition"
                       />
+                      <p className="text-zinc-500 text-xs mt-1">
+                        Format: 77 123 45 67 ou 771234567
+                      </p>
                     </div>
                   </>
                 )}
 
                 <div>
-                  <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">Email</label>
+                  <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
+                    Email <span className="text-red-400">*</span>
+                  </label>
                   <input
                     type="email"
                     value={email}
@@ -543,7 +571,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                     <div>
                       <div className="flex justify-between items-center mb-1.5">
                         <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider">
-                          Mot de passe
+                          Mot de passe <span className="text-red-400">*</span>
                           {mode === 'register' && (
                             <span className="text-zinc-600 normal-case font-normal ml-1">(6 min.)</span>
                           )}
@@ -571,7 +599,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                     {mode === 'register' && (
                       <div>
                         <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
-                          Confirmer le mot de passe
+                          Confirmer le mot de passe <span className="text-red-400">*</span>
                         </label>
                         <PasswordInput
                           value={confirmPassword}

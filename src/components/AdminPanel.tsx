@@ -13,18 +13,21 @@ import {
   TrendingUp,
   DollarSign,
   Activity,
-  RefreshCw
+  RefreshCw,
+  Phone,
+  Calendar,
+  Send
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface UserProfile {
   id: string;
   email: string;
+  phone: string;
   full_name: string;
   role: 'user' | 'admin';
   is_active: boolean;
   created_at: string;
-  phone?: string;
   salon_name?: string;
 }
 
@@ -37,6 +40,14 @@ interface UserStats {
   last_transaction_date: string | null;
 }
 
+interface UserSubscription {
+  plan_name: string;
+  status: string;
+  end_date: string;
+  start_date: string;
+  is_free_trial: boolean;
+}
+
 interface AdminPanelProps {
   currentUserId: string;
   isAdmin: boolean;
@@ -45,6 +56,7 @@ interface AdminPanelProps {
 export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [userStats, setUserStats] = useState<Record<string, UserStats>>({});
+  const [userSubscriptions, setUserSubscriptions] = useState<Record<string, UserSubscription>>({});
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive'>('all');
@@ -53,52 +65,52 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [messageText, setMessageText] = useState('');
+  const [showMessageModal, setShowMessageModal] = useState(false);
   const [globalStats, setGlobalStats] = useState({
     totalUsers: 0,
     totalTransactions: 0,
     totalRevenue: 0,
     totalExpenses: 0,
     activeUsers: 0,
-    inactiveUsers: 0
+    inactiveUsers: 0,
+    expiredSubscriptions: 0,
+    expiringSoon: 0
   });
 
-  // Afficher un toast
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
   };
 
-  // Vérifier si l'utilisateur est admin
   useEffect(() => {
-    if (!isAdmin) {
-      return;
-    }
+    if (!isAdmin) return;
     loadUsers();
     loadGlobalStats();
   }, [isAdmin]);
 
-  // Charger tous les utilisateurs (uniquement les users, pas les admins)
   const loadUsers = async () => {
     setLoading(true);
     try {
-      // Récupérer uniquement les utilisateurs avec role = 'user'
       const { data: profiles, error: profilesError } = await supabase
         .from('profiles_v3')
         .select('*')
-        .eq('role', 'user')  // ← Filtrer uniquement les utilisateurs
+        .eq('role', 'user')
         .order('created_at', { ascending: false });
 
       if (profilesError) throw profilesError;
 
-      const usersWithEmail = (profiles || []).map(profile => ({
+      const usersWithData = (profiles || []).map(profile => ({
         ...profile,
-        email: profile.email || `${profile.id.slice(0, 8)}@user.com`,
+        email: profile.email || `${profile.id.slice(0, 8)}...`,
+        phone: profile.phone || '',
       }));
 
-      setUsers(usersWithEmail);
+      setUsers(usersWithData);
       
-      // Charger les stats pour chaque utilisateur
-      await loadAllUserStats(usersWithEmail.map(u => u.id));
+      await loadAllUserStats(usersWithData.map(u => u.id));
+      await loadAllUserSubscriptions(usersWithData.map(u => u.id));
       
     } catch (error) {
       console.error('Erreur chargement utilisateurs:', error);
@@ -108,14 +120,60 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
     }
   };
 
-  // Charger les stats de tous les utilisateurs
+  const loadAllUserSubscriptions = async (userIds: string[]) => {
+    const subsMap: Record<string, UserSubscription> = {};
+    
+    for (const userId of userIds) {
+      try {
+        const { data: subscription, error: subError } = await supabase
+          .from('subscriptions')
+          .select('plan_id, status, end_date, start_date, is_free_trial')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!subError && subscription) {
+          let planName = 'Gratuit';
+          if (subscription.plan_id) {
+            const { data: plan } = await supabase
+              .from('subscription_plans')
+              .select('name')
+              .eq('id', subscription.plan_id)
+              .single();
+            if (plan) planName = plan.name;
+          }
+
+          subsMap[userId] = {
+            plan_name: planName,
+            status: subscription.status,
+            end_date: subscription.end_date,
+            start_date: subscription.start_date,
+            is_free_trial: subscription.is_free_trial || false
+          };
+        } else {
+          subsMap[userId] = {
+            plan_name: 'Aucun',
+            status: 'none',
+            end_date: '',
+            start_date: '',
+            is_free_trial: false
+          };
+        }
+      } catch (err) {
+        console.error(`Erreur chargement abonnement pour ${userId}:`, err);
+      }
+    }
+    
+    setUserSubscriptions(subsMap);
+  };
+
   const loadAllUserStats = async (userIds: string[]) => {
     setStatsLoading(true);
     const statsMap: Record<string, UserStats> = {};
     
     for (const userId of userIds) {
       try {
-        // Récupérer les transactions
         const { data: transactions, error: transError } = await supabase
           .from('transactions')
           .select('amount, transaction_date_sec')
@@ -125,14 +183,12 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
           const transactionCount = transactions.length;
           const totalRevenue = transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
           
-          // Dernière transaction
           const lastTransaction = transactions.length > 0 
             ? transactions.sort((a, b) => 
                 new Date(b.transaction_date_sec).getTime() - new Date(a.transaction_date_sec).getTime()
               )[0].transaction_date_sec
             : null;
 
-          // Récupérer les dépenses
           const { data: expenses, error: expError } = await supabase
             .from('expenses')
             .select('amount')
@@ -159,10 +215,8 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
     setStatsLoading(false);
   };
 
-  // Charger les statistiques globales (uniquement des users)
   const loadGlobalStats = async () => {
     try {
-      // Récupérer tous les users
       const { data: allUsers } = await supabase
         .from('profiles_v3')
         .select('id, is_active')
@@ -172,9 +226,13 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
       const inactiveUsers = allUsers?.filter(u => !u.is_active).length || 0;
       const totalUsers = allUsers?.length || 0;
 
-      // Total des transactions de tous les users
       let totalTransactions = 0;
       let totalRevenue = 0;
+      let expiredSubscriptions = 0;
+      let expiringSoon = 0;
+      const today = new Date();
+      const thirtyDaysFromNow = new Date();
+      thirtyDaysFromNow.setDate(today.getDate() + 30);
       
       for (const user of (allUsers || [])) {
         const { data: transactions } = await supabase
@@ -186,9 +244,26 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
           totalTransactions += transactions.length;
           totalRevenue += transactions.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
         }
+
+        const { data: subscription } = await supabase
+          .from('subscriptions')
+          .select('end_date, status')
+          .eq('user_id', user.id)
+          .eq('status', 'active')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (subscription && subscription.end_date) {
+          const endDate = new Date(subscription.end_date);
+          if (endDate < today) {
+            expiredSubscriptions++;
+          } else if (endDate <= thirtyDaysFromNow) {
+            expiringSoon++;
+          }
+        }
       }
 
-      // Total des dépenses de tous les users
       let totalExpenses = 0;
       for (const user of (allUsers || [])) {
         const { data: expenses } = await supabase
@@ -207,14 +282,15 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
         totalRevenue,
         totalExpenses,
         activeUsers,
-        inactiveUsers
+        inactiveUsers,
+        expiredSubscriptions,
+        expiringSoon
       });
     } catch (error) {
       console.error('Erreur chargement stats globales:', error);
     }
   };
 
-  // Activer/Désactiver un utilisateur
   const toggleUserStatus = async (userId: string, currentStatus: boolean) => {
     if (!confirm(`Voulez-vous vraiment ${currentStatus ? 'désactiver' : 'activer'} ce compte ?`)) return;
     
@@ -224,7 +300,7 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
         .from('profiles_v3')
         .update({ is_active: !currentStatus })
         .eq('id', userId)
-        .eq('role', 'user');  // ← Sécurité : ne modifier que les users
+        .eq('role', 'user');
 
       if (error) throw error;
 
@@ -233,8 +309,6 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
       ));
       
       showToast(`Compte ${!currentStatus ? 'activé' : 'désactivé'} avec succès`, 'success');
-      
-      // Recharger les stats globales
       loadGlobalStats();
       
     } catch (error) {
@@ -245,18 +319,58 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
     }
   };
 
-  // Rafraîchir les données
+  const sendWhatsAppMessage = async (phoneNumber: string, userName: string, subscription: UserSubscription) => {
+    if (!phoneNumber) {
+      showToast('Ce client n\'a pas de numéro de téléphone enregistré', 'error');
+      return;
+    }
+
+    let formattedPhone = phoneNumber.replace(/\s/g, '').replace(/^\+?221/, '');
+    if (!formattedPhone.startsWith('77') && !formattedPhone.startsWith('78') && !formattedPhone.startsWith('76') && !formattedPhone.startsWith('70')) {
+      formattedPhone = '77' + formattedPhone;
+    }
+    const whatsappNumber = `221${formattedPhone}`;
+
+    const endDate = subscription.end_date ? new Date(subscription.end_date).toLocaleDateString('fr-FR') : 'Non définie';
+    const statusText = subscription.status === 'active' ? '✅ Actif' : '⚠️ Expiré';
+    
+    const message = `Bonjour ${userName} 👋\n\n` +
+      `Voici un récapitulatif de votre compte LE COUPE :\n\n` +
+      `📅 Date d'expiration : ${endDate}\n` +
+      `📊 Statut : ${statusText}\n` +
+      `💳 Plan : ${subscription.plan_name}\n\n` +
+      `Pour toute question, contactez-nous. Merci de votre confiance ! 💈`;
+
+    const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`;
+    window.open(whatsappUrl, '_blank');
+  };
+
+  const sendCustomMessage = async (phoneNumber: string, message: string) => {
+    if (!phoneNumber) {
+      showToast('Ce client n\'a pas de numéro de téléphone enregistré', 'error');
+      return;
+    }
+
+    let formattedPhone = phoneNumber.replace(/\s/g, '').replace(/^\+?221/, '');
+    if (!formattedPhone.startsWith('77') && !formattedPhone.startsWith('78') && !formattedPhone.startsWith('76') && !formattedPhone.startsWith('70')) {
+      formattedPhone = '77' + formattedPhone;
+    }
+    const whatsappNumber = `221${formattedPhone}`;
+    const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`;
+    window.open(whatsappUrl, '_blank');
+  };
+
   const refreshData = async () => {
     await loadUsers();
     await loadGlobalStats();
     showToast('Données actualisées', 'success');
   };
 
-  // Filtrer les utilisateurs
   const filteredUsers = users.filter(user => {
     const matchesSearch = searchTerm === '' || 
       user.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       user.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      user.phone?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       user.id.toLowerCase().includes(searchTerm.toLowerCase());
     
     const matchesStatus = filterStatus === 'all' || 
@@ -280,11 +394,10 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
 
   return (
     <div className="space-y-6 px-4 sm:px-0">
-      {/* Toast notification */}
       {toast && (
         <div className={`fixed top-4 right-4 z-50 px-4 py-3 rounded-xl shadow-lg ${
           toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'
-        } text-white text-sm animate-in fade-in slide-in-from-top-2`}>
+        } text-white text-sm`}>
           {toast.message}
         </div>
       )}
@@ -298,57 +411,44 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
           </h2>
           <p className="text-zinc-500 text-sm mt-1">Gestion des comptes utilisateurs</p>
         </div>
-        <button
-          onClick={refreshData}
-          className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition"
-        >
+        <button onClick={refreshData} className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition">
           <RefreshCw className="w-4 h-4" /> Rafraîchir
         </button>
       </div>
 
       {/* Statistiques globales */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-zinc-400 mb-1">
-            <Users className="w-4 h-4" />
-            <span className="text-xs">Total utilisateurs</span>
-          </div>
+          <div className="flex items-center gap-2 text-zinc-400 mb-1"><Users className="w-4 h-4" /><span className="text-xs">Total</span></div>
           <p className="text-white text-2xl font-bold">{globalStats.totalUsers}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-green-400 mb-1">
-            <UserCheck className="w-4 h-4" />
-            <span className="text-xs">Actifs</span>
-          </div>
+          <div className="flex items-center gap-2 text-green-400 mb-1"><UserCheck className="w-4 h-4" /><span className="text-xs">Actifs</span></div>
           <p className="text-white text-2xl font-bold">{globalStats.activeUsers}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-red-400 mb-1">
-            <UserX className="w-4 h-4" />
-            <span className="text-xs">Inactifs</span>
-          </div>
+          <div className="flex items-center gap-2 text-red-400 mb-1"><UserX className="w-4 h-4" /><span className="text-xs">Inactifs</span></div>
           <p className="text-white text-2xl font-bold">{globalStats.inactiveUsers}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-blue-400 mb-1">
-            <Activity className="w-4 h-4" />
-            <span className="text-xs">Transactions</span>
-          </div>
+          <div className="flex items-center gap-2 text-orange-400 mb-1"><Calendar className="w-4 h-4" /><span className="text-xs">Expire bientôt</span></div>
+          <p className="text-white text-2xl font-bold">{globalStats.expiringSoon}</p>
+        </div>
+        <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-blue-400 mb-1"><Activity className="w-4 h-4" /><span className="text-xs">Transactions</span></div>
           <p className="text-white text-xl font-bold">{globalStats.totalTransactions.toLocaleString()}</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-green-400 mb-1">
-            <DollarSign className="w-4 h-4" />
-            <span className="text-xs">Revenus</span>
-          </div>
+          <div className="flex items-center gap-2 text-green-400 mb-1"><DollarSign className="w-4 h-4" /><span className="text-xs">Revenus</span></div>
           <p className="text-white text-lg font-bold">{globalStats.totalRevenue.toLocaleString()} CFA</p>
         </div>
         <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
-          <div className="flex items-center gap-2 text-red-400 mb-1">
-            <TrendingUp className="w-4 h-4" />
-            <span className="text-xs">Dépenses</span>
-          </div>
+          <div className="flex items-center gap-2 text-red-400 mb-1"><TrendingUp className="w-4 h-4" /><span className="text-xs">Dépenses</span></div>
           <p className="text-white text-lg font-bold">{globalStats.totalExpenses.toLocaleString()} CFA</p>
+        </div>
+        <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
+          <div className="flex items-center gap-2 text-purple-400 mb-1"><Calendar className="w-4 h-4" /><span className="text-xs">Expirés</span></div>
+          <p className="text-white text-2xl font-bold">{globalStats.expiredSubscriptions}</p>
         </div>
       </div>
 
@@ -356,19 +456,9 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-          <input
-            type="text"
-            placeholder="Rechercher par nom, email ou ID..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white placeholder:text-zinc-500 focus:outline-none focus:border-white transition"
-          />
+          <input type="text" placeholder="Rechercher par nom, email, téléphone ou ID..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white focus:outline-none focus:border-white transition" />
         </div>
-        <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value as any)}
-          className="px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white focus:outline-none focus:border-white transition"
-        >
+        <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as any)} className="px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white focus:outline-none focus:border-white transition">
           <option value="all">Tous les statuts</option>
           <option value="active">Actifs</option>
           <option value="inactive">Inactifs</option>
@@ -377,102 +467,89 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
 
       {/* Liste des utilisateurs */}
       {loading ? (
-        <div className="text-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div>
-          <p className="text-zinc-500 mt-3">Chargement des utilisateurs...</p>
-        </div>
+        <div className="text-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto"></div><p className="text-zinc-500 mt-3">Chargement...</p></div>
+      ) : filteredUsers.length === 0 ? (
+        <div className="text-center py-12"><Users className="w-12 h-12 text-zinc-600 mx-auto mb-3" /><p className="text-zinc-500">Aucun utilisateur trouvé</p></div>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead className="border-b border-zinc-800">
               <tr className="text-zinc-500 text-sm">
-                <th className="pb-3 font-medium">Utilisateur</th>
-                <th className="pb-3 font-medium">Email</th>
-                <th className="pb-3 font-medium">Statut</th>
-                <th className="pb-3 font-medium">Transactions</th>
-                <th className="pb-3 font-medium">Revenus</th>
-                <th className="pb-3 font-medium">Inscrit le</th>
-                <th className="pb-3 font-medium">Actions</th>
+                <th className="pb-3">Utilisateur</th>
+                <th className="pb-3">Contact</th>
+                <th className="pb-3">Abonnement</th>
+                <th className="pb-3">Expiration</th>
+                <th className="pb-3">Statut</th>
+                <th className="pb-3">Transactions</th>
+                <th className="pb-3">Revenus</th>
+                <th className="pb-3">Actions</th>
                </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
               {filteredUsers.map((user) => {
                 const stats = userStats[user.id];
+                const subscription = userSubscriptions[user.id];
                 const isCurrentUser = user.id === currentUserId;
+                const endDate = subscription?.end_date ? new Date(subscription.end_date).toLocaleDateString('fr-FR') : 'N/A';
+                const isExpiringSoon = subscription?.end_date && new Date(subscription.end_date) <= new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
                 
                 return (
                   <tr key={user.id} className="hover:bg-zinc-900/50 transition">
                     <td className="py-3">
                       <div className="flex items-center gap-3">
                         <div className="w-8 h-8 bg-zinc-800 rounded-full flex items-center justify-center">
-                          <span className="text-white text-sm font-bold uppercase">
-                            {(user.full_name || user.email || 'U')[0]}
-                          </span>
+                          <span className="text-white text-sm font-bold uppercase">{(user.full_name || user.email || 'U')[0]}</span>
                         </div>
-                        <span className="text-white font-medium">{user.full_name || 'Sans nom'}</span>
+                        <div><p className="text-white font-medium">{user.full_name || 'Sans nom'}</p><p className="text-zinc-500 text-xs">{user.id.slice(0, 8)}...</p></div>
                       </div>
                     </td>
                     <td className="py-3">
-                      <p className="text-zinc-300 text-sm">{user.email}</p>
-                      <p className="text-zinc-600 text-xs font-mono">{user.id.slice(0, 8)}...</p>
-                    </td>
-                    <td className="py-3">
-                      <button
-                        onClick={() => toggleUserStatus(user.id, user.is_active)}
-                        disabled={processingId === user.id || isCurrentUser}
-                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition ${
-                          user.is_active 
-                            ? 'bg-green-500/20 text-green-400 border border-green-500' 
-                            : 'bg-red-500/20 text-red-400 border border-red-500'
-                        } ${isCurrentUser ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:opacity-80'}`}
-                      >
-                        {user.is_active ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-                        {user.is_active ? 'Actif' : 'Inactif'}
-                      </button>
-                    </td>
-                    <td className="py-3">
-                      {statsLoading ? (
-                        <div className="animate-pulse text-zinc-500 text-sm">...</div>
+                      {user.phone ? (
+                        <div className="flex items-center gap-2">
+                          <Phone className="w-3 h-3 text-green-400" />
+                          <span className="text-zinc-300 text-sm">{user.phone}</span>
+                        </div>
                       ) : (
-                        <span className="text-white text-sm">{stats?.transaction_count || 0}</span>
+                        <span className="text-zinc-600 text-sm">Non renseigné</span>
                       )}
                     </td>
                     <td className="py-3">
-                      {statsLoading ? (
-                        <div className="animate-pulse text-zinc-500 text-sm">...</div>
-                      ) : (
-                        <span className="text-green-400 text-sm">{(stats?.total_revenue || 0).toLocaleString()} CFA</span>
-                      )}
-                    </td>
-                    <td className="py-3">
-                      <span className="text-zinc-500 text-sm">
-                        {new Date(user.created_at).toLocaleDateString('fr-FR')}
+                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${subscription?.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                        {subscription?.plan_name || 'Aucun'}
                       </span>
                     </td>
                     <td className="py-3">
-                      <button
-                        onClick={() => {
-                          setSelectedUser(user);
-                          setShowDetailsModal(true);
-                        }}
-                        className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition"
-                        title="Voir détails"
-                      >
-                        <Eye className="w-4 h-4 text-zinc-400" />
+                      <div className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3 text-zinc-500" />
+                        <span className={`text-sm ${isExpiringSoon && subscription?.status === 'active' ? 'text-orange-400' : 'text-zinc-300'}`}>
+                          {endDate}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3">
+                      <button onClick={() => toggleUserStatus(user.id, user.is_active)} disabled={processingId === user.id || isCurrentUser} className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium ${user.is_active ? 'bg-green-500/20 text-green-400 border border-green-500' : 'bg-red-500/20 text-red-400 border border-red-500'} ${isCurrentUser ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                        {user.is_active ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}{user.is_active ? 'Actif' : 'Inactif'}
                       </button>
+                    </td>
+                    <td className="py-3">{statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-white">{stats?.transaction_count || 0}</span>}</td>
+                    <td className="py-3">{statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-green-400">{(stats?.total_revenue || 0).toLocaleString()} CFA</span>}</td>
+                    <td className="py-3">
+                      <div className="flex gap-2">
+                        <button onClick={() => { setSelectedUser(user); setShowDetailsModal(true); }} className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition" title="Voir détails">
+                          <Eye className="w-4 h-4 text-zinc-400" />
+                        </button>
+                        {user.phone && (
+                          <button onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, subscription)} className="p-1.5 rounded-lg bg-green-600 hover:bg-green-700 transition" title="Envoyer message WhatsApp">
+                            <Send className="w-4 h-4 text-white" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-
-          {filteredUsers.length === 0 && (
-            <div className="text-center py-12">
-              <Users className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
-              <p className="text-zinc-500">Aucun utilisateur trouvé</p>
-            </div>
-          )}
         </div>
       )}
 
@@ -482,81 +559,67 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
           <div className="bg-zinc-900 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto">
             <div className="sticky top-0 bg-zinc-900 border-b border-zinc-800 p-6 flex justify-between items-center">
               <h3 className="text-xl font-bold text-white">Détails de l'utilisateur</h3>
-              <button onClick={() => setShowDetailsModal(false)} className="text-zinc-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setShowDetailsModal(false)} className="text-zinc-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            
             <div className="p-6 space-y-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-zinc-500 text-xs uppercase tracking-wide">Nom complet</label>
-                  <p className="text-white font-medium mt-1">{selectedUser.full_name || 'Non renseigné'}</p>
-                </div>
-                <div>
-                  <label className="text-zinc-500 text-xs uppercase tracking-wide">Email</label>
-                  <p className="text-white font-medium mt-1">{selectedUser.email}</p>
-                </div>
-                <div>
-                  <label className="text-zinc-500 text-xs uppercase tracking-wide">ID Utilisateur</label>
-                  <p className="text-zinc-400 text-sm font-mono mt-1">{selectedUser.id}</p>
-                </div>
-                <div>
-                  <label className="text-zinc-500 text-xs uppercase tracking-wide">Statut</label>
-                  <p className={`mt-1 font-medium ${selectedUser.is_active ? 'text-green-400' : 'text-red-400'}`}>
-                    {selectedUser.is_active ? 'Actif' : 'Inactif'}
-                  </p>
-                </div>
-                <div>
-                  <label className="text-zinc-500 text-xs uppercase tracking-wide">Date d'inscription</label>
-                  <p className="text-white mt-1">{new Date(selectedUser.created_at).toLocaleString('fr-FR')}</p>
-                </div>
+                <div><label className="text-zinc-500 text-xs">Nom complet</label><p className="text-white">{selectedUser.full_name || 'Non renseigné'}</p></div>
+                <div><label className="text-zinc-500 text-xs">Email</label><p className="text-white">{selectedUser.email}</p></div>
+                <div><label className="text-zinc-500 text-xs">Téléphone</label><p className="text-white flex items-center gap-2">{selectedUser.phone || 'Non renseigné'}{selectedUser.phone && <button onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id])} className="px-2 py-1 bg-green-600 rounded-lg text-xs">WhatsApp</button>}</p></div>
+                <div><label className="text-zinc-500 text-xs">ID</label><p className="text-zinc-400 text-sm">{selectedUser.id}</p></div>
+                <div><label className="text-zinc-500 text-xs">Statut</label><p className={selectedUser.is_active ? 'text-green-400' : 'text-red-400'}>{selectedUser.is_active ? 'Actif' : 'Inactif'}</p></div>
+                <div><label className="text-zinc-500 text-xs">Inscrit le</label><p className="text-white">{new Date(selectedUser.created_at).toLocaleString('fr-FR')}</p></div>
               </div>
 
               <div className="border-t border-zinc-800 pt-4">
-                <h4 className="text-white font-bold mb-3 flex items-center gap-2">
-                  <TrendingUp className="w-4 h-4" />
-                  Statistiques
-                </h4>
+                <h4 className="text-white font-bold mb-3">Abonnement</h4>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="bg-zinc-800 rounded-xl p-3">
-                    <p className="text-zinc-500 text-xs">Transactions</p>
-                    <p className="text-white text-xl font-bold">{userStats[selectedUser.id]?.transaction_count || 0}</p>
-                  </div>
-                  <div className="bg-zinc-800 rounded-xl p-3">
-                    <p className="text-zinc-500 text-xs">Revenus</p>
-                    <p className="text-green-400 text-lg font-bold">{(userStats[selectedUser.id]?.total_revenue || 0).toLocaleString()} CFA</p>
-                  </div>
-                  <div className="bg-zinc-800 rounded-xl p-3">
-                    <p className="text-zinc-500 text-xs">Dépenses</p>
-                    <p className="text-red-400 text-lg font-bold">{(userStats[selectedUser.id]?.total_expenses || 0).toLocaleString()} CFA</p>
-                  </div>
-                  <div className="bg-zinc-800 rounded-xl p-3">
-                    <p className="text-zinc-500 text-xs">Net</p>
-                    <p className="text-white text-lg font-bold">
-                      {((userStats[selectedUser.id]?.total_revenue || 0) - (userStats[selectedUser.id]?.total_expenses || 0)).toLocaleString()} CFA
-                    </p>
-                  </div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Plan</p><p className="text-white font-bold">{userSubscriptions[selectedUser.id]?.plan_name || 'Aucun'}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Statut</p><p className={`font-bold ${userSubscriptions[selectedUser.id]?.status === 'active' ? 'text-green-400' : 'text-red-400'}`}>{userSubscriptions[selectedUser.id]?.status || 'Inactif'}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Début</p><p className="text-white text-sm">{userSubscriptions[selectedUser.id]?.start_date ? new Date(userSubscriptions[selectedUser.id].start_date).toLocaleDateString('fr-FR') : 'N/A'}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Expiration</p><p className="text-white text-sm">{userSubscriptions[selectedUser.id]?.end_date ? new Date(userSubscriptions[selectedUser.id].end_date).toLocaleDateString('fr-FR') : 'N/A'}</p></div>
                 </div>
               </div>
 
               <div className="border-t border-zinc-800 pt-4">
-                <button
-                  onClick={() => {
-                    toggleUserStatus(selectedUser.id, selectedUser.is_active);
-                    setShowDetailsModal(false);
-                  }}
-                  disabled={selectedUser.id === currentUserId}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-xl text-white font-medium transition ${
-                    selectedUser.is_active 
-                      ? 'bg-red-600 hover:bg-red-700' 
-                      : 'bg-green-600 hover:bg-green-700'
-                  } ${selectedUser.id === currentUserId ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  {selectedUser.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                  {selectedUser.is_active ? 'Désactiver le compte' : 'Activer le compte'}
-                </button>
+                <h4 className="text-white font-bold mb-3">Statistiques</h4>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Transactions</p><p className="text-white text-xl font-bold">{userStats[selectedUser.id]?.transaction_count || 0}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Revenus</p><p className="text-green-400">{(userStats[selectedUser.id]?.total_revenue || 0).toLocaleString()} CFA</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Dépenses</p><p className="text-red-400">{(userStats[selectedUser.id]?.total_expenses || 0).toLocaleString()} CFA</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Net</p><p className="text-white">{((userStats[selectedUser.id]?.total_revenue || 0) - (userStats[selectedUser.id]?.total_expenses || 0)).toLocaleString()} CFA</p></div>
+                </div>
               </div>
+
+              <div className="border-t border-zinc-800 pt-4 flex flex-wrap gap-3">
+                <button onClick={() => { toggleUserStatus(selectedUser.id, selectedUser.is_active); setShowDetailsModal(false); }} disabled={selectedUser.id === currentUserId} className={`flex items-center gap-2 px-4 py-2 rounded-xl text-white ${selectedUser.is_active ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'} ${selectedUser.id === currentUserId ? 'opacity-50' : ''}`}>
+                  {selectedUser.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}{selectedUser.is_active ? 'Désactiver' : 'Activer'}
+                </button>
+                {selectedUser.phone && (
+                  <button onClick={() => { setMessageText(''); setShowMessageModal(true); }} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white">
+                    <Send className="w-4 h-4" /> Envoyer message
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal d'envoi de message personnalisé */}
+      {showMessageModal && selectedUser && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold text-white">Envoyer un message à {selectedUser.full_name || selectedUser.email}</h3>
+              <button onClick={() => setShowMessageModal(false)} className="text-zinc-400 hover:text-white"><X className="w-5 h-5" /></button>
+            </div>
+            <textarea value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder="Votre message..." rows={5} className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white mb-4"></textarea>
+            <div className="flex gap-3">
+              <button onClick={() => { sendCustomMessage(selectedUser.phone, messageText); setShowMessageModal(false); setMessageText(''); }} disabled={!messageText.trim()} className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-xl font-semibold transition disabled:opacity-50">
+                Envoyer via WhatsApp
+              </button>
+              <button onClick={() => setShowMessageModal(false)} className="flex-1 bg-zinc-800 text-white py-2 rounded-xl font-semibold hover:bg-zinc-700 transition">Annuler</button>
             </div>
           </div>
         </div>
