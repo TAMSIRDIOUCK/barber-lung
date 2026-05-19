@@ -16,7 +16,10 @@ import {
   RefreshCw,
   Phone,
   Calendar,
-  Send
+  Send,
+  Sparkles,
+  Star,
+  Rocket
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -65,9 +68,9 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
-  const [sendingMessage, setSendingMessage] = useState(false);
   const [messageText, setMessageText] = useState('');
   const [showMessageModal, setShowMessageModal] = useState(false);
+  const [openWhatsAppMenu, setOpenWhatsAppMenu] = useState<string | null>(null);
   const [globalStats, setGlobalStats] = useState({
     totalUsers: 0,
     totalTransactions: 0,
@@ -79,6 +82,9 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
     expiringSoon: 0
   });
 
+  const APP_URL = 'https://barber-lunge.vercel.app';
+  const APP_NAME = 'LE COUPE';
+
   const showToast = (message: string, type: 'success' | 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
@@ -89,6 +95,13 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
     loadUsers();
     loadGlobalStats();
   }, [isAdmin]);
+
+  // Fermer le menu WhatsApp quand on clique ailleurs
+  useEffect(() => {
+    const handleClickOutside = () => setOpenWhatsAppMenu(null);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
 
   const loadUsers = async () => {
     setLoading(true);
@@ -319,45 +332,111 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
     }
   };
 
-  const sendWhatsAppMessage = async (phoneNumber: string, userName: string, subscription: UserSubscription) => {
+  // Nettoyer et formater le numéro de téléphone pour WhatsApp
+  const formatPhoneForWhatsApp = (phone: string): string => {
+    let cleaned = phone.replace(/\s/g, '').replace(/^\+?221/, '');
+    if (!cleaned.startsWith('77') && !cleaned.startsWith('78') && !cleaned.startsWith('76') && !cleaned.startsWith('70') && !cleaned.startsWith('75')) {
+      cleaned = '77' + cleaned;
+    }
+    return `221${cleaned}`;
+  };
+
+  const getMarketingMessage = (userName: string, subscription: UserSubscription): string => {
+    const endDate = subscription?.end_date ? new Date(subscription.end_date).toLocaleDateString('fr-FR') : 'bientôt';
+    
+    return `*${APP_NAME} - Gestion de salon professionnel* 💈
+
+Bonjour ${userName || 'Cher client'} 👋,
+
+✨ *Pourquoi utiliser notre application ?*
+• 📊 Suivez vos revenus en temps réel
+• ✂️ Gérez vos services et coiffeurs facilement
+• 📱 Accès depuis n'importe où
+• 💰 Transactions sécurisées
+• 🎫 Tickets d'impression professionnels
+
+📅 *Votre abonnement* : ${subscription?.plan_name || 'Gratuit'}
+⏰ *Expiration* : ${endDate}
+
+🚀 *Installez l'application* :
+👉 ${APP_URL}
+
+📱 *Installation* :
+- Android : Menu Chrome → "Installer"
+- iOS : Partager → "Sur l'écran d'accueil"
+
+Merci de votre confiance ! 🙏
+
+*${APP_NAME}* ✨`;
+  };
+
+  const getReminderMessage = (userName: string, stats: UserStats | undefined): string => {
+    const transactionCount = stats?.transaction_count || 0;
+    const revenue = stats?.total_revenue || 0;
+    
+    return `*${APP_NAME} - Votre activité* 📊
+
+Bonjour ${userName || 'Cher client'} 👋,
+
+✂️ *Transactions* : ${transactionCount}
+💰 *Chiffre d'affaires* : ${revenue.toLocaleString()} CFA
+
+🎯 *Pour aller plus loin* :
+• Ajoutez vos services
+• Importez vos coiffeurs
+• Suivez vos dépenses
+
+📱 *Application* : ${APP_URL}
+
+Continuez à faire briller votre salon ! 💈
+
+*${APP_NAME}* ⭐`;
+  };
+
+  // Fonction pour envoyer un message WhatsApp
+  const sendWhatsAppMessage = async (
+    phoneNumber: string, 
+    userName: string, 
+    subscription: UserSubscription, 
+    stats?: UserStats, 
+    type: 'marketing' | 'reminder' = 'marketing'
+  ) => {
     if (!phoneNumber) {
       showToast('Ce client n\'a pas de numéro de téléphone enregistré', 'error');
       return;
     }
 
-    let formattedPhone = phoneNumber.replace(/\s/g, '').replace(/^\+?221/, '');
-    if (!formattedPhone.startsWith('77') && !formattedPhone.startsWith('78') && !formattedPhone.startsWith('76') && !formattedPhone.startsWith('70')) {
-      formattedPhone = '77' + formattedPhone;
-    }
-    const whatsappNumber = `221${formattedPhone}`;
-
-    const endDate = subscription.end_date ? new Date(subscription.end_date).toLocaleDateString('fr-FR') : 'Non définie';
-    const statusText = subscription.status === 'active' ? '✅ Actif' : '⚠️ Expiré';
+    const whatsappNumber = formatPhoneForWhatsApp(phoneNumber);
     
-    const message = `Bonjour ${userName} 👋\n\n` +
-      `Voici un récapitulatif de votre compte LE COUPE :\n\n` +
-      `📅 Date d'expiration : ${endDate}\n` +
-      `📊 Statut : ${statusText}\n` +
-      `💳 Plan : ${subscription.plan_name}\n\n` +
-      `Pour toute question, contactez-nous. Merci de votre confiance ! 💈`;
+    let message = '';
+    if (type === 'marketing') {
+      message = getMarketingMessage(userName, subscription);
+    } else {
+      message = getReminderMessage(userName, stats);
+    }
 
     const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`;
+    
+    // Ouvrir WhatsApp dans un nouvel onglet (fonctionne sur mobile et desktop)
     window.open(whatsappUrl, '_blank');
+    
+    showToast(`Ouverture WhatsApp pour ${userName}`, 'success');
+    setOpenWhatsAppMenu(null);
   };
 
+  // Fonction pour envoyer un message personnalisé
   const sendCustomMessage = async (phoneNumber: string, message: string) => {
     if (!phoneNumber) {
       showToast('Ce client n\'a pas de numéro de téléphone enregistré', 'error');
       return;
     }
 
-    let formattedPhone = phoneNumber.replace(/\s/g, '').replace(/^\+?221/, '');
-    if (!formattedPhone.startsWith('77') && !formattedPhone.startsWith('78') && !formattedPhone.startsWith('76') && !formattedPhone.startsWith('70')) {
-      formattedPhone = '77' + formattedPhone;
-    }
-    const whatsappNumber = `221${formattedPhone}`;
+    const whatsappNumber = formatPhoneForWhatsApp(phoneNumber);
     const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`;
     window.open(whatsappUrl, '_blank');
+    showToast(`Ouverture WhatsApp pour envoyer le message`, 'success');
+    setShowMessageModal(false);
+    setOpenWhatsAppMenu(null);
   };
 
   const refreshData = async () => {
@@ -402,7 +481,6 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
         </div>
       )}
 
-      {/* En-tête */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h2 className="text-white text-2xl sm:text-3xl font-bold flex items-center gap-3">
@@ -456,7 +534,7 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex-1 relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-          <input type="text" placeholder="Rechercher par nom, email, téléphone ou ID..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white focus:outline-none focus:border-white transition" />
+          <input type="text" placeholder="Rechercher..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white focus:outline-none focus:border-white transition" />
         </div>
         <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as any)} className="px-4 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white focus:outline-none focus:border-white transition">
           <option value="all">Tous les statuts</option>
@@ -534,14 +612,39 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
                     <td className="py-3">{statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-white">{stats?.transaction_count || 0}</span>}</td>
                     <td className="py-3">{statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-green-400">{(stats?.total_revenue || 0).toLocaleString()} CFA</span>}</td>
                     <td className="py-3">
-                      <div className="flex gap-2">
-                        <button onClick={() => { setSelectedUser(user); setShowDetailsModal(true); }} className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition" title="Voir détails">
-                          <Eye className="w-4 h-4 text-zinc-400" />
+                      <div className="relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenWhatsAppMenu(openWhatsAppMenu === user.id ? null : user.id);
+                          }}
+                          className="p-1.5 rounded-lg bg-green-600 hover:bg-green-700 transition"
+                          title="Envoyer message WhatsApp"
+                        >
+                          <Send className="w-4 h-4 text-white" />
                         </button>
-                        {user.phone && (
-                          <button onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, subscription)} className="p-1.5 rounded-lg bg-green-600 hover:bg-green-700 transition" title="Envoyer message WhatsApp">
-                            <Send className="w-4 h-4 text-white" />
-                          </button>
+                        
+                        {openWhatsAppMenu === user.id && (
+                          <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[160px]">
+                            <button
+                              onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, subscription, stats, 'marketing')}
+                              className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                            >
+                              <Sparkles className="w-3 h-3 text-yellow-400" /> Message marketing
+                            </button>
+                            <button
+                              onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, subscription, stats, 'reminder')}
+                              className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                            >
+                              <Rocket className="w-3 h-3 text-blue-400" /> Relance activité
+                            </button>
+                            <button
+                              onClick={() => { setSelectedUser(user); setMessageText(''); setShowMessageModal(true); setOpenWhatsAppMenu(null); }}
+                              className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                            >
+                              <Star className="w-3 h-3 text-purple-400" /> Message personnalisé
+                            </button>
+                          </div>
                         )}
                       </div>
                     </td>
@@ -558,17 +661,17 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto">
             <div className="sticky top-0 bg-zinc-900 border-b border-zinc-800 p-6 flex justify-between items-center">
-              <h3 className="text-xl font-bold text-white">Détails de l'utilisateur</h3>
+              <h3 className="text-xl font-bold text-white">Détails</h3>
               <button onClick={() => setShowDetailsModal(false)} className="text-zinc-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
             <div className="p-6 space-y-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div><label className="text-zinc-500 text-xs">Nom complet</label><p className="text-white">{selectedUser.full_name || 'Non renseigné'}</p></div>
+                <div><label className="text-zinc-500 text-xs">Nom</label><p className="text-white">{selectedUser.full_name || 'Non renseigné'}</p></div>
                 <div><label className="text-zinc-500 text-xs">Email</label><p className="text-white">{selectedUser.email}</p></div>
-                <div><label className="text-zinc-500 text-xs">Téléphone</label><p className="text-white flex items-center gap-2">{selectedUser.phone || 'Non renseigné'}{selectedUser.phone && <button onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id])} className="px-2 py-1 bg-green-600 rounded-lg text-xs">WhatsApp</button>}</p></div>
+                <div><label className="text-zinc-500 text-xs">Téléphone</label><p className="text-white">{selectedUser.phone || 'Non renseigné'}</p></div>
                 <div><label className="text-zinc-500 text-xs">ID</label><p className="text-zinc-400 text-sm">{selectedUser.id}</p></div>
                 <div><label className="text-zinc-500 text-xs">Statut</label><p className={selectedUser.is_active ? 'text-green-400' : 'text-red-400'}>{selectedUser.is_active ? 'Actif' : 'Inactif'}</p></div>
-                <div><label className="text-zinc-500 text-xs">Inscrit le</label><p className="text-white">{new Date(selectedUser.created_at).toLocaleString('fr-FR')}</p></div>
+                <div><label className="text-zinc-500 text-xs">Inscrit</label><p className="text-white">{new Date(selectedUser.created_at).toLocaleDateString('fr-FR')}</p></div>
               </div>
 
               <div className="border-t border-zinc-800 pt-4">
@@ -577,7 +680,7 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
                   <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Plan</p><p className="text-white font-bold">{userSubscriptions[selectedUser.id]?.plan_name || 'Aucun'}</p></div>
                   <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Statut</p><p className={`font-bold ${userSubscriptions[selectedUser.id]?.status === 'active' ? 'text-green-400' : 'text-red-400'}`}>{userSubscriptions[selectedUser.id]?.status || 'Inactif'}</p></div>
                   <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Début</p><p className="text-white text-sm">{userSubscriptions[selectedUser.id]?.start_date ? new Date(userSubscriptions[selectedUser.id].start_date).toLocaleDateString('fr-FR') : 'N/A'}</p></div>
-                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Expiration</p><p className="text-white text-sm">{userSubscriptions[selectedUser.id]?.end_date ? new Date(userSubscriptions[selectedUser.id].end_date).toLocaleDateString('fr-FR') : 'N/A'}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Fin</p><p className="text-white text-sm">{userSubscriptions[selectedUser.id]?.end_date ? new Date(userSubscriptions[selectedUser.id].end_date).toLocaleDateString('fr-FR') : 'N/A'}</p></div>
                 </div>
               </div>
 
@@ -596,9 +699,27 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
                   {selectedUser.is_active ? <UserX className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}{selectedUser.is_active ? 'Désactiver' : 'Activer'}
                 </button>
                 {selectedUser.phone && (
-                  <button onClick={() => { setMessageText(''); setShowMessageModal(true); }} className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white">
-                    <Send className="w-4 h-4" /> Envoyer message
-                  </button>
+                  <div className="relative inline-block">
+                    <button
+                      onClick={() => setOpenWhatsAppMenu(openWhatsAppMenu === selectedUser.id ? null : selectedUser.id)}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white"
+                    >
+                      <Send className="w-4 h-4" /> Envoyer message
+                    </button>
+                    {openWhatsAppMenu === selectedUser.id && (
+                      <div className="absolute top-full left-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[180px]">
+                        <button onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id], userStats[selectedUser.id], 'marketing')} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
+                          <Sparkles className="w-3 h-3 text-yellow-400" /> Message marketing
+                        </button>
+                        <button onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id], userStats[selectedUser.id], 'reminder')} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
+                          <Rocket className="w-3 h-3 text-blue-400" /> Relance activité
+                        </button>
+                        <button onClick={() => { setMessageText(''); setShowMessageModal(true); }} className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
+                          <Star className="w-3 h-3 text-purple-400" /> Message personnalisé
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -606,20 +727,32 @@ export function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) {
         </div>
       )}
 
-      {/* Modal d'envoi de message personnalisé */}
+      {/* Modal message personnalisé */}
       {showMessageModal && selectedUser && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-white">Envoyer un message à {selectedUser.full_name || selectedUser.email}</h3>
+              <h3 className="text-xl font-bold text-white">Message à {selectedUser.full_name || selectedUser.email}</h3>
               <button onClick={() => setShowMessageModal(false)} className="text-zinc-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <textarea value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder="Votre message..." rows={5} className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white mb-4"></textarea>
+            <textarea 
+              value={messageText} 
+              onChange={(e) => setMessageText(e.target.value)} 
+              placeholder="Votre message personnalisé..." 
+              rows={5} 
+              className="w-full p-3 rounded-xl bg-zinc-800 text-white border border-zinc-700 focus:outline-none focus:border-white mb-4"
+            />
             <div className="flex gap-3">
-              <button onClick={() => { sendCustomMessage(selectedUser.phone, messageText); setShowMessageModal(false); setMessageText(''); }} disabled={!messageText.trim()} className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-xl font-semibold transition disabled:opacity-50">
+              <button 
+                onClick={() => sendCustomMessage(selectedUser.phone, messageText)} 
+                disabled={!messageText.trim()} 
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white py-2 rounded-xl font-semibold transition disabled:opacity-50"
+              >
                 Envoyer via WhatsApp
               </button>
-              <button onClick={() => setShowMessageModal(false)} className="flex-1 bg-zinc-800 text-white py-2 rounded-xl font-semibold hover:bg-zinc-700 transition">Annuler</button>
+              <button onClick={() => setShowMessageModal(false)} className="flex-1 bg-zinc-800 text-white py-2 rounded-xl font-semibold hover:bg-zinc-700 transition">
+                Annuler
+              </button>
             </div>
           </div>
         </div>
