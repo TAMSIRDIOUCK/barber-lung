@@ -209,16 +209,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
             <span className="font-bold tracking-widest text-xs sm:text-sm uppercase">La Coupe</span>
           </div>
           <div className="flex items-center gap-3">
-            {showInstallButton && (
-              <button
-                onClick={handleInstallClick}
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white text-xs sm:text-sm font-bold px-4 sm:px-5 py-2 rounded-full transition-all duration-300 shadow-lg animate-pulse-slow"
-              >
-                <Download className="w-4 h-4" />
-                <span className="hidden sm:inline">Installer l'app</span>
-                <span className="sm:hidden">Installer</span>
-              </button>
-            )}
+            
             {isInstalled && (
               <div className="flex items-center gap-1.5 bg-green-500/10 border border-green-500/20 px-3 py-1.5 rounded-full">
                 <Check className="w-3.5 h-3.5 text-green-400" />
