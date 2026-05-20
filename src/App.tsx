@@ -5,7 +5,8 @@ import { ServiceSelector } from './components/ServiceSelector';
 import TransactionHistory from './components/TransactionHistory';
 import RevenuePage from './components/RevenuePage';
 import ExpensesPage from './components/ExpensesPage';
-import { AdminPanel } from './components/AdminPanel';
+import AdminPanel from './components/AdminPanel';
+import { PromoBanner } from './components/PromoBanner';
 import { supabase } from './lib/supabase';
 import type { AuthUser } from './components/Clientapp';
 
@@ -227,7 +228,16 @@ function App({ authUser, onLogout }: AppProps) {
               <p className="text-zinc-500 text-sm mt-1">Choisissez une catégorie pour commencer</p>
               <PaymentBadges />
             </div>
-            <ServiceSelector userId={authUser.id} salonName={salonName} authUser={authUser} onConfirm={handleServiceConfirm} />
+            
+            {/* BANNIÈRE PUBLICITAIRE */}
+            <PromoBanner />
+            
+            <ServiceSelector
+              userId={authUser.id}
+              salonName={salonName}
+              authUser={authUser}
+              onConfirm={handleServiceConfirm}
+            />
             <TransactionHistory userId={authUser.id} refreshTrigger={refreshTrigger} />
           </div>
         )}
