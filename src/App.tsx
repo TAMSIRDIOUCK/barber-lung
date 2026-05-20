@@ -17,37 +17,9 @@ interface AppProps {
   onLogout: () => void;
 }
 
-function WaveLogo() {
-  return (
-    <svg width="52" height="22" viewBox="0 0 52 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect width="52" height="22" rx="4" fill="#1A73E8"/>
-      <text x="26" y="15" textAnchor="middle" fontFamily="'Arial Rounded MT Bold', 'Arial Black', sans-serif" fontWeight="800" fontSize="12" fill="#FFFFFF" letterSpacing="0.5">wave</text>
-      <path d="M10 18 Q13 16 16 18 Q19 20 22 18 Q25 16 28 18 Q31 20 34 18 Q37 16 40 18 Q43 20 46 18" stroke="#FFFFFF" strokeWidth="1.2" strokeLinecap="round" fill="none" opacity="0.5"/>
-    </svg>
-  );
-}
 
-function OrangeMoneyLogo() {
-  return (
-    <svg width="72" height="22" viewBox="0 0 72 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect width="72" height="22" rx="4" fill="#FF6600"/>
-      <circle cx="11" cy="11" r="7" fill="none" stroke="#FFFFFF" strokeWidth="1.8"/>
-      <circle cx="11" cy="11" r="3.5" fill="#FFFFFF" opacity="0.4"/>
-      <text x="44" y="9" textAnchor="middle" fontFamily="'Arial Black', 'Arial', sans-serif" fontWeight="900" fontSize="6.5" fill="#FFFFFF" letterSpacing="0.3">ORANGE</text>
-      <text x="44" y="17" textAnchor="middle" fontFamily="'Arial Black', 'Arial', sans-serif" fontWeight="900" fontSize="6.5" fill="#FFFFFF" letterSpacing="0.3">MONEY</text>
-    </svg>
-  );
-}
 
-function PaymentBadges() {
-  return (
-    <div className="flex items-center justify-center gap-2 mt-2">
-      <span className="text-zinc-600 text-xs">Paiement :</span>
-      <div className="bg-zinc-800 rounded-lg px-2 py-1 border border-zinc-700"><WaveLogo /></div>
-      <div className="bg-zinc-800 rounded-lg px-2 py-1 border border-zinc-700"><OrangeMoneyLogo /></div>
-    </div>
-  );
-}
+
 
 function App({ authUser, onLogout }: AppProps) {
   const [currentPage, setCurrentPage] = useState<Page>('home');
@@ -213,7 +185,7 @@ function App({ authUser, onLogout }: AppProps) {
                   <LogOut className="w-4 h-4" /> Déconnexion
                 </button>
               </div>
-              <div className="px-3 pb-1"><PaymentBadges /></div>
+              <div className="px-3 pb-1"></div>
             </div>
           </div>
         )}
@@ -224,9 +196,7 @@ function App({ authUser, onLogout }: AppProps) {
         {currentPage === 'home' && (
           <div className="space-y-8">
             <div className="text-center pt-2">
-              <h2 className="text-white text-xl sm:text-2xl font-bold">Sélectionnez un Service</h2>
-              <p className="text-zinc-500 text-sm mt-1">Choisissez une catégorie pour commencer</p>
-              <PaymentBadges />
+              
             </div>
             
             {/* BANNIÈRE PUBLICITAIRE */}
