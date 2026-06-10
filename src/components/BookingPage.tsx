@@ -643,8 +643,8 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               {errors.client_phone && <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>}
             </div>
 
-            {/* SECTION DATE RESPONSIVE */}
-            <div>
+            {/* SECTION DATE - PLEINE LARGEUR SUR MOBILE */}
+            <div className="w-full">
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Date <span className="text-red-400">*</span></label>
               <input
                 type="date"
@@ -662,88 +662,94 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
             </div>
 
-            {/* SECTION CRÉNEAUX RESPONSIVE */}
+            {/* SECTION CRÉNEAUX - ENTIÈREMENT RESPONSIVE */}
             {form.date && (
-              <div>
-                <div className="flex items-center justify-between mb-2">
+              <div className="w-full">
+                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                   <label className="text-sm font-semibold text-zinc-300">Heure <span className="text-red-400">*</span></label>
                   <button
                     type="button"
                     onClick={() => refreshSlots(false)}
                     disabled={loadingSlots}
-                    className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition"
+                    className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition px-2 py-1 rounded-lg bg-zinc-800/50"
                   >
                     <RefreshCw className={`w-3 h-3 ${loadingSlots ? 'animate-spin' : ''}`} /> Actualiser
                   </button>
                 </div>
 
-                <div className="flex items-center gap-2 mb-3 px-2 py-1.5 bg-zinc-900 rounded-lg border border-zinc-800">
+                <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-zinc-900 rounded-xl border border-zinc-800">
                   <div className="flex items-center gap-1">
                     <WifiOff className="w-3 h-3 text-amber-400" />
-                    <span className="text-amber-400 text-[10px]">Sync auto (15s)</span>
+                    <span className="text-amber-400 text-[10px]">Sync auto</span>
                   </div>
                   {lastRefresh && (
                     <span className="text-zinc-600 text-[10px] ml-auto">
-                      màj {lastRefresh.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      {lastRefresh.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   )}
                 </div>
 
                 {loadingSlots ? (
-                  <div className="text-center py-4">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white mx-auto" />
+                  <div className="text-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
+                    <p className="text-zinc-500 text-xs mt-2">Chargement des créneaux...</p>
                   </div>
                 ) : allSlots.length === 0 ? (
-                  <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 text-center">
+                  <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
                     <p className="text-yellow-400 text-sm">Aucun créneau disponible ce jour</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-                    {allSlots.map((slot) => {
-                      const isBooked = bookedSlots.includes(slot);
-                      const isSelected = form.time === slot;
-                      return (
-                        <button
-                          key={slot}
-                          type="button"
-                          onClick={() => {
-                            if (!isBooked) {
-                              setForm(prev => ({ ...prev, time: slot }));
-                              setErrors(prev => ({ ...prev, time: undefined }));
-                            }
-                          }}
-                          disabled={isBooked}
-                          className={`py-2.5 sm:py-3 rounded-xl text-xs sm:text-sm font-medium border transition ${
-                            isSelected
-                              ? 'border-green-500 bg-green-500 text-black font-bold'
-                              : isBooked
-                              ? 'border-red-500/40 bg-red-500/10 text-red-400/60 cursor-not-allowed opacity-70'
-                              : 'border-green-500/50 bg-green-500/10 text-green-400 hover:bg-green-500/20'
-                          }`}
-                        >
-                          {slot}
-                          {isBooked && <span className="block text-[8px] sm:text-[9px] mt-0.5">Pris</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <>
+                    {/* GRILLE RESPONSIVE - 2 COLONNES SUR MOBILE, 3 SUR TABLETTE, 4 SUR DESKTOP */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {allSlots.map((slot) => {
+                        const isBooked = bookedSlots.includes(slot);
+                        const isSelected = form.time === slot;
+                        return (
+                          <button
+                            key={slot}
+                            type="button"
+                            onClick={() => {
+                              if (!isBooked) {
+                                setForm(prev => ({ ...prev, time: slot }));
+                                setErrors(prev => ({ ...prev, time: undefined }));
+                              }
+                            }}
+                            disabled={isBooked}
+                            className={`
+                              w-full py-3 px-2 rounded-xl text-sm font-medium transition-all duration-150
+                              ${isSelected
+                                ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
+                                : isBooked
+                                ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
+                                : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
+                              }
+                            `}
+                          >
+                            <span className="block">{slot}</span>
+                            {isBooked && <span className="block text-[10px] mt-0.5">indisponible</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* Indicateur de créneaux disponibles */}
+                    <div className="mt-3 text-center">
+                      <p className="text-green-400 text-xs">
+                        ✅ {availableSlots.length} créneau{availableSlots.length > 1 ? 'x' : ''} disponible{availableSlots.length > 1 ? 's' : ''}
+                      </p>
+                    </div>
+                  </>
                 )}
-                {errors.time && <p className="text-red-400 text-xs mt-1">{errors.time}</p>}
-                
-                {/* Indicateur de créneaux disponibles */}
-                {!loadingSlots && availableSlots.length > 0 && (
-                  <p className="text-green-400 text-[10px] mt-2 text-center">
-                    ✅ {availableSlots.length} créneau{availableSlots.length > 1 ? 'x' : ''} disponible{availableSlots.length > 1 ? 's' : ''}
-                  </p>
-                )}
+                {errors.time && <p className="text-red-400 text-xs mt-2">{errors.time}</p>}
               </div>
             )}
 
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">Note</label>
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">Note (optionnelle)</label>
               <textarea
-                rows={2}
-                placeholder="Précisions..."
+                rows={3}
+                placeholder="Précisions sur votre réservation..."
                 value={form.note}
                 onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))}
                 className="w-full px-4 py-3 bg-zinc-900 border border-zinc-700 focus:border-white rounded-xl text-white focus:outline-none transition resize-none text-base"
@@ -755,15 +761,32 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               if (!svc || !form.date || !form.time || (barbers.length > 0 && !form.barberName)) return null;
               const price = settings.booking_type === 'normal' ? (svc as Service).base_price : (svc as EventService).price;
               return (
-                <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4">
-                  <p className="text-zinc-500 text-[10px] uppercase tracking-widest mb-3">Résumé</p>
-                  <div className="space-y-1.5 text-sm">
-                    <div className="flex justify-between"><span className="text-zinc-400">Service</span><span className="text-white font-semibold">{svc.name}</span></div>
-                    {form.barberName && <div className="flex justify-between"><span className="text-zinc-400">Coiffeur</span><span className="text-white">{form.barberName}</span></div>}
-                    <div className="flex justify-between"><span className="text-zinc-400">Date</span><span className="text-white">{new Date(form.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</span></div>
-                    <div className="flex justify-between"><span className="text-zinc-400">Heure</span><span className="text-white font-bold">{form.time}</span></div>
-                    <hr className="border-zinc-700 my-2" />
-                    <div className="flex justify-between text-base"><span className="text-zinc-300 font-semibold">Total</span><span className="text-white font-black">{price.toLocaleString()} CFA</span></div>
+                <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 rounded-2xl p-4 mt-2">
+                  <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">Résumé de votre réservation</p>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between items-center">
+                      <span className="text-zinc-400">Service</span>
+                      <span className="text-white font-semibold">{svc.name}</span>
+                    </div>
+                    {form.barberName && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-zinc-400">Coiffeur</span>
+                        <span className="text-white">{form.barberName}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-center">
+                      <span className="text-zinc-400">Date</span>
+                      <span className="text-white">{new Date(form.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-zinc-400">Heure</span>
+                      <span className="text-green-400 font-bold">{form.time}</span>
+                    </div>
+                    <div className="border-t border-zinc-700 my-2"></div>
+                    <div className="flex justify-between items-center text-base">
+                      <span className="text-zinc-300 font-semibold">Total à payer</span>
+                      <span className="text-white font-black text-lg">{price.toLocaleString()} CFA</span>
+                    </div>
                   </div>
                 </div>
               );
@@ -773,21 +796,24 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               type="button"
               onClick={handleSubmit}
               disabled={!!isDisabled}
-              className="w-full bg-white text-black font-bold py-4 rounded-2xl text-base hover:bg-zinc-200 transition disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full bg-white text-black font-bold py-4 rounded-2xl text-base hover:bg-zinc-200 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-4"
             >
               {submitting ? (
-                <><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-black" /> En cours...</>
+                <><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-black" /> Réservation en cours...</>
               ) : (
-                <>Réserver <Check className="w-5 h-5" /></>
+                <>Confirmer la réservation <Check className="w-5 h-5" /></>
               )}
             </button>
-            <p className="text-center text-zinc-500 text-[11px]">
-              ⚠️ Après réservation, envoyez le message de confirmation
-            </p>
+            
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
+              <p className="text-blue-400 text-xs text-center">
+                ⚠️ Important : Après avoir confirmé votre réservation, vous devrez envoyer le message de confirmation qui apparaîtra à l'écran.
+              </p>
+            </div>
           </div>
         )}
 
-        <p className="text-center text-zinc-600 text-[10px] pb-4">
+        <p className="text-center text-zinc-600 text-[10px] pb-4 pt-2">
           Propulsé par <span className="text-white font-semibold">LE COUPE</span>
         </p>
       </div>
