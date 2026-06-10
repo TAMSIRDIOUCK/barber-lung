@@ -1,4 +1,4 @@
-// src/components/BookingSettingsPage.tsx (version corrigée)
+// src/components/BookingSettingsPage.tsx
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Link2, Check, Copy, Clock, User, Phone, Calendar,
@@ -162,7 +162,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         .eq('booking_id', booking.id).maybeSingle();
       if (existing) return;
       
-      const { error } = await supabase.from('transactions').insert({
+      await supabase.from('transactions').insert({
         user_id: userId,
         service_name: booking.service_name,
         amount: booking.service_price,
@@ -174,8 +174,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         with_teinture: false,
         with_soin: false,
       });
-      
-      if (error) console.error('Transaction error:', error);
     } catch (err) { console.error('Transaction error:', err); }
   };
 
@@ -370,7 +368,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         return;
       }
 
-      // Transaction async non bloquante (corrigé sans .catch())
+      // Transaction async non bloquante
       try {
         await supabase.from('transactions').insert({
           user_id: userId,
@@ -412,26 +410,42 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   };
 
   const startScanner = async () => {
+    // Nettoyer l'ancien scanner si existant
+    if (scannerRef.current) {
+      try {
+        await scannerRef.current.stop();
+        await scannerRef.current.clear();
+      } catch (err) {
+        console.log('Erreur nettoyage:', err);
+      }
+      scannerRef.current = null;
+    }
+
+    // Attendre que le DOM soit prêt
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    const scannerContainer = document.getElementById(SCANNER_ID);
+    if (!scannerContainer) {
+      setScanError("❌ Conteneur non trouvé");
+      setScanning(false);
+      return;
+    }
+
     try {
       setScanning(true);
       setScanError(null);
       setScanSuccess(null);
       setProcessing(false);
-      setCameraPermission(null);
 
-      // Vérifier permission caméra rapidement
+      // Vérifier permission caméra
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         stream.getTracks().forEach(track => track.stop());
-        setCameraPermission(true);
       } catch (err) {
-        setCameraPermission(false);
         setScanError("❌ Permission caméra refusée");
         setScanning(false);
         return;
       }
-
-      await new Promise(resolve => setTimeout(resolve, 300));
 
       const scanner = new Html5Qrcode(SCANNER_ID);
       scannerRef.current = scanner;
@@ -444,7 +458,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         return;
       }
 
-      // Sélectionner la meilleure caméra arrière
+      // Sélectionner la caméra arrière
       const backCamera = cameras.find(c =>
         c.label.toLowerCase().includes("back") ||
         c.label.toLowerCase().includes("rear") ||
@@ -452,27 +466,28 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         c.label.toLowerCase().includes("environment")
       ) || cameras[0];
 
-      // CONFIGURATION ULTRA-RAPIDE
       const config = {
         fps: 30,
-        qrbox: { width: 250, height: 250 },
+        qrbox: { width: 280, height: 280 },
         aspectRatio: 1.0,
-        disableFlip: false,
-        rememberLastUsedCamera: true,
-        supportedScanTypes: 1,
-        verbose: false,
       };
 
       await scanner.start(
-        { deviceId: { exact: backCamera.id } },
+        backCamera.id,
         config,
-        async (decodedText) => {
-          if (!processing) {
-            await validateAndCompleteBookingFast(decodedText);
+        (decodedText) => {
+          if (!processing && decodedText) {
+            validateAndCompleteBookingFast(decodedText);
           }
         },
-        () => {} // Ignorer les erreurs silencieusement
+        (errorMessage) => {
+          // Ignorer les erreurs de scan en cours
+          if (errorMessage && errorMessage.includes("No MultiFormat")) {
+            return;
+          }
+        }
       );
+      
     } catch (err) {
       console.error("Erreur scanner:", err);
       setScanError("❌ Impossible d'accéder à la caméra");
@@ -488,7 +503,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         scannerRef.current = null;
       }
     } catch (err) {
-      console.error(err);
+      console.error('Erreur arrêt scanner:', err);
     }
     setScanning(false);
     setScanError(null);
@@ -600,68 +615,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     );
   }
 
-  /* ── Render: Scanner fullscreen ── */
-
-  if (scanning) {
-    return (
-      <div className="fixed inset-0 z-50 bg-black flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-zinc-800 shrink-0">
-          <div className="flex items-center gap-2">
-            <ScanLine className="w-5 h-5 text-green-400 animate-pulse" />
-            <h2 className="text-white font-bold text-lg">Scanner rapide</h2>
-          </div>
-          <button
-            onClick={stopScanner}
-            className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
-          >
-            <X className="w-5 h-5 text-white" />
-          </button>
-        </div>
-
-        <div className="flex-1 relative bg-black overflow-hidden">
-          <div id={SCANNER_ID} className="w-full h-full" />
-          
-          {/* Cadre de scan amélioré */}
-          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className="relative">
-              <div className="w-64 h-64 border-2 border-green-500 rounded-2xl" />
-              <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-green-500 rounded-tl-xl" />
-              <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-green-500 rounded-tr-xl" />
-              <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-green-500 rounded-bl-xl" />
-              <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-green-500 rounded-br-xl" />
-            </div>
-          </div>
-          
-          {/* Animation de scan */}
-          <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-green-500/50 animate-scan-line pointer-events-none" />
-        </div>
-
-        <div className="shrink-0 p-4 border-t border-zinc-800 space-y-2 bg-black">
-          {processing && (
-            <div className="bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded-xl p-3 flex items-center gap-2">
-              <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-400 border-t-transparent" />
-              Validation...
-            </div>
-          )}
-          
-          {scanError && (
-            <div className="bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl p-3 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              {scanError}
-            </div>
-          )}
-
-          {scanSuccess && (
-            <div className="bg-green-500/20 border border-green-500/40 text-green-300 rounded-xl p-3 flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0 animate-bounce" />
-              {scanSuccess}
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-
   /* ── Render: Main ── */
 
   return (
@@ -680,6 +633,16 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         }
         .animate-bounce {
           animation: bounce 0.5s ease-in-out infinite;
+        }
+        #qr-scanner-container video {
+          width: 100% !important;
+          height: 100% !important;
+          object-fit: cover !important;
+        }
+        #qr-scanner-container {
+          width: 100%;
+          height: 100%;
+          background: black;
         }
       `}</style>
 
@@ -710,6 +673,69 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <Camera className="w-5 h-5" />
             Scanner un ticket client
           </button>
+        </div>
+      )}
+
+      {/* ─ Scanner Modal ─ */}
+      {scanning && (
+        <div className="fixed inset-0 z-50 bg-black flex flex-col">
+          <div className="flex items-center justify-between p-4 border-b border-zinc-800 shrink-0">
+            <div className="flex items-center gap-2">
+              <ScanLine className="w-5 h-5 text-green-400 animate-pulse" />
+              <h2 className="text-white font-bold text-lg">Scanner un ticket</h2>
+            </div>
+            <button
+              onClick={stopScanner}
+              className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
+            >
+              <X className="w-5 h-5 text-white" />
+            </button>
+          </div>
+
+          <div className="flex-1 relative bg-black overflow-hidden">
+            <div id={SCANNER_ID} className="w-full h-full min-h-[400px]" />
+            
+            {/* Cadre de scan */}
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+              <div className="relative">
+                <div className="w-64 h-64 border-2 border-green-500 rounded-2xl" />
+                <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-green-500 rounded-tl-xl" />
+                <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-green-500 rounded-tr-xl" />
+                <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-green-500 rounded-bl-xl" />
+                <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-green-500 rounded-br-xl" />
+              </div>
+            </div>
+            
+            {/* Animation de scan */}
+            <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-green-500/50 animate-scan-line pointer-events-none" />
+          </div>
+
+          <div className="shrink-0 p-4 border-t border-zinc-800 space-y-2 bg-black">
+            <p className="text-zinc-400 text-sm text-center">
+              📱 Placez le QR code dans le cadre
+            </p>
+            
+            {processing && (
+              <div className="bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded-xl p-3 flex items-center gap-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-400 border-t-transparent" />
+                Validation en cours...
+              </div>
+            )}
+            
+            {scanError && (
+              <div className="bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl p-3 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                {scanError}
+              </div>
+            )}
+
+            {scanSuccess && (
+              <div className="bg-green-500/20 border border-green-500/40 text-green-300 rounded-xl p-3 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                {scanSuccess}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -816,113 +842,111 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             </div>
           ) : (
             <div className="space-y-2">
-              {filteredBookings.map(booking => {
-                return (
-                  <div
-                    key={booking.id}
-                    className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden"
-                  >
-                    <div className="flex items-center justify-between px-4 pt-4 pb-2 gap-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-black font-mono text-white text-base bg-zinc-800 px-2.5 py-1 rounded-lg leading-none">
-                          {booking.ticket_number}
+              {filteredBookings.map(booking => (
+                <div
+                  key={booking.id}
+                  className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden"
+                >
+                  <div className="flex items-center justify-between px-4 pt-4 pb-2 gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-black font-mono text-white text-base bg-zinc-800 px-2.5 py-1 rounded-lg leading-none">
+                        {booking.ticket_number}
+                      </span>
+                      <span className={`text-[10px] px-2 py-1 rounded-full border font-semibold ${STATUS_COLORS[booking.status]}`}>
+                        {STATUS_LABELS[booking.status]}
+                      </span>
+                      {booking.qr_code_scanned && (
+                        <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
+                          ✓ Scanné
                         </span>
-                        <span className={`text-[10px] px-2 py-1 rounded-full border font-semibold ${STATUS_COLORS[booking.status]}`}>
-                          {STATUS_LABELS[booking.status]}
-                        </span>
-                        {booking.qr_code_scanned && (
-                          <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
-                            ✓ Scanné
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="px-4 pb-3 space-y-1.5">
-                      <div className="flex items-center gap-2 text-sm text-zinc-300">
-                        <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                        <span className="truncate font-medium">{booking.client_name}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-zinc-400">
-                        <Phone className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                        <a href={`tel:${booking.client_phone}`} className="truncate underline-offset-2 active:text-white">
-                          {booking.client_phone}
-                        </a>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-zinc-400">
-                        <Scissors className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                        <span className="truncate">{booking.service_name}</span>
-                        <span className="ml-auto shrink-0 text-white font-bold text-xs">
-                          {booking.service_price.toLocaleString()} CFA
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm text-zinc-400">
-                        <Calendar className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                        <span>{new Date(booking.booking_date).toLocaleDateString('fr-FR')}</span>
-                        <span className="text-white font-bold">{booking.booking_time.slice(0, 5)}</span>
-                      </div>
-                      
-                      {booking.barber_name && (
-                        <div className="flex items-center gap-2 text-sm text-zinc-400">
-                          <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                          <span>Coiffeur: {booking.barber_name}</span>
-                        </div>
-                      )}
-                      
-                      {booking.note && (
-                        <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
-                          <span className="text-zinc-600">📝</span>
-                          <span className="italic">{booking.note}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="px-4 pb-4 flex flex-wrap gap-2 border-t border-zinc-800/50 pt-3">
-                      {booking.status === 'pending' && (
-                        <>
-                          <button
-                            onClick={() => handleStatusChange(booking.id, 'confirmed')}
-                            disabled={updatingId === booking.id}
-                            className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95 disabled:opacity-50"
-                          >
-                            Confirmer
-                          </button>
-                          <button
-                            onClick={() => handleStatusChange(booking.id, 'cancelled')}
-                            disabled={updatingId === booking.id}
-                            className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold py-2 rounded-xl text-sm transition active:scale-95"
-                          >
-                            Annuler
-                          </button>
-                        </>
-                      )}
-                      {booking.status === 'confirmed' && !booking.qr_code_scanned && (
-                        <button
-                          onClick={() => handleStatusChange(booking.id, 'done')}
-                          disabled={updatingId === booking.id}
-                          className="w-full bg-sky-500 hover:bg-sky-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95"
-                        >
-                          Marquer comme terminé
-                        </button>
-                      )}
-                      {booking.status === 'confirmed' && booking.qr_code_scanned && (
-                        <div className="w-full text-center text-emerald-400 text-sm py-2">
-                          ✓ Ticket scanné et validé
-                        </div>
-                      )}
-                      {(booking.status === 'done' || booking.status === 'cancelled') && (
-                        <button
-                          onClick={() => handleStatusChange(booking.id, 'pending')}
-                          disabled={updatingId === booking.id}
-                          className="w-full bg-zinc-700 hover:bg-zinc-600 text-white font-semibold py-2 rounded-xl text-sm transition active:scale-95"
-                        >
-                          Réinitialiser
-                        </button>
                       )}
                     </div>
                   </div>
-                );
-              })}
+
+                  <div className="px-4 pb-3 space-y-1.5">
+                    <div className="flex items-center gap-2 text-sm text-zinc-300">
+                      <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                      <span className="truncate font-medium">{booking.client_name}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-zinc-400">
+                      <Phone className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                      <a href={`tel:${booking.client_phone}`} className="truncate underline-offset-2 active:text-white">
+                        {booking.client_phone}
+                      </a>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-zinc-400">
+                      <Scissors className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                      <span className="truncate">{booking.service_name}</span>
+                      <span className="ml-auto shrink-0 text-white font-bold text-xs">
+                        {booking.service_price.toLocaleString()} CFA
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-zinc-400">
+                      <Calendar className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                      <span>{new Date(booking.booking_date).toLocaleDateString('fr-FR')}</span>
+                      <span className="text-white font-bold">{booking.booking_time.slice(0, 5)}</span>
+                    </div>
+                    
+                    {booking.barber_name && (
+                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                        <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                        <span>Coiffeur: {booking.barber_name}</span>
+                      </div>
+                    )}
+                    
+                    {booking.note && (
+                      <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
+                        <span className="text-zinc-600">📝</span>
+                        <span className="italic">{booking.note}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-4 pb-4 flex flex-wrap gap-2 border-t border-zinc-800/50 pt-3">
+                    {booking.status === 'pending' && (
+                      <>
+                        <button
+                          onClick={() => handleStatusChange(booking.id, 'confirmed')}
+                          disabled={updatingId === booking.id}
+                          className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95 disabled:opacity-50"
+                        >
+                          Confirmer
+                        </button>
+                        <button
+                          onClick={() => handleStatusChange(booking.id, 'cancelled')}
+                          disabled={updatingId === booking.id}
+                          className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold py-2 rounded-xl text-sm transition active:scale-95"
+                        >
+                          Annuler
+                        </button>
+                      </>
+                    )}
+                    {booking.status === 'confirmed' && !booking.qr_code_scanned && (
+                      <button
+                        onClick={() => handleStatusChange(booking.id, 'done')}
+                        disabled={updatingId === booking.id}
+                        className="w-full bg-sky-500 hover:bg-sky-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95"
+                      >
+                        Marquer comme terminé
+                      </button>
+                    )}
+                    {booking.status === 'confirmed' && booking.qr_code_scanned && (
+                      <div className="w-full text-center text-emerald-400 text-sm py-2">
+                        ✓ Ticket scanné et validé
+                      </div>
+                    )}
+                    {(booking.status === 'done' || booking.status === 'cancelled') && (
+                      <button
+                        onClick={() => handleStatusChange(booking.id, 'pending')}
+                        disabled={updatingId === booking.id}
+                        className="w-full bg-zinc-700 hover:bg-zinc-600 text-white font-semibold py-2 rounded-xl text-sm transition active:scale-95"
+                      >
+                        Réinitialiser
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
