@@ -643,26 +643,31 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               {errors.client_phone && <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>}
             </div>
 
-            {/* SECTION DATE - PLEINE LARGEUR SUR MOBILE */}
+            {/* SECTION DATE - CORRIGÉE NE DÉBORDE PAS */}
             <div className="w-full">
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Date <span className="text-red-400">*</span></label>
-              <input
-                type="date"
-                min={todayISO}
-                max={maxDateISO}
-                value={form.date}
-                onChange={e => {
-                  setForm(prev => ({ ...prev, date: e.target.value, time: '' }));
-                  setErrors(prev => ({ ...prev, date: undefined }));
-                }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base [color-scheme:dark] ${
-                  errors.date ? 'border-red-500' : 'border-zinc-700 focus:border-white'
-                }`}
-              />
+              <div className="w-full">
+                <input
+                  type="date"
+                  min={todayISO}
+                  max={maxDateISO}
+                  value={form.date}
+                  onChange={e => {
+                    setForm(prev => ({ ...prev, date: e.target.value, time: '' }));
+                    setErrors(prev => ({ ...prev, date: undefined }));
+                  }}
+                  className="w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base [color-scheme:dark] border-zinc-700 focus:border-white"
+                  style={{
+                    display: 'block',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
               {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
             </div>
 
-            {/* SECTION CRÉNEAUX - ENTIÈREMENT RESPONSIVE */}
+            {/* SECTION CRÉNEAUX RESPONSIVE */}
             {form.date && (
               <div className="w-full">
                 <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -700,7 +705,6 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
                   </div>
                 ) : (
                   <>
-                    {/* GRILLE RESPONSIVE - 2 COLONNES SUR MOBILE, 3 SUR TABLETTE, 4 SUR DESKTOP */}
                     <div className="grid grid-cols-2 gap-2">
                       {allSlots.map((slot) => {
                         const isBooked = bookedSlots.includes(slot);
@@ -733,7 +737,6 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
                       })}
                     </div>
                     
-                    {/* Indicateur de créneaux disponibles */}
                     <div className="mt-3 text-center">
                       <p className="text-green-400 text-xs">
                         ✅ {availableSlots.length} créneau{availableSlots.length > 1 ? 'x' : ''} disponible{availableSlots.length > 1 ? 's' : ''}
