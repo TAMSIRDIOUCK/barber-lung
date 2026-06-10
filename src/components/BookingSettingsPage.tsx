@@ -1,4 +1,4 @@
-// src/components/BookingSettingsPage.tsx
+// src/components/BookingSettingsPage.tsx (version corrigée)
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Link2, Check, Copy, Clock, User, Phone, Calendar,
@@ -161,7 +161,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         .from('transactions').select('id')
         .eq('booking_id', booking.id).maybeSingle();
       if (existing) return;
-      await supabase.from('transactions').insert({
+      
+      const { error } = await supabase.from('transactions').insert({
         user_id: userId,
         service_name: booking.service_name,
         amount: booking.service_price,
@@ -173,6 +174,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         with_teinture: false,
         with_soin: false,
       });
+      
+      if (error) console.error('Transaction error:', error);
     } catch (err) { console.error('Transaction error:', err); }
   };
 
@@ -244,121 +247,114 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     };
   }, []);
 
-  /* ── Scanner CORRIGÉ ── */
+  /* ── Scanner ULTRA RAPIDE - Seules les réservations CONFIRMÉES peuvent être scannées ── */
 
-  const validateAndCompleteBooking = async (qrCodeValue: string) => {
+  const validateAndCompleteBookingFast = async (qrCodeValue: string) => {
     if (!qrCodeValue || processing) return;
     
     setProcessing(true);
     setScanError(null);
     
     try {
-      console.log('📱 QR Code scanné:', qrCodeValue);
       const cleanQR = qrCodeValue.trim();
       
       let bookingId = null;
       let ticketNumber = null;
       
-      // Format 1: JSON
+      // Extraction ultra-rapide
       if (cleanQR.startsWith('{')) {
         try {
           const parsed = JSON.parse(cleanQR);
           bookingId = parsed.booking_id || parsed.id;
           ticketNumber = parsed.ticket_number;
-          console.log('✅ Format JSON détecté:', parsed);
         } catch {}
       }
       
-      // Format 2: Format avec pipe "ID|TICKET|SERVICE|DATE|HEURE"
       if (!bookingId && cleanQR.includes('|')) {
         const parts = cleanQR.split('|');
-        if (parts.length >= 2) {
-          bookingId = parts[0];
-          if (parts.length >= 2) ticketNumber = parts[1];
-          console.log('✅ Format pipe détecté:', { bookingId, ticketNumber });
-        }
+        bookingId = parts[0];
+        ticketNumber = parts[1];
       }
       
-      // Format 3: UUID direct
-      if (!bookingId && cleanQR.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      if (!bookingId && cleanQR.length === 36 && cleanQR.includes('-')) {
         bookingId = cleanQR;
-        console.log('✅ Format UUID détecté:', bookingId);
       }
       
-      // Format 4: Numéro de ticket (TKT-...)
       if (!bookingId && cleanQR.startsWith('TKT-')) {
         ticketNumber = cleanQR;
-        console.log('✅ Format ticket détecté:', ticketNumber);
       }
-      
-      console.log('🔍 Recherche avec:', { bookingId, ticketNumber });
       
       let booking = null;
       
-      // Recherche par ID
+      // Recherche par ID en priorité
       if (bookingId && bookingId.length === 36) {
         const { data, error } = await supabase
           .from('bookings')
-          .select('*')
+          .select('id, ticket_number, client_name, status, qr_code_scanned, scanned_at, salon_user_id, service_name, service_price, barber_name, client_phone')
           .eq('id', bookingId)
           .eq('salon_user_id', userId)
           .maybeSingle();
-        if (!error && data) {
-          booking = data;
-          console.log('✅ Trouvé par ID');
-        }
+          
+        if (!error && data) booking = data;
       }
       
       // Recherche par ticket number
       if (!booking && ticketNumber) {
         const { data, error } = await supabase
           .from('bookings')
-          .select('*')
+          .select('id, ticket_number, client_name, status, qr_code_scanned, scanned_at, salon_user_id, service_name, service_price, barber_name, client_phone')
           .eq('ticket_number', ticketNumber)
           .eq('salon_user_id', userId)
           .maybeSingle();
-        if (!error && data) {
-          booking = data;
-          console.log('✅ Trouvé par ticket number');
-        }
+          
+        if (!error && data) booking = data;
       }
       
-      // Recherche par qr_code
+      // Recherche par QR code en dernier
       if (!booking) {
         const { data, error } = await supabase
           .from('bookings')
-          .select('*')
+          .select('id, ticket_number, client_name, status, qr_code_scanned, scanned_at, salon_user_id, service_name, service_price, barber_name, client_phone')
           .eq('qr_code', cleanQR)
           .eq('salon_user_id', userId)
           .maybeSingle();
-        if (!error && data) {
-          booking = data;
-          console.log('✅ Trouvé par QR code');
-        }
+          
+        if (!error && data) booking = data;
       }
 
       if (!booking) {
-        setScanError('❌ QR code invalide – Réservation non trouvée');
+        setScanError('❌ Réservation non trouvée');
+        setProcessing(false);
         return;
       }
       
-      console.log('✅ Réservation trouvée:', booking.ticket_number, booking.client_name);
-      
+      // Vérifications rapides
       if (booking.qr_code_scanned) {
-        setScanError(`❌ Ticket ${booking.ticket_number} déjà scanné le ${booking.scanned_at ? new Date(booking.scanned_at).toLocaleString('fr-FR') : 'à une date inconnue'}`);
+        setScanError(`❌ Ticket déjà scanné`);
+        setProcessing(false);
         return;
       }
       
       if (booking.status === 'cancelled') {
-        setScanError(`❌ Ticket ${booking.ticket_number} annulé`);
+        setScanError(`❌ Ticket annulé`);
+        setProcessing(false);
         return;
       }
       
       if (booking.status === 'done') {
-        setScanError(`❌ Ticket ${booking.ticket_number} déjà terminé`);
+        setScanError(`❌ Ticket déjà terminé`);
+        setProcessing(false);
         return;
       }
       
+      // ← CRITIQUE: Seulement les réservations CONFIRMÉES
+      if (booking.status !== 'confirmed') {
+        setScanError(`❌ Réservation non confirmée`);
+        setProcessing(false);
+        return;
+      }
+      
+      // Mise à jour BDD optimisée
       const { error: updateError } = await supabase
         .from('bookings')
         .update({
@@ -369,29 +365,47 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         .eq('id', booking.id);
 
       if (updateError) {
-        console.error('❌ Erreur mise à jour:', updateError);
-        setScanError('❌ Erreur lors de la validation');
+        setScanError('❌ Erreur validation');
+        setProcessing(false);
         return;
       }
 
-      await saveTransaction(booking);
+      // Transaction async non bloquante (corrigé sans .catch())
+      try {
+        await supabase.from('transactions').insert({
+          user_id: userId,
+          service_name: booking.service_name,
+          amount: booking.service_price,
+          barber_name: booking.barber_name || null,
+          transaction_date_sec: new Date().toISOString(),
+          booking_id: booking.id,
+          client_name: booking.client_name,
+          client_phone: booking.client_phone,
+          with_teinture: false,
+          with_soin: false,
+        });
+      } catch (err) {
+        console.error('Transaction error:', err);
+      }
 
+      // Mise à jour UI immédiate
       setBookings(prev => prev.map(b =>
         b.id === booking.id
           ? { ...b, qr_code_scanned: true, scanned_at: new Date().toISOString(), status: 'done' }
           : b
       ));
 
-      setScanSuccess(`✅ Ticket ${booking.ticket_number} validé ! (${booking.client_name})`);
+      setScanSuccess(`✅ Ticket ${booking.ticket_number} validé !`);
       
+      // Fermeture rapide après succès
       setTimeout(() => {
         stopScanner();
-        loadAll(); // Recharger la liste des réservations
-      }, 3000);
+        loadAll();
+      }, 1500);
       
     } catch (err) {
-      console.error('❌ Erreur validation:', err);
-      setScanError('❌ Erreur lors de la validation');
+      console.error(err);
+      setScanError('❌ Erreur');
     } finally {
       setProcessing(false);
     }
@@ -405,19 +419,19 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       setProcessing(false);
       setCameraPermission(null);
 
-      // Vérifier la permission caméra d'abord
+      // Vérifier permission caméra rapidement
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         stream.getTracks().forEach(track => track.stop());
         setCameraPermission(true);
       } catch (err) {
         setCameraPermission(false);
-        setScanError("❌ Permission caméra refusée. Veuillez autoriser l'accès à la caméra.");
+        setScanError("❌ Permission caméra refusée");
         setScanning(false);
         return;
       }
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       const scanner = new Html5Qrcode(SCANNER_ID);
       scannerRef.current = scanner;
@@ -430,23 +444,23 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         return;
       }
 
-      // Sélectionner la caméra arrière (priorité)
+      // Sélectionner la meilleure caméra arrière
       const backCamera = cameras.find(c =>
         c.label.toLowerCase().includes("back") ||
         c.label.toLowerCase().includes("rear") ||
         c.label.toLowerCase().includes("arrière") ||
-        c.label.toLowerCase().includes("environment") ||
-        c.label.toLowerCase().includes("camera2")
+        c.label.toLowerCase().includes("environment")
       ) || cameras[0];
 
-      // Configuration optimisée pour mobile
+      // CONFIGURATION ULTRA-RAPIDE
       const config = {
-        fps: 15,
-        qrbox: { width: 280, height: 280 },
+        fps: 30,
+        qrbox: { width: 250, height: 250 },
         aspectRatio: 1.0,
         disableFlip: false,
         rememberLastUsedCamera: true,
         supportedScanTypes: 1,
+        verbose: false,
       };
 
       await scanner.start(
@@ -454,18 +468,14 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         config,
         async (decodedText) => {
           if (!processing) {
-            await validateAndCompleteBooking(decodedText);
+            await validateAndCompleteBookingFast(decodedText);
           }
         },
-        (errorMessage) => {
-          if (errorMessage && !errorMessage.includes("No MultiFormat Readers")) {
-            console.log("Scan en cours...");
-          }
-        }
+        () => {} // Ignorer les erreurs silencieusement
       );
     } catch (err) {
       console.error("Erreur scanner:", err);
-      setScanError("❌ Impossible d'accéder à la caméra. Vérifiez les permissions.");
+      setScanError("❌ Impossible d'accéder à la caméra");
       setScanning(false);
     }
   };
@@ -597,12 +607,12 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       <div className="fixed inset-0 z-50 bg-black flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-zinc-800 shrink-0">
           <div className="flex items-center gap-2">
-            <ScanLine className="w-5 h-5 text-green-400" />
-            <h2 className="text-white font-bold text-lg">Scanner un ticket</h2>
+            <ScanLine className="w-5 h-5 text-green-400 animate-pulse" />
+            <h2 className="text-white font-bold text-lg">Scanner rapide</h2>
           </div>
           <button
             onClick={stopScanner}
-            className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center hover:bg-zinc-700 transition active:scale-95"
+            className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
           >
             <X className="w-5 h-5 text-white" />
           </button>
@@ -610,49 +620,42 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
         <div className="flex-1 relative bg-black overflow-hidden">
           <div id={SCANNER_ID} className="w-full h-full" />
-          <div className="absolute top-4 left-0 right-0 text-center pointer-events-none">
-            <p className="text-white/70 text-sm bg-black/50 inline-block px-4 py-2 rounded-full">
-              📱 Placez le QR code dans le cadre
-            </p>
-          </div>
+          
+          {/* Cadre de scan amélioré */}
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className="w-72 h-72 border-4 border-green-400 rounded-3xl shadow-[0_0_0_9999px_rgba(0,0,0,0.6)] animate-pulse" />
+            <div className="relative">
+              <div className="w-64 h-64 border-2 border-green-500 rounded-2xl" />
+              <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-green-500 rounded-tl-xl" />
+              <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-green-500 rounded-tr-xl" />
+              <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-green-500 rounded-bl-xl" />
+              <div className="absolute -bottom-1 -right-1 w-8 h-8 border-b-4 border-r-4 border-green-500 rounded-br-xl" />
+            </div>
           </div>
+          
+          {/* Animation de scan */}
+          <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-green-500/50 animate-scan-line pointer-events-none" />
         </div>
 
         <div className="shrink-0 p-4 border-t border-zinc-800 space-y-2 bg-black">
           {processing && (
-            <div className="bg-blue-500/20 border border-blue-500/40 text-blue-300 text-sm rounded-xl p-3 flex items-center gap-2">
+            <div className="bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded-xl p-3 flex items-center gap-2">
               <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-400 border-t-transparent" />
-              Validation en cours...
+              Validation...
             </div>
           )}
           
           {scanError && (
-            <div className="bg-red-500/20 border border-red-500/40 text-red-300 text-sm rounded-xl p-3 flex items-center gap-2">
+            <div className="bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl p-3 flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0" />
               {scanError}
             </div>
           )}
 
           {scanSuccess && (
-            <div className="bg-green-500/20 border border-green-500/40 text-green-300 text-sm rounded-xl p-3 flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <div className="bg-green-500/20 border border-green-500/40 text-green-300 rounded-xl p-3 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0 animate-bounce" />
               {scanSuccess}
             </div>
-          )}
-
-          {!scanError && !scanSuccess && !processing && (
-            <div className="text-center space-y-1">
-              <p className="text-zinc-400 text-sm">🔍 Auto-focus sur le QR code</p>
-              <p className="text-zinc-500 text-xs">Assurez-vous que le code est bien éclairé</p>
-            </div>
-          )}
-          
-          {scanError && !processing && (
-            <button onClick={startScanner} className="w-full mt-2 bg-zinc-800 text-white font-semibold py-2 rounded-xl active:scale-95 transition">
-              🔄 Réessayer
-            </button>
           )}
         </div>
       </div>
@@ -663,6 +666,22 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   return (
     <div className="pb-24 space-y-4 max-w-lg mx-auto px-4 pt-2">
+      <style>{`
+        @keyframes scanLine {
+          0% { transform: translateY(-200px); }
+          100% { transform: translateY(200px); }
+        }
+        .animate-scan-line {
+          animation: scanLine 2s linear infinite;
+        }
+        @keyframes bounce {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-5px); }
+        }
+        .animate-bounce {
+          animation: bounce 0.5s ease-in-out infinite;
+        }
+      `}</style>
 
       {/* ─ Header ─ */}
       <div className="flex items-center justify-between">
@@ -798,8 +817,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           ) : (
             <div className="space-y-2">
               {filteredBookings.map(booking => {
-                const isExpanded = expandedBookingId === booking.id;
-                const hasExtra = !!(booking.barber_name || booking.note);
                 return (
                   <div
                     key={booking.id}
@@ -844,49 +861,65 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                         <span>{new Date(booking.booking_date).toLocaleDateString('fr-FR')}</span>
                         <span className="text-white font-bold">{booking.booking_time.slice(0, 5)}</span>
                       </div>
+                      
+                      {booking.barber_name && (
+                        <div className="flex items-center gap-2 text-sm text-zinc-400">
+                          <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                          <span>Coiffeur: {booking.barber_name}</span>
+                        </div>
+                      )}
+                      
+                      {booking.note && (
+                        <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
+                          <span className="text-zinc-600">📝</span>
+                          <span className="italic">{booking.note}</span>
+                        </div>
+                      )}
                     </div>
 
-                    <div className="px-4 pb-3">
-                      <select
-                        value={booking.status}
-                        onChange={e => handleStatusChange(booking.id, e.target.value as Booking['status'])}
-                        disabled={updatingId === booking.id}
-                        className="w-full bg-zinc-800 border border-zinc-700 text-white text-sm rounded-xl px-3 py-2.5 focus:outline-none focus:border-zinc-500 appearance-none cursor-pointer"
-                      >
-                        <option value="pending">📋 En attente</option>
-                        <option value="confirmed">✅ Confirmé</option>
-                        <option value="done">🏁 Terminé</option>
-                        <option value="cancelled">❌ Annulé</option>
-                      </select>
-                    </div>
-
-                    {hasExtra && (
-                      <>
+                    <div className="px-4 pb-4 flex flex-wrap gap-2 border-t border-zinc-800/50 pt-3">
+                      {booking.status === 'pending' && (
+                        <>
+                          <button
+                            onClick={() => handleStatusChange(booking.id, 'confirmed')}
+                            disabled={updatingId === booking.id}
+                            className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95 disabled:opacity-50"
+                          >
+                            Confirmer
+                          </button>
+                          <button
+                            onClick={() => handleStatusChange(booking.id, 'cancelled')}
+                            disabled={updatingId === booking.id}
+                            className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold py-2 rounded-xl text-sm transition active:scale-95"
+                          >
+                            Annuler
+                          </button>
+                        </>
+                      )}
+                      {booking.status === 'confirmed' && !booking.qr_code_scanned && (
                         <button
-                          onClick={() => setExpandedBookingId(isExpanded ? null : booking.id)}
-                          className="w-full flex items-center justify-center gap-1 py-2 border-t border-zinc-800 text-zinc-600 hover:text-zinc-400 text-xs transition"
+                          onClick={() => handleStatusChange(booking.id, 'done')}
+                          disabled={updatingId === booking.id}
+                          className="w-full bg-sky-500 hover:bg-sky-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95"
                         >
-                          {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          {isExpanded ? 'Réduire' : 'Plus de détails'}
+                          Marquer comme terminé
                         </button>
-                        {isExpanded && (
-                          <div className="px-4 pb-4 space-y-1.5 text-sm">
-                            {booking.barber_name && (
-                              <div className="flex gap-2">
-                                <span className="text-zinc-500 shrink-0">Coiffeur :</span>
-                                <span className="text-white">{booking.barber_name}</span>
-                              </div>
-                            )}
-                            {booking.note && (
-                              <div className="flex gap-2">
-                                <span className="text-zinc-500 shrink-0">Note :</span>
-                                <span className="text-zinc-300 italic">{booking.note}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    )}
+                      )}
+                      {booking.status === 'confirmed' && booking.qr_code_scanned && (
+                        <div className="w-full text-center text-emerald-400 text-sm py-2">
+                          ✓ Ticket scanné et validé
+                        </div>
+                      )}
+                      {(booking.status === 'done' || booking.status === 'cancelled') && (
+                        <button
+                          onClick={() => handleStatusChange(booking.id, 'pending')}
+                          disabled={updatingId === booking.id}
+                          className="w-full bg-zinc-700 hover:bg-zinc-600 text-white font-semibold py-2 rounded-xl text-sm transition active:scale-95"
+                        >
+                          Réinitialiser
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -897,204 +930,240 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
       {/* ════════════ TAB : PARAMÈTRES ════════════ */}
       {activeTab === 'settings' && (
-        <div className="space-y-4">
-          <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-4">
-            <h3 className="text-white font-bold flex items-center gap-2 text-sm">
-              <Settings className="w-4 h-4 text-zinc-500" /> Informations générales
-            </h3>
-
-            <div>
-              <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
-                Lien personnalisé <span className="text-red-400">*</span>
-              </label>
-              <div className="flex rounded-xl overflow-hidden border border-zinc-700 focus-within:border-white transition">
-                <span className="px-3 py-3 bg-zinc-800 text-zinc-500 text-xs flex items-center shrink-0">
-                  /booking/
-                </span>
-                <input
-                  type="text"
-                  value={slug}
-                  onChange={e => { setSlug(e.target.value); setSlugError(''); }}
-                  placeholder="mon-salon"
-                  className="flex-1 min-w-0 px-3 py-3 bg-zinc-800 text-white text-sm focus:outline-none"
-                />
+        <div className="space-y-6">
+          
+          {/* Activation */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-white font-bold">Page active</h3>
+                <p className="text-zinc-500 text-xs">Les clients peuvent réserver</p>
               </div>
-              {slugError && <p className="text-red-400 text-xs mt-1">{slugError}</p>}
+              <button
+                onClick={() => setIsActive(!isActive)}
+                className="text-3xl"
+              >
+                {isActive ? <ToggleRight className="w-8 h-8 text-green-500" /> : <ToggleLeft className="w-8 h-8 text-zinc-600" />}
+              </button>
             </div>
+          </div>
 
+          {/* Type de réservation */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+            <h3 className="text-white font-bold mb-3">Type de réservation</h3>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setBookingType('normal')}
+                className={`flex-1 py-3 rounded-xl font-semibold transition ${
+                  bookingType === 'normal'
+                    ? 'bg-white text-black'
+                    : 'bg-zinc-800 text-zinc-400'
+                }`}
+              >
+                Standard
+              </button>
+              <button
+                onClick={() => setBookingType('event')}
+                className={`flex-1 py-3 rounded-xl font-semibold transition ${
+                  bookingType === 'event'
+                    ? 'bg-white text-black'
+                    : 'bg-zinc-800 text-zinc-400'
+                }`}
+              >
+                Événement
+              </button>
+            </div>
+          </div>
+
+          {/* Infos salon */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
+            <h3 className="text-white font-bold">Informations du salon</h3>
+            
             <div>
-              <label className="block text-xs font-semibold text-zinc-400 mb-1.5">
-                Nom du salon <span className="text-red-400">*</span>
-              </label>
+              <label className="text-zinc-400 text-xs block mb-1">Nom du salon</label>
               <input
                 type="text"
                 value={salonName}
-                onChange={e => setSalonName(e.target.value)}
-                placeholder="Aliou Coiffure"
-                className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 focus:border-white rounded-xl text-white text-sm focus:outline-none transition"
+                onChange={(e) => setSalonName(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+                placeholder="Mon Salon"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Message d'accueil</label>
+              <label className="text-zinc-400 text-xs block mb-1">Adresse unique (slug)</label>
+              <input
+                type="text"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'))}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+                placeholder="mon-salon"
+              />
+              {slugError && <p className="text-red-400 text-xs mt-1">{slugError}</p>}
+              <p className="text-zinc-500 text-xs mt-1">{window.location.origin}/booking/{slug || 'mon-salon'}</p>
+            </div>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Message d'accueil</label>
               <textarea
-                rows={2}
                 value={welcomeMsg}
-                onChange={e => setWelcomeMsg(e.target.value)}
-                placeholder="Réservez votre coupe en quelques secondes."
-                className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 focus:border-white rounded-xl text-white text-sm focus:outline-none transition resize-none"
+                onChange={(e) => setWelcomeMsg(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+                rows={3}
+                placeholder="Bienvenue dans notre salon..."
               />
             </div>
+          </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Intervalle (min)</label>
-                <input
-                  type="number"
-                  min="30" max="180" step="30"
-                  value={bookingInterval}
-                  onChange={e => setBookingInterval(parseInt(e.target.value))}
-                  className="w-full px-3 py-3 bg-zinc-800 border border-zinc-700 rounded-xl text-white text-sm focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-zinc-400 mb-1.5">Jours à l'avance</label>
-                <input
-                  type="number"
-                  min="1" max="90"
-                  value={advanceDays}
-                  onChange={e => setAdvanceDays(parseInt(e.target.value))}
-                  className="w-full px-3 py-3 bg-zinc-800 border border-zinc-700 rounded-xl text-white text-sm focus:outline-none"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              {[
-                { label: 'Page active', desc: 'Les clients peuvent réserver en ligne', value: isActive, toggle: () => setIsActive(!isActive) },
-                { label: 'Paiement obligatoire', desc: 'Les clients paient avant de réserver', value: requirePayment, toggle: () => setRequirePayment(!requirePayment) },
-              ].map(({ label, desc, value, toggle }) => (
-                <div key={label} onClick={toggle} className="flex items-center justify-between bg-zinc-800 rounded-xl px-4 py-3 cursor-pointer active:scale-[0.99] transition">
-                  <div>
-                    <p className="text-white text-sm font-medium">{label}</p>
-                    <p className="text-zinc-500 text-xs">{desc}</p>
+          {/* Services événementiels */}
+          {bookingType === 'event' && (
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
+              <h3 className="text-white font-bold">Services événementiels</h3>
+              
+              {eventServices.map((service, idx) => (
+                <div key={service.id} className="flex items-center gap-2 bg-zinc-800 rounded-xl p-2">
+                  <div className="flex-1">
+                    <p className="text-white text-sm font-medium">{service.name}</p>
+                    <p className="text-zinc-400 text-xs">{service.price.toLocaleString()} CFA</p>
                   </div>
-                  {value ? <ToggleRight className="w-8 h-8 text-green-400" /> : <ToggleLeft className="w-8 h-8 text-zinc-600" />}
+                  <button
+                    onClick={() => setEventServices(eventServices.filter((_, i) => i !== idx))}
+                    className="p-2 text-red-400 hover:bg-red-500/10 rounded-lg"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
               ))}
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newEventService.name}
+                  onChange={(e) => setNewEventService({ ...newEventService, name: e.target.value })}
+                  placeholder="Nom du service"
+                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-white text-sm"
+                />
+                <input
+                  type="number"
+                  value={newEventService.price}
+                  onChange={(e) => setNewEventService({ ...newEventService, price: e.target.value })}
+                  placeholder="Prix"
+                  className="w-24 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-white text-sm"
+                />
+                <button
+                  onClick={addEventService}
+                  className="p-2 bg-white text-black rounded-xl"
+                >
+                  <Plus className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Horaires */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
+            <h3 className="text-white font-bold">Horaires d'ouverture</h3>
+            {DAYS.map(({ key, label }) => (
+              <div key={key} className="flex items-center gap-2">
+                <div className="w-12 text-white font-medium">{label}</div>
+                <button
+                  onClick={() => updateOpeningHour(key, 'closed', !openingHours[key]?.closed)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                    openingHours[key]?.closed
+                      ? 'bg-red-500/20 text-red-400'
+                      : 'bg-emerald-500/20 text-emerald-400'
+                  }`}
+                >
+                  {openingHours[key]?.closed ? 'Fermé' : 'Ouvert'}
+                </button>
+                {!openingHours[key]?.closed && (
+                  <>
+                    <input
+                      type="time"
+                      value={openingHours[key]?.open || '09:00'}
+                      onChange={(e) => updateOpeningHour(key, 'open', e.target.value)}
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                    />
+                    <span className="text-zinc-500">-</span>
+                    <input
+                      type="time"
+                      value={openingHours[key]?.close || '18:00'}
+                      onChange={(e) => updateOpeningHour(key, 'close', e.target.value)}
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                    />
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Configuration */}
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
+            <h3 className="text-white font-bold">Configuration</h3>
+            
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Intervalle de réservation (minutes)</label>
+              <select
+                value={bookingInterval}
+                onChange={(e) => setBookingInterval(Number(e.target.value))}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm"
+              >
+                <option value={30}>30 minutes</option>
+                <option value={60}>1 heure</option>
+                <option value={90}>1h30</option>
+                <option value={120}>2 heures</option>
+              </select>
             </div>
 
-            <div className="border-t border-zinc-800 pt-3">
-              <label className="flex items-center gap-2 text-xs font-semibold text-zinc-400 mb-1.5">
-                <Wallet className="w-3.5 h-3.5 text-green-400" /> Lien Wave
-              </label>
-              <input
-                type="url"
-                placeholder="https://wave.com/pay/..."
-                value={wavePaymentLink}
-                onChange={e => setWavePaymentLink(e.target.value)}
-                className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-xl text-white text-sm focus:outline-none focus:border-white transition"
-              />
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Réservation jusqu'à (jours)</label>
+              <select
+                value={advanceDays}
+                onChange={(e) => setAdvanceDays(Number(e.target.value))}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm"
+              >
+                <option value={7}>7 jours</option>
+                <option value={14}>14 jours</option>
+                <option value={30}>30 jours</option>
+                <option value={60}>60 jours</option>
+                <option value={90}>90 jours</option>
+              </select>
             </div>
-          </section>
 
-          <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-            <h3 className="text-white font-bold flex items-center gap-2 text-sm mb-3">
-              <Clock className="w-4 h-4 text-zinc-500" /> Horaires
-            </h3>
-            <div className="space-y-2">
-              {DAYS.map(day => {
-                const h = openingHours[day.key] ?? { open: '09:00', close: '18:00', closed: false };
-                return (
-                  <div key={day.key} className="bg-zinc-800 rounded-xl px-3 py-2.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white font-semibold text-sm w-8">{day.label}</span>
-                      <label className="flex items-center gap-1.5 cursor-pointer">
-                        <input type="checkbox" checked={!h.closed} onChange={e => updateOpeningHour(day.key, 'closed', !e.target.checked)} className="w-4 h-4 rounded accent-green-500" />
-                        <span className="text-zinc-400 text-xs">Ouvert</span>
-                      </label>
-                      {!h.closed && (
-                        <div className="flex items-center gap-1.5 ml-auto">
-                          <input type="time" value={h.open} onChange={e => updateOpeningHour(day.key, 'open', e.target.value)} className="px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-xs w-[90px]" />
-                          <span className="text-zinc-600 text-xs">–</span>
-                          <input type="time" value={h.close} onChange={e => updateOpeningHour(day.key, 'close', e.target.value)} className="px-2 py-1.5 bg-zinc-700 border border-zinc-600 rounded-lg text-white text-xs w-[90px]" />
-                        </div>
-                      )}
-                      {h.closed && <span className="ml-auto text-zinc-600 text-xs">Fermé</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-            <h3 className="text-white font-bold flex items-center gap-2 text-sm mb-1">
-              <Calendar className="w-4 h-4 text-zinc-500" /> Type de réservation
-            </h3>
-            <p className="text-zinc-500 text-xs mb-3">Choisissez comment les clients réservent</p>
-
-            <div className="space-y-2">
-              <button onClick={() => setBookingType('normal')} className={`w-full flex items-center justify-between p-4 rounded-xl border-2 text-left transition ${bookingType === 'normal' ? 'border-emerald-500 bg-emerald-500/10' : 'border-zinc-700 bg-zinc-800'}`}>
-                <div className="flex items-start gap-3">
-                  <Scissors className="w-5 h-5 text-emerald-400 mt-0.5" />
-                  <div>
-                    <p className="text-white font-semibold text-sm">Réservation normale</p>
-                    <p className="text-zinc-400 text-xs mt-0.5">Services depuis le catalogue ({catalogServices.length} dispo.)</p>
-                  </div>
-                </div>
-                {bookingType === 'normal' && <Check className="w-4 h-4 text-emerald-400" />}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-white font-medium">Paiement obligatoire</p>
+                <p className="text-zinc-500 text-xs">Les clients doivent payer en ligne</p>
+              </div>
+              <button
+                onClick={() => setRequirePayment(!requirePayment)}
+                className="text-3xl"
+              >
+                {requirePayment ? <ToggleRight className="w-8 h-8 text-green-500" /> : <ToggleLeft className="w-8 h-8 text-zinc-600" />}
               </button>
-
-              <button onClick={() => setBookingType('event')} className={`w-full flex items-center justify-between p-4 rounded-xl border-2 text-left transition ${bookingType === 'event' ? 'border-purple-500 bg-purple-500/10' : 'border-zinc-700 bg-zinc-800'}`}>
-                <div className="flex items-start gap-3">
-                  <Sparkles className="w-5 h-5 text-purple-400 mt-0.5" />
-                  <div>
-                    <p className="text-white font-semibold text-sm">Événementiel</p>
-                    <p className="text-zinc-400 text-xs mt-0.5">Services personnalisés (mariages, anniversaires…)</p>
-                  </div>
-                </div>
-                {bookingType === 'event' && <Check className="w-4 h-4 text-purple-400" />}
-              </button>
             </div>
 
-            {bookingType === 'event' && (
-              <div className="mt-3 space-y-2">
-                {eventServices.map(service => (
-                  <div key={service.id} className="flex items-center gap-3 bg-zinc-800 rounded-xl p-3">
-                    <div className="flex-1">
-                      <p className="text-white text-sm font-medium truncate">{service.name}</p>
-                      <p className="text-zinc-400 text-xs">{service.price.toLocaleString()} CFA</p>
-                    </div>
-                    <button onClick={() => setEventServices(prev => prev.filter(s => s.id !== service.id))} className="w-8 h-8 flex items-center justify-center text-red-400 rounded-lg">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
-                <div className="bg-zinc-800 rounded-xl p-3 space-y-2">
-                  <input type="text" placeholder="Nom du service" value={newEventService.name} onChange={e => setNewEventService(p => ({ ...p, name: e.target.value }))} className="w-full px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-xl text-white text-sm focus:outline-none focus:border-white" />
-                  <div className="flex gap-2">
-                    <input type="number" placeholder="Prix (CFA)" value={newEventService.price} onChange={e => setNewEventService(p => ({ ...p, price: e.target.value }))} className="flex-1 px-3 py-2.5 bg-zinc-700 border border-zinc-600 rounded-xl text-white text-sm focus:outline-none focus:border-white" />
-                    <button onClick={addEventService} className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold rounded-xl transition shrink-0 active:scale-95">
-                      <Plus className="w-4 h-4" /> Ajouter
-                    </button>
-                  </div>
-                </div>
+            {requirePayment && (
+              <div>
+                <label className="text-zinc-400 text-xs block mb-1">Lien de paiement Wave</label>
+                <input
+                  type="url"
+                  value={wavePaymentLink}
+                  onChange={(e) => setWavePaymentLink(e.target.value)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm"
+                  placeholder="https://wave.com/pay/..."
+                />
               </div>
             )}
+          </div>
 
-            {bookingType === 'normal' && catalogServices.length > 0 && (
-              <div className="mt-3 bg-zinc-800/50 rounded-xl p-3">
-                <p className="text-zinc-500 text-xs mb-2">Services disponibles :</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {catalogServices.map(s => <span key={s.id} className="text-xs px-2 py-1 bg-zinc-700 rounded-full text-zinc-300">{s.name} – {s.base_price.toLocaleString()} CFA</span>)}
-                </div>
-              </div>
-            )}
-          </section>
-
-          <button onClick={handleSave} disabled={saving || !salonName.trim() || !slug.trim() || !bookingType} className="w-full flex items-center justify-center gap-2 bg-white text-black font-bold py-4 rounded-2xl hover:bg-zinc-100 active:scale-[0.98] transition disabled:opacity-40 text-base">
-            {saving ? <><div className="animate-spin rounded-full h-4 w-4 border-2 border-black/30 border-t-black" /> Sauvegarde...</> : <><Check className="w-5 h-5" /> {settings ? 'Mettre à jour' : 'Créer ma page'}</>}
+          {/* Bouton sauvegarde */}
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="w-full bg-white text-black font-bold py-3.5 rounded-xl active:scale-[0.98] transition disabled:opacity-50"
+          >
+            {saving ? 'Enregistrement...' : 'Enregistrer les paramètres'}
           </button>
         </div>
       )}

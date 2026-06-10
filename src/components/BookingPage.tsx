@@ -27,7 +27,6 @@ interface BookingForm {
 }
 interface BookingPageProps { slug: string; }
 
-// Helpers
 function normalizeTime(time: string): string { return time.slice(0, 5); }
 
 function generateTimeSlots(open: string, close: string, intervalMinutes: number, serviceDuration = 30): string[] {
@@ -191,7 +190,25 @@ export function BookingPage({ slug }: BookingPageProps) {
 
   const getSalonMsg = (b: any) => {
     const dt = new Date(b.booking_date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-    return `🆕 *NOUVELLE RESERVATION* 🆕\n\n📋 *Ticket:* ${b.ticket_number}\n👤 *Client:* ${b.client_name}\n📞 *Tel:* ${b.client_phone}\n✂️ *Service:* ${b.service_name} - ${b.service_price.toLocaleString()} CFA\n💈 *Coiffeur:* ${b.barber_name || 'Non spécifié'}\n📅 *Date:* ${dt}\n⏰ *Heure:* ${b.booking_time.slice(0, 5)}\n${b.note ? `📝 *Note:* ${b.note}` : ''}\n\n🔗 *Valider:* ${window.location.origin}/booking/validate/${b.id}/confirm-payment\n\n⏳ *Le client a 2h pour payer*`;
+    // Lien de validation fonctionnel qui redirige vers la page de réservation du salon
+    const validationLink = `${window.location.origin}/booking/validate/${b.id}/confirm-payment`;
+    return `🆕 *NOUVELLE RESERVATION* 🆕
+
+📋 *Ticket:* ${b.ticket_number}
+👤 *Client:* ${b.client_name}
+📞 *Tel:* ${b.client_phone}
+✂️ *Service:* ${b.service_name} - ${b.service_price.toLocaleString()} CFA
+💈 *Coiffeur:* ${b.barber_name || 'Non spécifié'}
+📅 *Date:* ${dt}
+⏰ *Heure:* ${b.booking_time.slice(0, 5)}
+${b.note ? `📝 *Note:* ${b.note}` : ''}
+
+🔗 *Valider le paiement:* ${validationLink}
+
+⏳ *Le client a 2h pour payer*
+
+---
+📱 Cliquez sur le lien pour valider la réservation`;
   };
 
   const handleSubmit = async () => {
@@ -206,7 +223,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     setSubmitting(true);
     
     try {
-      // Vérification anti-doublon
       const { data: conflict } = await supabase
         .from('bookings').select('id')
         .eq('salon_user_id', settings.user_id)
@@ -337,8 +353,8 @@ export function BookingPage({ slug }: BookingPageProps) {
             <div className="px-6 py-5 space-y-4">
               <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
                 <p className="text-red-700 text-lg font-semibold mb-1">⚠️ ACTION OBLIGATOIRE</p>
-                <p className="text-red-600 text-sm font-medium">📸 Capturer le QR code ci-dessous et envoyer le message</p>
-                <p className="text-red-600 text-sm font-medium mt-1">💰 Payer avec le lien Wave</p>
+                <p className="text-red-600 text-sm font-medium">📸 Capturer le QR code ci-dessous</p>
+                <p className="text-red-600 text-sm font-medium mt-1">💰 Payer avec le lien Wave et envoyer le message</p>
               </div>
               
               {qrCodeUrl && (
@@ -422,7 +438,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               
               {messageSent && (
                 <p className="text-green-600 text-xs text-center font-semibold">
-                  ✅ Message envoyé ! Votre réservation est maintenant confirmée.
+                  ✅ Message envoyé ! Votre réservation est enregistrée.
                 </p>
               )}
               
@@ -435,16 +451,14 @@ export function BookingPage({ slug }: BookingPageProps) {
               </button>
             </div>
           </div>
-          <p className="text-center text-zinc-500 text-[10px] mt-4">⚠️ Sans ces actions, votre réservation sera annulée</p>
+          <p className="text-center text-zinc-500 text-[10px] mt-4">⚠️ Le salon doit valider votre réservation après paiement</p>
         </div>
       </div>
     );
   }
 
-  // Rendu principal - version simplifiée pour éviter l'erreur removeChild
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
-      {/* Header */}
       <div className="bg-black border-b border-zinc-800 px-4 py-4 sticky top-0 z-10">
         <div className="flex items-center gap-3">
           {settings.logo_url ? (
@@ -476,7 +490,6 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
         )}
 
-        {/* Services - Normal */}
         {settings.booking_type === 'normal' && normalServices.length > 0 && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 mb-2">
@@ -517,7 +530,6 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
         )}
 
-        {/* Services - Event */}
         {settings.booking_type === 'event' && !!settings.event_services?.length && (
           <div className="space-y-2">
             <div className="flex items-center gap-2 mb-2">
@@ -554,10 +566,8 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
         )}
 
-        {/* Formulaire */}
         {settings.booking_type && (
           <div className="space-y-4">
-            {/* Coiffeurs */}
             {barbers.length > 0 && (
               <div>
                 <label className="block text-sm font-semibold text-zinc-300 mb-3">Coiffeur <span className="text-red-400">*</span></label>
@@ -600,7 +610,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               </div>
             )}
 
-            {/* Nom */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Nom complet <span className="text-red-400">*</span></label>
               <input
@@ -618,7 +627,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               {errors.client_name && <p className="text-red-400 text-xs mt-1">{errors.client_name}</p>}
             </div>
 
-            {/* Téléphone */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Téléphone <span className="text-red-400">*</span></label>
               <input
@@ -636,7 +644,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               {errors.client_phone && <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>}
             </div>
 
-            {/* Date */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Date <span className="text-red-400">*</span></label>
               <input
@@ -655,7 +662,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
             </div>
 
-            {/* Heure - Version stable sans problème de clés */}
             {form.date && (
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -670,7 +676,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                   </button>
                 </div>
 
-                {/* Statut synchro */}
                 <div className="flex items-center gap-2 mb-3 px-2 py-1.5 bg-zinc-900 rounded-lg border border-zinc-800">
                   <div className="flex items-center gap-1">
                     <WifiOff className="w-3 h-3 text-amber-400" />
@@ -683,7 +688,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                   )}
                 </div>
 
-                {/* Liste des créneaux */}
                 {loadingSlots ? (
                   <div className="text-center py-4">
                     <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white mx-auto" />
@@ -728,7 +732,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               </div>
             )}
 
-            {/* Note */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Note</label>
               <textarea
@@ -740,7 +743,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               />
             </div>
 
-            {/* Résumé */}
             {(() => {
               const svc = settings.booking_type === 'normal' ? form.service : form.eventService;
               if (!svc || !form.date || !form.time || (barbers.length > 0 && !form.barberName)) return null;
@@ -760,7 +762,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               );
             })()}
 
-            {/* Bouton Réserver */}
             <button
               type="button"
               onClick={handleSubmit}
@@ -774,7 +775,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </button>
             <p className="text-center text-zinc-500 text-[11px]">
-              ⚠️ Après réservation, vous devrez capturer le QR code, envoyer le message et payer
+              ⚠️ Après réservation, envoyez le message de confirmation
             </p>
           </div>
         )}
