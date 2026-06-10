@@ -887,7 +887,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           </div>
         )}
 
-        {/* TAB : PARAMÈTRES */}
+        {/* TAB : PARAMÈTRES - Version responsive */}
         {activeTab === 'settings' && (
           <div className="space-y-6">
             {/* Activation */}
@@ -906,7 +906,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             {/* Type de réservation */}
             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
               <h3 className="text-white font-bold mb-3">Type de réservation</h3>
-              <div className="flex gap-3">
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   onClick={() => setBookingType('normal')}
                   className={`flex-1 py-3 rounded-xl font-semibold transition ${
@@ -951,7 +951,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                   placeholder="mon-salon"
                 />
                 {slugError && <p className="text-red-400 text-xs mt-1">{slugError}</p>}
-                <p className="text-zinc-500 text-xs mt-1">{window.location.origin}/booking/{slug || 'mon-salon'}</p>
+                <p className="text-zinc-500 text-xs mt-1 break-all">{window.location.origin}/booking/{slug || 'mon-salon'}</p>
               </div>
 
               <div>
@@ -966,81 +966,107 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               </div>
             </div>
 
-            {/* Services événementiels */}
+            {/* Services événementiels - VERSION RESPONSIVE */}
             {bookingType === 'event' && (
               <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
                 <h3 className="text-white font-bold">Services événementiels</h3>
                 
-                {eventServices.map((service, idx) => (
-                  <div key={service.id} className="flex items-center gap-2 bg-zinc-800 rounded-xl p-2">
-                    <div className="flex-1">
-                      <p className="text-white text-sm font-medium">{service.name}</p>
-                      <p className="text-zinc-400 text-xs">{service.price.toLocaleString()} CFA</p>
+                {/* Liste des services */}
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {eventServices.length === 0 ? (
+                    <div className="text-center py-6 text-zinc-500 text-sm">
+                      Aucun service événementiel ajouté
                     </div>
-                    <button
-                      onClick={() => setEventServices(eventServices.filter((_, i) => i !== idx))}
-                      className="p-2 text-red-400 hover:bg-red-500/10 rounded-lg"
+                  ) : (
+                    eventServices.map((service, idx) => (
+                      <div key={service.id} className="flex flex-col sm:flex-row items-start sm:items-center gap-2 bg-zinc-800 rounded-xl p-3">
+                        <div className="flex-1 w-full sm:w-auto">
+                          <p className="text-white text-sm font-medium break-words">{service.name}</p>
+                          <p className="text-emerald-400 text-xs font-semibold">{service.price.toLocaleString()} CFA</p>
+                        </div>
+                        <button
+                          onClick={() => setEventServices(eventServices.filter((_, i) => i !== idx))}
+                          className="w-full sm:w-auto flex items-center justify-center gap-1 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition active:scale-95"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span className="text-xs sm:hidden">Supprimer</span>
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Formulaire d'ajout */}
+                <div className="border-t border-zinc-800 pt-3 mt-2">
+                  <p className="text-zinc-400 text-xs mb-2">➕ Ajouter un service</p>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      type="text"
+                      value={newEventService.name}
+                      onChange={(e) => setNewEventService({ ...newEventService, name: e.target.value })}
+                      placeholder="Nom du service (ex: Coiffure + Barbe)"
+                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter') addEventService();
+                      }}
+                    />
+                    <input
+                      type="number"
+                      value={newEventService.price}
+                      onChange={(e) => setNewEventService({ ...newEventService, price: e.target.value })}
+                      placeholder="Prix (CFA)"
+                      className="w-full sm:w-32 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+                      onKeyPress={(e) => {
+                        if (e.key === 'Enter') addEventService();
+                      }}
+                    />
+                    <button 
+                      onClick={addEventService} 
+                      className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white text-black font-semibold py-2.5 px-4 rounded-xl active:scale-95 transition"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Plus className="w-4 h-4" />
+                      <span>Ajouter</span>
                     </button>
                   </div>
-                ))}
-
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newEventService.name}
-                    onChange={(e) => setNewEventService({ ...newEventService, name: e.target.value })}
-                    placeholder="Nom du service"
-                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-white text-sm"
-                  />
-                  <input
-                    type="number"
-                    value={newEventService.price}
-                    onChange={(e) => setNewEventService({ ...newEventService, price: e.target.value })}
-                    placeholder="Prix"
-                    className="w-24 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2 text-white text-sm"
-                  />
-                  <button onClick={addEventService} className="p-2 bg-white text-black rounded-xl">
-                    <Plus className="w-5 h-5" />
-                  </button>
                 </div>
               </div>
             )}
 
-            {/* Horaires */}
+            {/* Horaires - Version responsive */}
             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
               <h3 className="text-white font-bold">Horaires d'ouverture</h3>
-              {DAYS.map(({ key, label }) => (
-                <div key={key} className="flex items-center gap-2">
-                  <div className="w-12 text-white font-medium">{label}</div>
-                  <button
-                    onClick={() => updateOpeningHour(key, 'closed', !openingHours[key]?.closed)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                      openingHours[key]?.closed ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'
-                    }`}
-                  >
-                    {openingHours[key]?.closed ? 'Fermé' : 'Ouvert'}
-                  </button>
-                  {!openingHours[key]?.closed && (
-                    <>
-                      <input
-                        type="time"
-                        value={openingHours[key]?.open || '09:00'}
-                        onChange={(e) => updateOpeningHour(key, 'open', e.target.value)}
-                        className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-xs"
-                      />
-                      <span className="text-zinc-500">-</span>
-                      <input
-                        type="time"
-                        value={openingHours[key]?.close || '18:00'}
-                        onChange={(e) => updateOpeningHour(key, 'close', e.target.value)}
-                        className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-xs"
-                      />
-                    </>
-                  )}
-                </div>
-              ))}
+              <div className="space-y-2">
+                {DAYS.map(({ key, label }) => (
+                  <div key={key} className="flex flex-wrap items-center gap-2">
+                    <div className="w-12 text-white font-medium">{label}</div>
+                    <button
+                      onClick={() => updateOpeningHour(key, 'closed', !openingHours[key]?.closed)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                        openingHours[key]?.closed ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'
+                      }`}
+                    >
+                      {openingHours[key]?.closed ? 'Fermé' : 'Ouvert'}
+                    </button>
+                    {!openingHours[key]?.closed && (
+                      <div className="flex items-center gap-2 flex-1 flex-wrap">
+                        <input
+                          type="time"
+                          value={openingHours[key]?.open || '09:00'}
+                          onChange={(e) => updateOpeningHour(key, 'open', e.target.value)}
+                          className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                        />
+                        <span className="text-zinc-500">-</span>
+                        <input
+                          type="time"
+                          value={openingHours[key]?.close || '18:00'}
+                          onChange={(e) => updateOpeningHour(key, 'close', e.target.value)}
+                          className="bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1.5 text-white text-xs"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Configuration */}
@@ -1052,7 +1078,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 <select
                   value={bookingInterval}
                   onChange={(e) => setBookingInterval(Number(e.target.value))}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm"
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
                 >
                   <option value={30}>30 minutes</option>
                   <option value={60}>1 heure</option>
@@ -1066,7 +1092,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 <select
                   value={advanceDays}
                   onChange={(e) => setAdvanceDays(Number(e.target.value))}
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm"
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
                 >
                   <option value={7}>7 jours</option>
                   <option value={14}>14 jours</option>
@@ -1093,7 +1119,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     type="url"
                     value={wavePaymentLink}
                     onChange={(e) => setWavePaymentLink(e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm"
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
                     placeholder="https://wave.com/pay/..."
                   />
                 </div>
@@ -1112,7 +1138,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         )}
       </div>
 
-      {/* MODAL SCANNER - En dehors du contenu principal */}
+      {/* MODAL SCANNER */}
       {scanning && (
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
           <div className="flex items-center justify-between p-4 border-b border-zinc-800 shrink-0">

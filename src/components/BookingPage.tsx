@@ -190,7 +190,6 @@ export function BookingPage({ slug }: BookingPageProps) {
 
   const getSalonMsg = (b: any) => {
     const dt = new Date(b.booking_date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-    // Lien de validation fonctionnel qui redirige vers la page de réservation du salon
     const validationLink = `${window.location.origin}/booking/validate/${b.id}/confirm-payment`;
     return `🆕 *NOUVELLE RESERVATION* 🆕
 
@@ -475,7 +474,7 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
         </div>
       </div>
 
-      <div className="px-4 py-6 space-y-5">
+      <div className="px-4 py-6 space-y-5 max-w-lg mx-auto">
         {!settings.booking_type && (
           <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-6 text-center">
             <AlertCircle className="w-12 h-12 text-yellow-400 mx-auto mb-3" />
@@ -644,6 +643,7 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               {errors.client_phone && <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>}
             </div>
 
+            {/* SECTION DATE RESPONSIVE */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Date <span className="text-red-400">*</span></label>
               <input
@@ -662,6 +662,7 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
             </div>
 
+            {/* SECTION CRÉNEAUX RESPONSIVE */}
             {form.date && (
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -697,38 +698,44 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
                     <p className="text-yellow-400 text-sm">Aucun créneau disponible ce jour</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
                     {allSlots.map((slot) => {
                       const isBooked = bookedSlots.includes(slot);
                       const isSelected = form.time === slot;
                       return (
-                        <div key={slot} className="w-full">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!isBooked) {
-                                setForm(prev => ({ ...prev, time: slot }));
-                                setErrors(prev => ({ ...prev, time: undefined }));
-                              }
-                            }}
-                            disabled={isBooked}
-                            className={`w-full py-3 rounded-xl text-sm font-medium border transition ${
-                              isSelected
-                                ? 'border-green-500 bg-green-500 text-black font-bold'
-                                : isBooked
-                                ? 'border-red-500/40 bg-red-500/10 text-red-400/60 cursor-not-allowed opacity-70'
-                                : 'border-green-500/50 bg-green-500/10 text-green-400 hover:bg-green-500/20'
-                            }`}
-                          >
-                            {slot}
-                            {isBooked && <span className="block text-[9px] mt-0.5">Pris</span>}
-                          </button>
-                        </div>
+                        <button
+                          key={slot}
+                          type="button"
+                          onClick={() => {
+                            if (!isBooked) {
+                              setForm(prev => ({ ...prev, time: slot }));
+                              setErrors(prev => ({ ...prev, time: undefined }));
+                            }
+                          }}
+                          disabled={isBooked}
+                          className={`py-2.5 sm:py-3 rounded-xl text-xs sm:text-sm font-medium border transition ${
+                            isSelected
+                              ? 'border-green-500 bg-green-500 text-black font-bold'
+                              : isBooked
+                              ? 'border-red-500/40 bg-red-500/10 text-red-400/60 cursor-not-allowed opacity-70'
+                              : 'border-green-500/50 bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                          }`}
+                        >
+                          {slot}
+                          {isBooked && <span className="block text-[8px] sm:text-[9px] mt-0.5">Pris</span>}
+                        </button>
                       );
                     })}
                   </div>
                 )}
                 {errors.time && <p className="text-red-400 text-xs mt-1">{errors.time}</p>}
+                
+                {/* Indicateur de créneaux disponibles */}
+                {!loadingSlots && availableSlots.length > 0 && (
+                  <p className="text-green-400 text-[10px] mt-2 text-center">
+                    ✅ {availableSlots.length} créneau{availableSlots.length > 1 ? 'x' : ''} disponible{availableSlots.length > 1 ? 's' : ''}
+                  </p>
+                )}
               </div>
             )}
 
