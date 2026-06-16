@@ -497,9 +497,13 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
   const getReminderMessage = (userName: string, stats?: UserStats) =>
     `*${APP_NAME} - Votre activité* 📊\n\nBonjour ${userName || 'Cher client'} 👋,\n\n✂️ Transactions : ${stats?.transaction_count || 0}\n💰 Chiffre d'affaires : ${(stats?.total_revenue || 0).toLocaleString()} CFA\n\n📱 App : ${APP_URL}\n\n*${APP_NAME}* ⭐`;
 
+  // ── NOUVEAU : Message parrainage ───────────────────────────────────────────
+  const getReferralInviteMessage = (userName: string) =>
+    `*${APP_NAME} - Gagnez 1 000 FCFA* 🎁💰\n\nBonjour ${userName || 'Cher client'} 👋,\n\nSaviez-vous que vous pouvez *gagner 1 000 FCFA* pour chaque salon que vous invitez sur ${APP_NAME} ? 🤩\n\n✅ Comment ça marche :\n1️⃣ Partagez votre lien de parrainage avec un salon de votre entourage\n2️⃣ Le salon s'inscrit et active son abonnement\n3️⃣ Vous recevez automatiquement *1 000 FCFA* de récompense 🎉\n\n👥 Plus vous invitez, plus vous gagnez — sans limite !\n\n🔗 Accédez à votre lien de parrainage ici :\n👉 ${APP_URL}\n\nMerci de faire partie de la famille *${APP_NAME}* ! 🙏✂️\n\n*${APP_NAME}* ⭐`;
+
   const sendWhatsAppMessage = (
     phone: string, userName: string, sub: UserSubscription, stats?: UserStats,
-    type: 'marketing' | 'reminder' | 'payment_reminder' | 'early_reminder' = 'marketing'
+    type: 'marketing' | 'reminder' | 'payment_reminder' | 'early_reminder' | 'referral_invite' = 'marketing'
   ) => {
     if (!phone) { showToastMsg('Pas de numéro de téléphone', 'error'); return; }
     const num = formatPhoneForWhatsApp(phone);
@@ -507,6 +511,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
       type === 'payment_reminder' ? getPaymentReminderMessage(userName, sub) :
       type === 'early_reminder'   ? getEarlyReminderMessage(userName, sub) :
       type === 'reminder'         ? getReminderMessage(userName, stats) :
+      type === 'referral_invite'  ? getReferralInviteMessage(userName) :
                                     getMarketingMessage(userName, sub);
     window.open(`https://wa.me/${num}?text=${encodeURIComponent(msg)}`, '_blank');
     showToastMsg(`Ouverture WhatsApp pour ${userName}`, 'success');
@@ -702,7 +707,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
         </select>
       </div>
 
-      {/* ── Tableau utilisateurs AVEC DATE D'EXPIRATION ── */}
+      {/* ── Tableau utilisateurs ── */}
       {loading ? (
         <div className="text-center py-12">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
@@ -823,11 +828,12 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                           <Send className="w-4 h-4 text-white" />
                         </button>
                         {openWhatsAppMenu === user.id && (
-                          <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[180px]">
+                          <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[200px]">
                             {[
                               { type: 'payment_reminder' as const, icon: <CreditCard className="w-3 h-3 text-red-400" />, label: 'Rappel paiement' },
                               { type: 'early_reminder' as const, icon: <AlertTriangle className="w-3 h-3 text-orange-400" />, label: 'Expiration dans 7j' },
                               { type: 'marketing' as const, icon: <Sparkles className="w-3 h-3 text-yellow-400" />, label: 'Marketing' },
+                              { type: 'referral_invite' as const, icon: <Gift className="w-3 h-3 text-amber-400" />, label: 'Parrainage 1 000 FCFA 🎁' },
                               { type: 'reminder' as const, icon: <Rocket className="w-3 h-3 text-blue-400" />, label: 'Relance' },
                             ].map(({ type, icon, label }) => (
                               <button key={type} onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, sub, stats, type)}
@@ -1002,7 +1008,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
         </div>
       )}
 
-      {/* ── Modal détails utilisateur avec date d'expiration ── */}
+      {/* ── Modal détails utilisateur ── */}
       {showDetailsModal && selectedUser && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto">
@@ -1020,7 +1026,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                 <div><label className="text-zinc-500 text-xs">Inscrit</label><p className="text-white">{new Date(selectedUser.created_at).toLocaleDateString('fr-FR')}</p></div>
               </div>
 
-              {/* Carte d'expiration d'abonnement */}
               {userSubscriptions[selectedUser.id] && (
                 <div className="border-t border-zinc-800 pt-4">
                   <h4 className="text-white font-bold mb-3 flex items-center gap-2">
@@ -1099,11 +1104,12 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                       <Send className="w-4 h-4" /> Envoyer message
                     </button>
                     {openWhatsAppMenu === selectedUser.id && (
-                      <div className="absolute top-full left-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[180px]">
+                      <div className="absolute top-full left-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[200px]">
                         {[
                           { type: 'payment_reminder' as const, icon: <CreditCard className="w-3 h-3 text-red-400" />, label: 'Rappel paiement' },
                           { type: 'early_reminder' as const, icon: <AlertTriangle className="w-3 h-3 text-orange-400" />, label: 'Expiration dans 7j' },
                           { type: 'marketing' as const, icon: <Sparkles className="w-3 h-3 text-yellow-400" />, label: 'Marketing' },
+                          { type: 'referral_invite' as const, icon: <Gift className="w-3 h-3 text-amber-400" />, label: 'Parrainage 1 000 FCFA 🎁' },
                           { type: 'reminder' as const, icon: <Rocket className="w-3 h-3 text-blue-400" />, label: 'Relance' },
                         ].map(({ type, icon, label }) => (
                           <button key={type} onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id], userStats[selectedUser.id], type)}
