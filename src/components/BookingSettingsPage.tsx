@@ -129,7 +129,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [catalogServices, setCatalogServices] = useState<ServiceFromCatalog[]>([]);
   const [eventServices, setEventServices] = useState<EventService[]>([]);
   const [newEventService, setNewEventService] = useState({ name: '', price: '' });
-  const [bookingType, setBookingType] = useState<'normal' | 'event' | null>(null);
+  const [bookingType, setBookingType] = useState<'normal' | 'event' | null>('normal'); // ← MODIFIÉ : standard par défaut
   const [openingHours, setOpeningHours] = useState<Record<string, OpeningHour>>({
     lundi: { open: '09:00', close: '18:00', closed: false },
     mardi: { open: '09:00', close: '18:00', closed: false },
@@ -192,7 +192,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         setAdvanceDays(s.advance_booking_days || 30);
         setRequirePayment(s.require_payment || false);
         setEventServices(s.event_services || []);
-        setBookingType(s.booking_type || null);
+        setBookingType(s.booking_type || 'normal'); // ← MODIFIÉ : fallback vers 'normal'
         setWavePaymentLink(s.wave_payment_link || '');
         if (s.opening_hours) setOpeningHours(s.opening_hours);
       }
