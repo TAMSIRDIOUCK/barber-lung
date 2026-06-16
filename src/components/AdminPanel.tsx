@@ -124,7 +124,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     setTimeout(() => setToast(null), 3000);
   };
 
-  // Calcul des jours restants avant expiration
   const getDaysRemaining = (expiresAt: string): number => {
     if (!expiresAt) return 0;
     const end = new Date(expiresAt);
@@ -134,13 +133,10 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return diffDays > 0 ? diffDays : 0;
   };
 
-  // Format de la date d'expiration
   const formatExpiryDate = (expiresAt: string): string => {
     if (!expiresAt) return 'N/A';
     return new Date(expiresAt).toLocaleDateString('fr-FR', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
+      day: '2-digit', month: 'short', year: 'numeric'
     });
   };
 
@@ -477,42 +473,89 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return `221${cleaned}`;
   };
 
+  // 1. RAPPEL PAIEMENT — urgence, ton direct
   const getPaymentReminderMessage = (userName: string, sub: UserSubscription) => {
     const end = sub?.expires_at ? new Date(sub.expires_at).toLocaleDateString('fr-FR') : 'bientôt';
     const daysLeft = sub?.expires_at ? getDaysRemaining(sub.expires_at) : 0;
     const price = sub?.price || PLAN_PRICES[sub?.plan_name || 'Mensuel'] || 5000;
-    return `*${APP_NAME} - Rappel de paiement* 💈💰\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVotre abonnement *${sub?.plan_name || 'Mensuel'}* expire le *${end}*.\n\n• 📅 Expiration : ${end}\n• ⏰ Jours restants : ${daysLeft} jours\n• 💳 Montant : ${price.toLocaleString()} CFA\n\n👉 ${APP_URL}/subscribe\n\n💳 Wave & Orange Money\n\n*${APP_NAME}* ✨`;
+    return `*${APP_NAME} - ⚠️ Action requise*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVotre abonnement *${sub?.plan_name || 'Mensuel'}* arrive à échéance le *${end}*.\n\nIl vous reste seulement *${daysLeft} jour${daysLeft > 1 ? 's' : ''}* — après cette date, vous perdrez l'accès à toutes vos données : transactions, réservations, statistiques.\n\n💳 *Renouveler maintenant :*\n👉 ${APP_URL}/subscribe\n\n✅ Paiement rapide via *Wave* ou *Orange Money*\n✅ Accès immédiat après paiement\n✅ Aucune perte de données\n\nNe laissez pas votre salon sans outil ! 💈\n\n*${APP_NAME}* — Votre partenaire au quotidien ⭐`;
   };
-  
+
+  // 2. EXPIRATION DANS 7J — anticipation, bénéfices rappelés
   const getEarlyReminderMessage = (userName: string, sub: UserSubscription) => {
     const end = sub?.expires_at ? new Date(sub.expires_at).toLocaleDateString('fr-FR') : 'bientôt';
     const daysLeft = sub?.expires_at ? getDaysRemaining(sub.expires_at) : 0;
     const price = sub?.price || PLAN_PRICES[sub?.plan_name || 'Mensuel'] || 5000;
-    return `*${APP_NAME} - Abonnement expire bientôt* ⏰\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVotre abonnement *${sub?.plan_name || 'Mensuel'}* expire dans *${daysLeft} jours*, le *${end}*.\n\n💳 Montant : ${price.toLocaleString()} CFA\n✅ Renouveler : ${APP_URL}/subscribe\n\n*${APP_NAME}* ⭐`;
+    return `*${APP_NAME} - ⏰ Votre abonnement expire bientôt*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nUn petit rappel : votre abonnement *${sub?.plan_name || 'Mensuel'}* se termine dans *${daysLeft} jour${daysLeft > 1 ? 's' : ''}*, le *${end}*.\n\nPour continuer à profiter de :\n✂️ Suivi de vos transactions en temps réel\n📊 Statistiques et rapports de votre salon\n📅 Réservations en ligne de vos clients\n👥 Gestion de vos coiffeurs\n\n…renouvelez dès maintenant pour ne rien manquer.\n\n💳 *${price.toLocaleString()} CFA* via Wave ou Orange Money\n👉 ${APP_URL}/subscribe\n\nMerci de nous faire confiance 🙏\n\n*${APP_NAME}* ⭐`;
   };
-  
-  const getMarketingMessage = (userName: string, sub: UserSubscription) =>
-    `*${APP_NAME} - Gestion de salon professionnel* 💈\n\nBonjour ${userName || 'Cher client'} 👋,\n\n✨ Suivez vos revenus, gérez vos services et coiffeurs facilement.\n\n📅 Abonnement : ${sub?.plan_name || 'Gratuit'}\n🚀 App : ${APP_URL}\n\nMerci ! 🙏\n\n*${APP_NAME}* ✨`;
-  
-  const getReminderMessage = (userName: string, stats?: UserStats) =>
-    `*${APP_NAME} - Votre activité* 📊\n\nBonjour ${userName || 'Cher client'} 👋,\n\n✂️ Transactions : ${stats?.transaction_count || 0}\n💰 Chiffre d'affaires : ${(stats?.total_revenue || 0).toLocaleString()} CFA\n\n📱 App : ${APP_URL}\n\n*${APP_NAME}* ⭐`;
 
-  // ── NOUVEAU : Message parrainage ───────────────────────────────────────────
+  // 3. MARKETING GÉNÉRAL — image de marque, valeur
+  const getMarketingMessage = (userName: string, sub: UserSubscription) =>
+    `*${APP_NAME} - La gestion de salon réinventée 💈*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nChaque jour, des coiffeurs comme vous utilisent *${APP_NAME}* pour :\n\n📈 Suivre leurs revenus au centime près\n📅 Accepter des réservations 24h/24 sans décrocher\n✂️ Gérer leur équipe de coiffeurs facilement\n🎟️ Valider les clients avec un QR code en 2 secondes\n📊 Voir leurs meilleures semaines et services\n\nRésultat ? Plus de temps pour ce qui compte : *couper des cheveux et satisfaire vos clients.*\n\n🚀 Votre plan actuel : *${sub?.plan_name || 'Gratuit'}*\n👉 Découvrir toutes les fonctionnalités : ${APP_URL}\n\n*${APP_NAME}* — Conçu pour les professionnels du barbershop ✨`;
+
+  // 4. RELANCE ACTIVITÉ — valoriser ce qu'ils ont fait
+  const getReminderMessage = (userName: string, stats?: UserStats) => {
+    const revenue = (stats?.total_revenue || 0).toLocaleString();
+    const txCount = stats?.transaction_count || 0;
+    const bookings = stats?.completed_bookings_count || 0;
+    return `*${APP_NAME} - 📊 Votre activité en chiffres*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVoici ce que *${APP_NAME}* a enregistré pour votre salon :\n\n💰 Chiffre d'affaires suivi : *${revenue} CFA*\n✂️ Transactions enregistrées : *${txCount}*\n📅 Réservations terminées : *${bookings}*\n\nCes données vous appartiennent — elles vous aident à comprendre vos meilleures journées, vos services les plus rentables et la croissance de votre salon.\n\n👉 Consultez vos statistiques complètes : ${APP_URL}\n\nContinuez comme ça ! 💪\n\n*${APP_NAME}* ⭐`;
+  };
+
+  // 5. INVITATION PARRAINAGE — gain concret, simplicité
   const getReferralInviteMessage = (userName: string) =>
-    `*${APP_NAME} - Gagnez 1 000 FCFA* 🎁💰\n\nBonjour ${userName || 'Cher client'} 👋,\n\nSaviez-vous que vous pouvez *gagner 1 000 FCFA* pour chaque salon que vous invitez sur ${APP_NAME} ? 🤩\n\n✅ Comment ça marche :\n1️⃣ Partagez votre lien de parrainage avec un salon de votre entourage\n2️⃣ Le salon s'inscrit et active son abonnement\n3️⃣ Vous recevez automatiquement *1 000 FCFA* de récompense 🎉\n\n👥 Plus vous invitez, plus vous gagnez — sans limite !\n\n🔗 Accédez à votre lien de parrainage ici :\n👉 ${APP_URL}\n\nMerci de faire partie de la famille *${APP_NAME}* ! 🙏✂️\n\n*${APP_NAME}* ⭐`;
+    `*${APP_NAME} - 🎁 Gagnez 1 000 FCFA par salon parrainé*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nOn a une bonne nouvelle pour vous 🤩\n\nChaque salon que vous recommandez à *${APP_NAME}* vous rapporte *1 000 FCFA*, sans limite !\n\n📌 *Comment ça marche ?*\n1️⃣ Partagez votre lien personnel à un gérant de salon\n2️⃣ Il s'inscrit et active son abonnement\n3️⃣ Vous recevez automatiquement *1 000 FCFA* 🎉\n\n💡 Vous connaissez 5 salons autour de vous ? C'est *5 000 FCFA* dans votre poche.\n\nC'est simple, rapide, et sans aucune limite de parrainages.\n\n🔗 Accédez à votre lien ici :\n👉 ${APP_URL}\n\nMerci de faire partie de la famille *${APP_NAME}* ! 🙏✂️\n\n*${APP_NAME}* ⭐`;
+
+  // 6. PROMO RÉSERVATIONS — découverte fonctionnalité clé
+  const getBookingPromoMessage = (userName: string, sub: UserSubscription) =>
+    `*${APP_NAME} - 📅 Activez vos réservations en ligne !*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nSaviez-vous que votre abonnement *${sub?.plan_name || APP_NAME}* inclut une page de réservation en ligne pour votre salon ? 🚀\n\n*Ce que vos clients peuvent faire :*\n📱 Réserver un créneau depuis leur téléphone, à n'importe quelle heure\n🎟️ Recevoir un ticket avec QR code\n💳 Payer en ligne (Wave, Orange Money)\n✂️ Choisir leur coiffeur préféré\n\n*Ce que vous gagnez :*\n✅ Moins d'appels pour les rendez-vous\n✅ Zéro client en attente inutile\n✅ Validation rapide avec votre scanner QR\n✅ Toutes les réservations centralisées\n\n👉 Configurez votre page maintenant :\n${APP_URL}\n\nVos clients méritent le meilleur service — commencez aujourd'hui ! 💈\n\n*${APP_NAME}* ⭐`;
+
+  // 7. RÉACTIVATION INACTIF — empathie + urgence douce
+  const getReactivationMessage = (userName: string, sub: UserSubscription) =>
+    `*${APP_NAME} - On pense à vous 💈*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nCela fait un moment qu'on ne vous a pas vu sur *${APP_NAME}*… et on voulait prendre des nouvelles !\n\nVotre salon tourne toujours à plein régime ? 💪\n\nSi vous avez mis l'application de côté, pas de panique. Vos données sont toujours là, et reprendre là où vous en étiez prend moins d'une minute.\n\n*Quelques rappels de ce qui vous attend :*\n📊 Vos statistiques de revenus\n📅 Votre agenda de réservations\n✂️ Le suivi de votre équipe\n🎟️ Le scanner QR pour valider les clients\n\n👉 Reconnectez-vous ici : ${APP_URL}\n\nOn est là si vous avez besoin d'aide 🙏\n\n*${APP_NAME}* ⭐`;
+
+  // 8. UPSELL ANNUEL — économie, engagement long terme
+  const getAnnualUpsellMessage = (userName: string, sub: UserSubscription) => {
+    const monthlyPrice = PLAN_PRICES['Mensuel'] || 5000;
+    const annualPrice = PLAN_PRICES['Annuel'] || 50000;
+    const savings = (monthlyPrice * 12) - annualPrice;
+    return `*${APP_NAME} - 💡 Économisez ${savings.toLocaleString()} CFA cette année*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVous utilisez actuellement le plan *${sub?.plan_name || 'Mensuel'}* à *${(sub?.price || monthlyPrice).toLocaleString()} CFA/mois*.\n\nSaviez-vous qu'en passant au plan *Annuel*, vous économisez *${savings.toLocaleString()} CFA* par an ?\n\n📌 *Plan Mensuel :* ${(monthlyPrice * 12).toLocaleString()} CFA/an\n✅ *Plan Annuel :* ${annualPrice.toLocaleString()} CFA/an seulement\n💰 *Économie :* ${savings.toLocaleString()} CFA\n\nC'est l'équivalent de *${Math.round(savings / monthlyPrice)} mois offerts* — pour exactement les mêmes fonctionnalités.\n\n👉 Passer à l'annuel maintenant :\n${APP_URL}/subscribe\n\nUne seule décision, 12 mois de tranquillité 🙏\n\n*${APP_NAME}* ⭐`;
+  };
+
+  // 9. FÉLICITATIONS ACTIVITÉ — encouragement, fidélisation
+  const getCongratulationsMessage = (userName: string, stats?: UserStats) => {
+    const revenue = (stats?.total_revenue || 0).toLocaleString();
+    const bookings = stats?.completed_bookings_count || 0;
+    return `*${APP_NAME} - 🏆 Bravo pour votre activité !*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nOn voulait prendre un moment pour vous féliciter !\n\nAvec *${bookings} réservation${bookings > 1 ? 's' : ''} terminée${bookings > 1 ? 's' : ''}* et un chiffre d'affaires de *${revenue} CFA* suivi sur ${APP_NAME}, vous faites partie de nos clients les plus actifs. 💪\n\nContinuez comme ça — chaque client satisfait est une publicité gratuite pour votre salon ✂️\n\n💡 *Astuce :* Partagez votre lien de réservation sur vos réseaux sociaux pour attirer encore plus de clients :\n👉 ${APP_URL}\n\nMerci de nous faire confiance au quotidien 🙏\n\n*${APP_NAME}* ⭐`;
+  };
 
   const sendWhatsAppMessage = (
-    phone: string, userName: string, sub: UserSubscription, stats?: UserStats,
-    type: 'marketing' | 'reminder' | 'payment_reminder' | 'early_reminder' | 'referral_invite' = 'marketing'
+    phone: string,
+    userName: string,
+    sub: UserSubscription,
+    stats?: UserStats,
+    type:
+      | 'marketing'
+      | 'reminder'
+      | 'payment_reminder'
+      | 'early_reminder'
+      | 'referral_invite'
+      | 'booking_promo'
+      | 'reactivation'
+      | 'annual_upsell'
+      | 'congratulations' = 'marketing'
   ) => {
     if (!phone) { showToastMsg('Pas de numéro de téléphone', 'error'); return; }
     const num = formatPhoneForWhatsApp(phone);
     const msg =
-      type === 'payment_reminder' ? getPaymentReminderMessage(userName, sub) :
-      type === 'early_reminder'   ? getEarlyReminderMessage(userName, sub) :
-      type === 'reminder'         ? getReminderMessage(userName, stats) :
-      type === 'referral_invite'  ? getReferralInviteMessage(userName) :
-                                    getMarketingMessage(userName, sub);
+      type === 'payment_reminder'  ? getPaymentReminderMessage(userName, sub) :
+      type === 'early_reminder'    ? getEarlyReminderMessage(userName, sub) :
+      type === 'reminder'          ? getReminderMessage(userName, stats) :
+      type === 'referral_invite'   ? getReferralInviteMessage(userName) :
+      type === 'booking_promo'     ? getBookingPromoMessage(userName, sub) :
+      type === 'reactivation'      ? getReactivationMessage(userName, sub) :
+      type === 'annual_upsell'     ? getAnnualUpsellMessage(userName, sub) :
+      type === 'congratulations'   ? getCongratulationsMessage(userName, stats) :
+                                     getMarketingMessage(userName, sub);
     window.open(`https://wa.me/${num}?text=${encodeURIComponent(msg)}`, '_blank');
     showToastMsg(`Ouverture WhatsApp pour ${userName}`, 'success');
     setOpenWhatsAppMenu(null);
@@ -545,6 +588,20 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
       (filterStatus === 'expiring' && isExpiring);
     return matchesSearch && matchesStatus;
   });
+
+  // ── Menu items WhatsApp (réutilisés partout) ───────────────────────────────
+
+  const whatsappMenuItems = [
+    { type: 'payment_reminder' as const,  icon: <CreditCard className="w-3 h-3 text-red-400" />,    label: '⚠️ Rappel paiement urgent' },
+    { type: 'early_reminder' as const,    icon: <AlertTriangle className="w-3 h-3 text-orange-400" />, label: '⏰ Expire dans 7 jours' },
+    { type: 'booking_promo' as const,     icon: <CalendarCheck className="w-3 h-3 text-sky-400" />,  label: '📅 Promo réservations en ligne' },
+    { type: 'referral_invite' as const,   icon: <Gift className="w-3 h-3 text-amber-400" />,         label: '🎁 Parrainage 1 000 FCFA' },
+    { type: 'annual_upsell' as const,     icon: <TrendingUp className="w-3 h-3 text-green-400" />,   label: '💡 Passer au plan Annuel' },
+    { type: 'congratulations' as const,   icon: <Star className="w-3 h-3 text-yellow-400" />,        label: '🏆 Félicitations activité' },
+    { type: 'reactivation' as const,      icon: <RefreshCw className="w-3 h-3 text-purple-400" />,   label: '💬 Réactivation client inactif' },
+    { type: 'marketing' as const,         icon: <Sparkles className="w-3 h-3 text-yellow-400" />,    label: '✨ Marketing général' },
+    { type: 'reminder' as const,          icon: <Rocket className="w-3 h-3 text-blue-400" />,        label: '📊 Relance avec statistiques' },
+  ];
 
   // ── Access guard ───────────────────────────────────────────────────────────
 
@@ -745,7 +802,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                 const daysLeft = getDaysRemaining(expiryDate);
                 const isExpiringSoon = daysLeft > 0 && daysLeft <= 7 && sub?.status === 'active';
                 const isExpired = daysLeft === 0 && expiryDate !== '' && sub?.status === 'active';
-                
+
                 return (
                   <tr key={user.id} className="hover:bg-zinc-900/50 transition">
                     <td className="py-3">
@@ -765,7 +822,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                         : <span className="text-zinc-600 text-sm">Non renseigné</span>}
                     </td>
                     <td className="py-3">
-                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${sub?.status === 'active' ? 'bg-green-500/20 text-green-400' : sub?.status === 'expired' ? 'bg-red-500/20 text-red-400' : 'bg-red-500/20 text-red-400'}`}>
+                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${sub?.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
                         {sub?.plan_name || 'Aucun'}
                       </span>
                     </td>
@@ -789,9 +846,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                     <td className="py-3 text-center">
                       {sub?.status === 'active' && daysLeft > 0 ? (
                         <div className="flex flex-col items-center">
-                          <span className={`text-lg font-bold ${isExpiringSoon ? 'text-orange-400' : 'text-white'}`}>
-                            {daysLeft}
-                          </span>
+                          <span className={`text-lg font-bold ${isExpiringSoon ? 'text-orange-400' : 'text-white'}`}>{daysLeft}</span>
                           <span className="text-zinc-500 text-[10px]">jours</span>
                         </div>
                       ) : sub?.status === 'active' && daysLeft === 0 ? (
@@ -828,23 +883,21 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                           <Send className="w-4 h-4 text-white" />
                         </button>
                         {openWhatsAppMenu === user.id && (
-                          <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[200px]">
-                            {[
-                              { type: 'payment_reminder' as const, icon: <CreditCard className="w-3 h-3 text-red-400" />, label: 'Rappel paiement' },
-                              { type: 'early_reminder' as const, icon: <AlertTriangle className="w-3 h-3 text-orange-400" />, label: 'Expiration dans 7j' },
-                              { type: 'marketing' as const, icon: <Sparkles className="w-3 h-3 text-yellow-400" />, label: 'Marketing' },
-                              { type: 'referral_invite' as const, icon: <Gift className="w-3 h-3 text-amber-400" />, label: 'Parrainage 1 000 FCFA 🎁' },
-                              { type: 'reminder' as const, icon: <Rocket className="w-3 h-3 text-blue-400" />, label: 'Relance' },
-                            ].map(({ type, icon, label }) => (
-                              <button key={type} onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, sub, stats, type)}
+                          <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[240px]">
+                            <p className="text-zinc-500 text-[10px] px-3 py-1 uppercase tracking-wider">Messages WhatsApp</p>
+                            {whatsappMenuItems.map(({ type, icon, label }) => (
+                              <button key={type}
+                                onClick={() => sendWhatsAppMessage(user.phone, user.full_name || user.email, sub, stats, type)}
                                 className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
                                 {icon} {label}
                               </button>
                             ))}
-                            <button onClick={() => { setSelectedUser(user); setMessageText(''); setShowMessageModal(true); setOpenWhatsAppMenu(null); }}
-                              className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
-                              <Star className="w-3 h-3 text-purple-400" /> Personnalisé
-                            </button>
+                            <div className="border-t border-zinc-700 mt-1 pt-1">
+                              <button onClick={() => { setSelectedUser(user); setMessageText(''); setShowMessageModal(true); setOpenWhatsAppMenu(null); }}
+                                className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
+                                <Star className="w-3 h-3 text-purple-400" /> ✍️ Message personnalisé
+                              </button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -1029,8 +1082,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
               {userSubscriptions[selectedUser.id] && (
                 <div className="border-t border-zinc-800 pt-4">
                   <h4 className="text-white font-bold mb-3 flex items-center gap-2">
-                    <Calendar className="w-4 h-4 text-orange-400" />
-                    Abonnement - Expiration
+                    <Calendar className="w-4 h-4 text-orange-400" /> Abonnement - Expiration
                   </h4>
                   <div className="bg-zinc-800/50 rounded-xl p-4">
                     <div className="grid grid-cols-2 gap-4">
@@ -1047,7 +1099,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                       <div>
                         <p className="text-zinc-500 text-xs">Date de début</p>
                         <p className="text-white">
-                          {userSubscriptions[selectedUser.id]?.start_date 
+                          {userSubscriptions[selectedUser.id]?.start_date
                             ? new Date(userSubscriptions[selectedUser.id].start_date).toLocaleDateString('fr-FR')
                             : 'N/A'}
                         </p>
@@ -1104,23 +1156,21 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                       <Send className="w-4 h-4" /> Envoyer message
                     </button>
                     {openWhatsAppMenu === selectedUser.id && (
-                      <div className="absolute top-full left-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[200px]">
-                        {[
-                          { type: 'payment_reminder' as const, icon: <CreditCard className="w-3 h-3 text-red-400" />, label: 'Rappel paiement' },
-                          { type: 'early_reminder' as const, icon: <AlertTriangle className="w-3 h-3 text-orange-400" />, label: 'Expiration dans 7j' },
-                          { type: 'marketing' as const, icon: <Sparkles className="w-3 h-3 text-yellow-400" />, label: 'Marketing' },
-                          { type: 'referral_invite' as const, icon: <Gift className="w-3 h-3 text-amber-400" />, label: 'Parrainage 1 000 FCFA 🎁' },
-                          { type: 'reminder' as const, icon: <Rocket className="w-3 h-3 text-blue-400" />, label: 'Relance' },
-                        ].map(({ type, icon, label }) => (
-                          <button key={type} onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id], userStats[selectedUser.id], type)}
+                      <div className="absolute top-full left-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-2 z-50 min-w-[240px]">
+                        <p className="text-zinc-500 text-[10px] px-3 py-1 uppercase tracking-wider">Messages WhatsApp</p>
+                        {whatsappMenuItems.map(({ type, icon, label }) => (
+                          <button key={type}
+                            onClick={() => sendWhatsAppMessage(selectedUser.phone, selectedUser.full_name || selectedUser.email, userSubscriptions[selectedUser.id], userStats[selectedUser.id], type)}
                             className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
                             {icon} {label}
                           </button>
                         ))}
-                        <button onClick={() => { setMessageText(''); setShowMessageModal(true); }}
-                          className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
-                          <Star className="w-3 h-3 text-purple-400" /> Personnalisé
-                        </button>
+                        <div className="border-t border-zinc-700 mt-1 pt-1">
+                          <button onClick={() => { setMessageText(''); setShowMessageModal(true); }}
+                            className="w-full text-left px-3 py-2 text-xs text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2">
+                            <Star className="w-3 h-3 text-purple-400" /> ✍️ Message personnalisé
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
