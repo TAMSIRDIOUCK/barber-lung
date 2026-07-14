@@ -236,7 +236,8 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
   const [selectedBarber, setSelectedBarber] = useState<string | null>(null);
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
   const [selectedSoins, setSelectedSoins] = useState<string[]>([]);
-  const [withTeinture, setWithTeinture] = useState(false);
+  // Remplace le booléen "withTeinture" par l'id de l'option teinture précisément sélectionnée
+  const [selectedTeintureId, setSelectedTeintureId] = useState<number | null>(null);
   const [ticketData, setTicketData] = useState<any | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -291,16 +292,20 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     load();
   }, [userId]);
 
-  const teintureBasePrice = teintureSuppOptions[0]?.price ?? 1000;
+  // Option teinture actuellement sélectionnée (objet complet, pas juste un booléen)
+  const selectedTeinture = useMemo(
+    () => teintureSuppOptions.find((t) => t.id === selectedTeintureId) ?? null,
+    [teintureSuppOptions, selectedTeintureId]
+  );
 
   const totalAmount = useMemo(() => {
     if (!selectedService) return 0;
     let total = selectedService.basePrice;
-    if (withTeinture && selectedCategory !== 'teinture') total += teintureBasePrice;
+    if (selectedTeinture && selectedCategory !== 'teinture') total += selectedTeinture.price;
     selectedProducts.forEach((name) => { const p = productOptions.find((p) => p.name === name); if (p) total += p.price; });
     selectedSoins.forEach((name) => { const s = soinOptions.find((s) => s.name === name); if (s) total += s.price; });
     return total;
-  }, [selectedService, withTeinture, selectedProducts, selectedSoins, selectedCategory, teintureBasePrice, productOptions, soinOptions]);
+  }, [selectedService, selectedTeinture, selectedProducts, selectedSoins, selectedCategory, productOptions, soinOptions]);
 
   const formatCFA = (value: number) => `${value.toLocaleString('fr-FR')} CFA`;
 
@@ -310,7 +315,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
 
   const resetAll = () => {
     setSelectedCategory(null); setSelectedService(null); setSelectedBarber(null);
-    setSelectedProducts([]); setSelectedSoins([]); setWithTeinture(false);
+    setSelectedProducts([]); setSelectedSoins([]); setSelectedTeintureId(null);
   };
 
   // CRUD Services
@@ -416,7 +421,8 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
       onConfirm: async () => {
         await supabase.from('catalogue_teintures_supp').delete().eq('id', id);
         setTeintureSuppOptions((prev) => prev.filter((t) => t.id !== id));
-        setWithTeinture(false);
+        // On ne désélectionne que si l'option supprimée était celle sélectionnée
+        setSelectedTeintureId((prev) => (prev === id ? null : prev));
         setConfirmDialog(null);
         setActiveMenuId(null);
       }
@@ -438,7 +444,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
         barber_name: selectedBarber ?? 'Non défini',
         amount: totalAmount,
         with_soin: selectedSoins.length > 0,
-        with_teinture: withTeinture,
+        with_teinture: !!selectedTeinture,
         transaction_date_sec: now.toISOString(),
         user_id: userId,
       }]);
@@ -451,8 +457,9 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
         basePrice: selectedService.basePrice,
         produits: selectedProducts.map((name) => productOptions.find((p) => p.name === name)),
         soins: selectedSoins.map((name) => soinOptions.find((s) => s.name === name)),
-        withTeinture,
-        teinturePrice: withTeinture && selectedCategory !== 'teinture' ? teintureBasePrice : 0,
+        withTeinture: !!selectedTeinture,
+        teintureName: selectedTeinture?.name ?? null,
+        teinturePrice: selectedTeinture && selectedCategory !== 'teinture' ? selectedTeinture.price : 0,
         total: totalAmount,
         date: now.toISOString(),
       };
@@ -857,79 +864,82 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     {teintureSuppOptions.length === 0 && (
       <p className="text-zinc-500 text-sm mb-3">Aucune option teinture</p>
     )}
-    {teintureSuppOptions.map((t) => {
-      const isSelected = withTeinture;
-      const isMenuOpen = activeMenuId === `teinture-${t.id}`;
-      
-      return (
-        <div 
-          key={t.id} 
-          className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
-            isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
-          }`}
-          onClick={() => setWithTeinture(!withTeinture)}
-        >
-          {/* Bouton à 3 points */}
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+      {teintureSuppOptions.map((t) => {
+        // On compare l'id précis de CETTE option à l'id sélectionné, pas un booléen global
+        const isSelected = selectedTeintureId === t.id;
+        const isMenuOpen = activeMenuId === `teinture-${t.id}`;
+
+        return (
           <div 
-            className="absolute top-2 right-2"
-            onClick={(e) => e.stopPropagation()}
+            key={t.id} 
+            className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+              isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+            }`}
+            onClick={() => setSelectedTeintureId((prev) => (prev === t.id ? null : t.id!))}
           >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveMenuId(isMenuOpen ? null : `teinture-${t.id}`);
-              }}
-              className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+            {/* Bouton à 3 points */}
+            <div 
+              className="absolute top-2 right-2"
+              onClick={(e) => e.stopPropagation()}
             >
-              <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-            </button>
-            
-            {isMenuOpen && (
-              <div 
-                className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
-                onClick={(e) => e.stopPropagation()}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveMenuId(isMenuOpen ? null : `teinture-${t.id}`);
+                }}
+                className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
               >
-                <button
-                  onClick={() => {
-                    setEditModal({ item: t, type: 'teinture' });
-                    setActiveMenuId(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+              </button>
+              
+              {isMenuOpen && (
+                <div 
+                  className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  <Edit2 className="w-3 h-3" /> Modifier
-                </button>
-                <button
-                  onClick={() => {
-                    removeTeintureSupp(t.id!, t.name);
-                    setActiveMenuId(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
-                  <Trash2 className="w-3 h-3" /> Supprimer
-                </button>
+                  <button
+                    onClick={() => {
+                      setEditModal({ item: t, type: 'teinture' });
+                      setActiveMenuId(null);
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                  >
+                    <Edit2 className="w-3 h-3" /> Modifier
+                  </button>
+                  <button
+                    onClick={() => {
+                      removeTeintureSupp(t.id!, t.name);
+                      setActiveMenuId(null);
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                  >
+                    <Trash2 className="w-3 h-3" /> Supprimer
+                  </button>
+                </div>
+              )}
+            </div>
+            
+            {/* Nom de la teinture */}
+            <div className="pr-6 mb-2">
+              <span className="text-white text-sm font-medium block break-all">+ {t.name}</span>
+            </div>
+            
+            {/* Prix et case à cocher - Case noire visible */}
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-400 text-sm">{formatCFA(t.price)}</span>
+              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                isSelected 
+                  ? 'bg-black border-black' 
+                  : 'bg-zinc-700 border-zinc-500'
+              }`}>
+                {isSelected && <Check className="w-3 h-3 text-white" />}
               </div>
-            )}
-          </div>
-          
-          {/* Nom de la teinture */}
-          <div className="pr-6 mb-2">
-            <span className="text-white text-sm font-medium block break-all">+ {t.name}</span>
-          </div>
-          
-          {/* Prix et case à cocher - Case noire visible */}
-          <div className="flex justify-between items-center">
-            <span className="text-zinc-400 text-sm">{formatCFA(t.price)}</span>
-            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-              isSelected 
-                ? 'bg-black border-black' 
-                : 'bg-zinc-700 border-zinc-500'
-            }`}>
-              {isSelected && <Check className="w-3 h-3 text-white" />}
             </div>
           </div>
-        </div>
-      );
-    })}
+        );
+      })}
+    </div>
   </div>
 )}
 
@@ -970,7 +980,7 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
 
               {ticketData.withTeinture && ticketData.teinturePrice > 0 && (
                 <div className="flex justify-between text-sm mb-2">
-                  <span>+ Teinture</span>
+                  <span>+ {ticketData.teintureName ?? 'Teinture'}</span>
                   <span>{formatCFA(ticketData.teinturePrice)}</span>
                 </div>
               )}

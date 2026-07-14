@@ -1,8 +1,6 @@
 // src/App.tsx — VERSION MISE À JOUR
-// Ajout de l'onglet "Réservations" avec BookingSettingsPage
-// Ajout de la page de succès de paiement
-// Ajout du programme de parrainage (affiche en haut si pas de bannière)
-// Ajout de RequirePhoneNumber : bloque l'app tant que l'utilisateur n'a pas de numéro
+// Le RequirePhoneNumber s'affiche maintenant comme un message d'alerte dans le dashboard
+// plutôt qu'une modale bloquante
 
 import { useState, useEffect } from 'react';
 import {
