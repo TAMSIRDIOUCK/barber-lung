@@ -5,7 +5,8 @@ import {
   UserCheck, UserX, TrendingUp, DollarSign, Activity, RefreshCw,
   Phone, Calendar, Send, Sparkles, Star, Rocket, AlertTriangle,
   CreditCard, Plus, Edit2, Trash2, Image, Video, Save, Globe,
-  EyeOff, Upload, FileImage, FileVideo, CalendarCheck, Gift
+  EyeOff, Upload, FileImage, FileVideo, CalendarCheck, Gift,
+  Crown
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -33,6 +34,7 @@ interface UserStats {
 }
 
 interface UserSubscription {
+  id: string;
   plan_name: string;
   status: string;
   expires_at: string;
@@ -57,7 +59,8 @@ interface Referral {
   referred_phone: string;
   status: 'pending' | 'rewarded';
   created_at: string;
-  profiles_v3?: { full_name: string; email: string };
+  referrer_name?: string;
+  referrer_email?: string;
 }
 
 interface AdminPanelProps {
@@ -79,6 +82,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
   const [selectedUser, setSelectedUser] = useState<UserProfile | null>(null);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [updatingSubscription, setUpdatingSubscription] = useState<string | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [messageText, setMessageText] = useState('');
@@ -144,10 +148,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
 
   useEffect(() => {
     if (!isAdmin) return;
-    loadUsers();
-    loadGlobalStats();
-    loadBanners();
-    loadReferrals();
+    loadAllData();
   }, [isAdmin]);
 
   useEffect(() => {
@@ -194,168 +195,379 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     finally { setBannerLoading(false); }
   };
 
+  // ── CORRECTION : Chargement des parrainages sans la relation problématique ──
   const loadReferrals = async () => {
     setReferralsLoading(true);
     try {
-      const { data, error } = await supabase
+      const { data: referralsData, error: referralsError } = await supabase
         .from('referrals')
-        .select('*, profiles_v3!referrer_user_id(full_name, email)')
+        .select('*')
         .order('created_at', { ascending: false });
-      if (error) throw error;
-      setReferrals((data as Referral[]) || []);
-    } catch (err) { console.error('Erreur parrainages:', err); }
+
+      if (referralsError) throw referralsError;
+
+      const referralsWithNames: Referral[] = [];
+      
+      for (const ref of (referralsData || [])) {
+        try {
+          const { data: profile } = await supabase
+            .from('profiles_v3')
+            .select('full_name, email')
+            .eq('id', ref.referrer_user_id)
+            .maybeSingle();
+
+          referralsWithNames.push({
+            id: ref.id,
+            referrer_user_id: ref.referrer_user_id,
+            referred_name: ref.referred_name || 'Inconnu',
+            referred_phone: ref.referred_phone || '',
+            status: ref.status || 'pending',
+            created_at: ref.created_at,
+            referrer_name: profile?.full_name || 'Parrain inconnu',
+            referrer_email: profile?.email || '',
+          });
+        } catch (err) {
+          console.error('Erreur récupération profil parrain:', err);
+        }
+      }
+
+      setReferrals(referralsWithNames);
+    } catch (err) { 
+      console.error('Erreur parrainages:', err); 
+      setReferrals([]);
+    }
     finally { setReferralsLoading(false); }
   };
 
-  const loadCompletedBookingsCount = async (userId: string): Promise<number> => {
-    try {
-      const { count, error } = await supabase
-        .from('bookings').select('*', { count: 'exact', head: true })
-        .eq('salon_user_id', userId).eq('status', 'done');
-      if (error) throw error;
-      return count || 0;
-    } catch { return 0; }
-  };
-
-  const loadUsers = async () => {
+  const loadAllData = async () => {
     setLoading(true);
     try {
-      const { data: profiles, error } = await supabase
-        .from('profiles_v3').select('*').eq('role', 'user').order('created_at', { ascending: false });
-      if (error) throw error;
-      const usersWithData = (profiles || []).map(p => ({
+      // 1. Récupérer tous les utilisateurs
+      const { data: profiles, error: profilesError } = await supabase
+        .from('profiles_v3')
+        .select('*')
+        .eq('role', 'user')
+        .order('created_at', { ascending: false });
+
+      if (profilesError) throw profilesError;
+
+      const usersList = (profiles || []).map(p => ({
         ...p,
         email: p.email || `${p.id.slice(0, 8)}...`,
         phone: p.phone || '',
       }));
-      setUsers(usersWithData);
-      await loadAllUserStats(usersWithData.map(u => u.id));
-      await loadAllUserSubscriptions(usersWithData.map(u => u.id));
+      setUsers(usersList);
+
+      const userIds = usersList.map(u => u.id);
+
+      if (userIds.length === 0) {
+        setLoading(false);
+        return;
+      }
+
+      // 2. Récupérer TOUS les abonnements
+      const { data: subscriptions, error: subError } = await supabase
+        .from('subscriptions')
+        .select('id, user_id, plan_id, status, expires_at, start_date, is_free_trial')
+        .in('user_id', userIds)
+        .order('created_at', { ascending: false });
+
+      if (subError) {
+        console.error('Erreur récupération abonnements:', subError);
+      }
+
+      // 3. Récupérer les plans
+      const { data: plans, error: planError } = await supabase
+        .from('subscription_plans')
+        .select('id, name, price, duration_days');
+
+      if (planError) {
+        console.error('Erreur récupération plans:', planError);
+      }
+
+      const planMap = new Map();
+      plans?.forEach(p => planMap.set(p.id, p));
+
+      // 4. Construire la map des abonnements
+      const subsMap: Record<string, UserSubscription> = {};
+      let expiredCount = 0;
+      let expiringCount = 0;
+      const today = new Date();
+      const alertWindow = new Date();
+      alertWindow.setDate(today.getDate() + 7);
+
+      userIds.forEach(userId => {
+        const userSubs = subscriptions?.filter(s => s.user_id === userId) || [];
+        const latestSub = userSubs.length > 0 ? userSubs[0] : null;
+
+        if (latestSub) {
+          const plan = latestSub.plan_id ? planMap.get(latestSub.plan_id) : null;
+          
+          if (latestSub.expires_at) {
+            try {
+              const end = new Date(latestSub.expires_at);
+              if (!isNaN(end.getTime())) {
+                if (end < today) expiredCount++;
+                else if (end <= alertWindow) expiringCount++;
+              }
+            } catch (e) {
+              console.error('Erreur parsing date:', e);
+            }
+          }
+
+          subsMap[userId] = {
+            id: latestSub.id || '',
+            plan_name: plan?.name || 'Gratuit',
+            status: latestSub.status || 'inactive',
+            expires_at: latestSub.expires_at || '',
+            start_date: latestSub.start_date || '',
+            is_free_trial: latestSub.is_free_trial || false,
+            price: plan?.price || 0,
+          };
+        } else {
+          subsMap[userId] = {
+            id: '',
+            plan_name: 'Aucun',
+            status: 'none',
+            expires_at: '',
+            start_date: '',
+            is_free_trial: false,
+            price: 0,
+          };
+        }
+      });
+
+      setUserSubscriptions(subsMap);
+
+      // 5. Récupérer les statistiques utilisateurs
+      const statsMap: Record<string, UserStats> = {};
+      let totalCompletedBookings = 0;
+
+      try {
+        const { data: allTransactions } = await supabase
+          .from('transactions')
+          .select('user_id, amount, transaction_date_sec')
+          .in('user_id', userIds);
+
+        const { data: allExpenses } = await supabase
+          .from('expenses')
+          .select('user_id, amount')
+          .in('user_id', userIds);
+
+        const { data: allBookings } = await supabase
+          .from('bookings')
+          .select('salon_user_id')
+          .in('salon_user_id', userIds)
+          .eq('status', 'done');
+
+        const bookingCounts: Record<string, number> = {};
+        allBookings?.forEach(b => {
+          bookingCounts[b.salon_user_id] = (bookingCounts[b.salon_user_id] || 0) + 1;
+        });
+
+        userIds.forEach(userId => {
+          const userTransactions = allTransactions?.filter(t => t.user_id === userId) || [];
+          const userExpenses = allExpenses?.filter(e => e.user_id === userId) || [];
+          
+          const transactionCount = userTransactions.length;
+          const totalRevenue = userTransactions.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+          const expenseCount = userExpenses.length;
+          const totalExpenses = userExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+          
+          const lastTransaction = userTransactions.length > 0
+            ? userTransactions.sort((a, b) => 
+                new Date(b.transaction_date_sec).getTime() - new Date(a.transaction_date_sec).getTime()
+              )[0].transaction_date_sec
+            : null;
+
+          const completedBookingsCount = bookingCounts[userId] || 0;
+          totalCompletedBookings += completedBookingsCount;
+
+          statsMap[userId] = {
+            user_id: userId,
+            transaction_count: transactionCount,
+            total_revenue: totalRevenue,
+            expense_count: expenseCount,
+            total_expenses: totalExpenses,
+            last_transaction_date: lastTransaction,
+            completed_bookings_count: completedBookingsCount,
+          };
+        });
+      } catch (err) {
+        console.error('Erreur récupération statistiques:', err);
+      }
+
+      setUserStats(statsMap);
+
+      // 6. Statistiques globales
+      const activeUsers = usersList.filter(u => u.is_active).length;
+      const inactiveUsers = usersList.filter(u => !u.is_active).length;
+      const totalUsers = usersList.length;
+
+      let totalTransactions = 0;
+      let totalRevenue = 0;
+      let totalExpenses = 0;
+      
+      Object.values(statsMap).forEach(s => {
+        totalTransactions += s.transaction_count;
+        totalRevenue += s.total_revenue;
+        totalExpenses += s.total_expenses;
+      });
+
+      try {
+        const { count: referralCount } = await supabase
+          .from('referrals')
+          .select('*', { count: 'exact', head: true });
+        
+        const { count: rewardedCount } = await supabase
+          .from('referrals')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', 'rewarded');
+
+        setGlobalStats({
+          totalUsers,
+          totalTransactions,
+          totalRevenue,
+          totalExpenses,
+          activeUsers,
+          inactiveUsers,
+          expiredSubscriptions: expiredCount,
+          expiringSoon: expiringCount,
+          totalCompletedBookings,
+          totalReferrals: referralCount || 0,
+          rewardedReferrals: rewardedCount || 0,
+        });
+      } catch (err) {
+        console.error('Erreur statistiques globales:', err);
+      }
+
+      await loadBanners();
+      await loadReferrals();
+
     } catch (err) {
-      console.error('Erreur chargement utilisateurs:', err);
-      showToastMsg('Erreur lors du chargement des utilisateurs', 'error');
-    } finally { setLoading(false); }
+      console.error('Erreur chargement données:', err);
+      showToastMsg('Erreur lors du chargement des données', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const loadAllUserSubscriptions = async (userIds: string[]) => {
-    const subsMap: Record<string, UserSubscription> = {};
-    for (const userId of userIds) {
+  // ── FONCTION CORRIGÉE : Activer/Désactiver un abonnement ──
+  const toggleSubscriptionStatus = async (userId: string, currentStatus: string) => {
+    const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+    const action = newStatus === 'active' ? 'activer' : 'désactiver';
+    
+    if (!confirm(`Voulez-vous vraiment ${action} l'abonnement de cet utilisateur ?`)) return;
+    
+    setUpdatingSubscription(userId);
+    try {
+      console.log(`🔍 Tentative de ${action} l'abonnement de l'utilisateur:`, userId);
+      console.log(`📊 Statut actuel: ${currentStatus} -> Nouveau statut: ${newStatus}`);
+
+      // Méthode 1: Essayer d'utiliser la fonction RPC
       try {
-        const { data: sub } = await supabase
-          .from('subscriptions')
-          .select('plan_id, status, expires_at, start_date, is_free_trial')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: false })
+        const { data, error } = await supabase
+          .rpc('toggle_subscription_status', {
+            p_user_id: userId,
+            p_new_status: newStatus
+          });
+
+        if (!error && data) {
+          console.log('✅ RPC successful:', data);
+          showToastMsg(`Abonnement ${action} avec succès`, 'success');
+          await loadAllData();
+          setUpdatingSubscription(null);
+          return;
+        } else {
+          console.log('⚠️ RPC a échoué, fallback vers mise à jour directe:', error);
+        }
+      } catch (rpcError) {
+        console.log('⚠️ RPC error, fallback vers mise à jour directe:', rpcError);
+      }
+
+      // Méthode 2: Fallback - Mise à jour directe
+      console.log('🔄 Utilisation de la méthode fallback...');
+      
+      // Récupérer l'abonnement le plus récent
+      const { data: subData, error: findError } = await supabase
+        .from('subscriptions')
+        .select('id, status')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (findError) {
+        console.error('❌ Erreur recherche abonnement:', findError);
+        showToastMsg('Erreur lors de la recherche de l\'abonnement', 'error');
+        setUpdatingSubscription(null);
+        return;
+      }
+
+      if (!subData) {
+        console.log('ℹ️ Aucun abonnement trouvé, création d\'un nouvel abonnement...');
+        
+        // Créer un nouvel abonnement
+        const { data: planData } = await supabase
+          .from('subscription_plans')
+          .select('id')
+          .eq('name', 'Gratuit')
           .limit(1)
           .maybeSingle();
 
-        if (sub) {
-          let planName = 'Gratuit', price = 0;
-          if (sub.plan_id) {
-            const { data: plan } = await supabase
-              .from('subscription_plans').select('name, price').eq('id', sub.plan_id).single();
-            if (plan) { planName = plan.name; price = plan.price; }
-          }
-          subsMap[userId] = {
-            plan_name: planName, status: sub.status,
-            expires_at: sub.expires_at, start_date: sub.start_date,
-            is_free_trial: sub.is_free_trial || false, price,
-          };
+        const planId = planData?.id || 1;
+
+        const { error: insertError } = await supabase
+          .from('subscriptions')
+          .insert({
+            user_id: userId,
+            plan_id: planId,
+            status: newStatus,
+            start_date: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            is_free_trial: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+
+        if (insertError) {
+          console.error('❌ Erreur création abonnement:', insertError);
+          showToastMsg('Erreur lors de la création de l\'abonnement', 'error');
         } else {
-          subsMap[userId] = { plan_name: 'Aucun', status: 'none', expires_at: '', start_date: '', is_free_trial: false, price: 0 };
+          console.log('✅ Nouvel abonnement créé avec succès');
+          showToastMsg(`Nouvel abonnement ${action} avec succès`, 'success');
         }
-      } catch (err) { console.error(`Abonnement ${userId}:`, err); }
-    }
-    setUserSubscriptions(subsMap);
-  };
+      } else {
+        // Mettre à jour le statut
+        console.log(`📝 Mise à jour de l'abonnement ${subData.id} de ${subData.status} vers ${newStatus}`);
+        
+        const { error: updateError } = await supabase
+          .from('subscriptions')
+          .update({ 
+            status: newStatus,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', subData.id);
 
-  const loadAllUserStats = async (userIds: string[]) => {
-    setStatsLoading(true);
-    const statsMap: Record<string, UserStats> = {};
-    let totalCompletedBookings = 0;
-
-    for (const userId of userIds) {
-      try {
-        const { data: transactions } = await supabase
-          .from('transactions').select('amount, transaction_date_sec').eq('user_id', userId);
-        const transactionCount = transactions?.length || 0;
-        const totalRevenue = transactions?.reduce((s, t) => s + (Number(t.amount) || 0), 0) || 0;
-        const lastTransaction = transactions?.length
-          ? [...transactions].sort((a, b) =>
-              new Date(b.transaction_date_sec).getTime() - new Date(a.transaction_date_sec).getTime()
-            )[0].transaction_date_sec
-          : null;
-
-        const { data: expenses } = await supabase
-          .from('expenses').select('amount').eq('user_id', userId);
-        const expenseCount = expenses?.length || 0;
-        const totalExpenses = expenses?.reduce((s, e) => s + (Number(e.amount) || 0), 0) || 0;
-
-        const completedBookingsCount = await loadCompletedBookingsCount(userId);
-        totalCompletedBookings += completedBookingsCount;
-
-        statsMap[userId] = {
-          user_id: userId, transaction_count: transactionCount, total_revenue: totalRevenue,
-          expense_count: expenseCount, total_expenses: totalExpenses,
-          last_transaction_date: lastTransaction, completed_bookings_count: completedBookingsCount,
-        };
-      } catch (err) { console.error(`Stats ${userId}:`, err); }
-    }
-    setUserStats(statsMap);
-    setGlobalStats(prev => ({ ...prev, totalCompletedBookings }));
-    setStatsLoading(false);
-  };
-
-  const loadGlobalStats = async () => {
-    try {
-      const { data: allUsers } = await supabase
-        .from('profiles_v3').select('id, is_active').eq('role', 'user');
-      const activeUsers = allUsers?.filter(u => u.is_active).length || 0;
-      const inactiveUsers = allUsers?.filter(u => !u.is_active).length || 0;
-      const totalUsers = allUsers?.length || 0;
-      let totalTransactions = 0, totalRevenue = 0, totalExpenses = 0;
-      let expiredSubscriptions = 0, expiringSoon = 0, totalCompletedBookings = 0;
-      const today = new Date();
-      const thirtyDaysFromNow = new Date();
-      thirtyDaysFromNow.setDate(today.getDate() + 30);
-
-      for (const user of (allUsers || [])) {
-        const { data: tx } = await supabase.from('transactions').select('amount').eq('user_id', user.id);
-        if (tx) { totalTransactions += tx.length; totalRevenue += tx.reduce((s, t) => s + (Number(t.amount) || 0), 0); }
-
-        const { data: sub } = await supabase
-          .from('subscriptions').select('expires_at, status')
-          .eq('user_id', user.id).eq('status', 'active')
-          .order('created_at', { ascending: false }).limit(1).maybeSingle();
-        if (sub?.expires_at) {
-          const end = new Date(sub.expires_at);
-          if (end < today) expiredSubscriptions++;
-          else if (end <= thirtyDaysFromNow) expiringSoon++;
+        if (updateError) {
+          console.error('❌ Erreur mise à jour abonnement:', updateError);
+          showToastMsg('Erreur lors de la mise à jour de l\'abonnement', 'error');
+        } else {
+          console.log('✅ Abonnement mis à jour avec succès');
+          showToastMsg(`Abonnement ${action} avec succès`, 'success');
         }
-
-        const { count: bCount } = await supabase
-          .from('bookings').select('*', { count: 'exact', head: true })
-          .eq('salon_user_id', user.id).eq('status', 'done');
-        totalCompletedBookings += (bCount || 0);
-
-        const { data: exp } = await supabase.from('expenses').select('amount').eq('user_id', user.id);
-        if (exp) totalExpenses += exp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
       }
-
-      const { count: referralCount } = await supabase
-        .from('referrals').select('*', { count: 'exact', head: true });
-      const { count: rewardedCount } = await supabase
-        .from('referrals').select('*', { count: 'exact', head: true }).eq('status', 'rewarded');
-
-      setGlobalStats({
-        totalUsers, totalTransactions, totalRevenue, totalExpenses,
-        activeUsers, inactiveUsers, expiredSubscriptions, expiringSoon,
-        totalCompletedBookings, totalReferrals: referralCount || 0, rewardedReferrals: rewardedCount || 0,
-      });
-    } catch (err) { console.error('Stats globales:', err); }
+      
+      // Recharger les données
+      await loadAllData();
+      
+    } catch (err) {
+      console.error('❌ Erreur modification abonnement:', err);
+      showToastMsg('Erreur lors de la modification de l\'abonnement', 'error');
+    } finally {
+      setUpdatingSubscription(null);
+    }
   };
-
-  // ── Actions ────────────────────────────────────────────────────────────────
 
   const toggleUserStatus = async (userId: string, currentStatus: boolean) => {
     if (!confirm(`Voulez-vous vraiment ${currentStatus ? 'désactiver' : 'activer'} ce compte ?`)) return;
@@ -367,7 +579,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
       if (error) throw error;
       setUsers(prev => prev.map(u => u.id === userId ? { ...u, is_active: !currentStatus } : u));
       showToastMsg(`Compte ${!currentStatus ? 'activé' : 'désactivé'}`, 'success');
-      loadGlobalStats();
+      loadAllData();
     } catch (err) {
       console.error(err);
       showToastMsg('Erreur lors du changement de statut', 'error');
@@ -456,12 +668,12 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
       if (error) throw error;
       showToastMsg(`Parrainage ${newStatus === 'rewarded' ? 'récompensé' : 'en attente'}`, 'success');
       loadReferrals();
-      loadGlobalStats();
+      loadAllData();
     } catch (err) { console.error(err); showToastMsg('Erreur mise à jour parrainage', 'error'); }
   };
 
   const refreshData = async () => {
-    await Promise.all([loadUsers(), loadGlobalStats(), loadBanners(), loadReferrals()]);
+    await loadAllData();
     showToastMsg('Données actualisées', 'success');
   };
 
@@ -473,7 +685,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return `221${cleaned}`;
   };
 
-  // 1. RAPPEL PAIEMENT — urgence, ton direct
   const getPaymentReminderMessage = (userName: string, sub: UserSubscription) => {
     const end = sub?.expires_at ? new Date(sub.expires_at).toLocaleDateString('fr-FR') : 'bientôt';
     const daysLeft = sub?.expires_at ? getDaysRemaining(sub.expires_at) : 0;
@@ -481,7 +692,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return `*${APP_NAME} - ⚠️ Action requise*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVotre abonnement *${sub?.plan_name || 'Mensuel'}* arrive à échéance le *${end}*.\n\nIl vous reste seulement *${daysLeft} jour${daysLeft > 1 ? 's' : ''}* — après cette date, vous perdrez l'accès à toutes vos données : transactions, réservations, statistiques.\n\n💳 *Renouveler maintenant :*\n👉 ${APP_URL}/subscribe\n\n✅ Paiement rapide via *Wave* ou *Orange Money*\n✅ Accès immédiat après paiement\n✅ Aucune perte de données\n\nNe laissez pas votre salon sans outil ! 💈\n\n*${APP_NAME}* — Votre partenaire au quotidien ⭐`;
   };
 
-  // 2. EXPIRATION DANS 7J — anticipation, bénéfices rappelés
   const getEarlyReminderMessage = (userName: string, sub: UserSubscription) => {
     const end = sub?.expires_at ? new Date(sub.expires_at).toLocaleDateString('fr-FR') : 'bientôt';
     const daysLeft = sub?.expires_at ? getDaysRemaining(sub.expires_at) : 0;
@@ -489,11 +699,9 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return `*${APP_NAME} - ⏰ Votre abonnement expire bientôt*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nUn petit rappel : votre abonnement *${sub?.plan_name || 'Mensuel'}* se termine dans *${daysLeft} jour${daysLeft > 1 ? 's' : ''}*, le *${end}*.\n\nPour continuer à profiter de :\n✂️ Suivi de vos transactions en temps réel\n📊 Statistiques et rapports de votre salon\n📅 Réservations en ligne de vos clients\n👥 Gestion de vos coiffeurs\n\n…renouvelez dès maintenant pour ne rien manquer.\n\n💳 *${price.toLocaleString()} CFA* via Wave ou Orange Money\n👉 ${APP_URL}/subscribe\n\nMerci de nous faire confiance 🙏\n\n*${APP_NAME}* ⭐`;
   };
 
-  // 3. MARKETING GÉNÉRAL — image de marque, valeur
   const getMarketingMessage = (userName: string, sub: UserSubscription) =>
     `*${APP_NAME} - La gestion de salon réinventée 💈*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nChaque jour, des coiffeurs comme vous utilisent *${APP_NAME}* pour :\n\n📈 Suivre leurs revenus au centime près\n📅 Accepter des réservations 24h/24 sans décrocher\n✂️ Gérer leur équipe de coiffeurs facilement\n🎟️ Valider les clients avec un QR code en 2 secondes\n📊 Voir leurs meilleures semaines et services\n\nRésultat ? Plus de temps pour ce qui compte : *couper des cheveux et satisfaire vos clients.*\n\n🚀 Votre plan actuel : *${sub?.plan_name || 'Gratuit'}*\n👉 Découvrir toutes les fonctionnalités : ${APP_URL}\n\n*${APP_NAME}* — Conçu pour les professionnels du barbershop ✨`;
 
-  // 4. RELANCE ACTIVITÉ — valoriser ce qu'ils ont fait
   const getReminderMessage = (userName: string, stats?: UserStats) => {
     const revenue = (stats?.total_revenue || 0).toLocaleString();
     const txCount = stats?.transaction_count || 0;
@@ -501,19 +709,15 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return `*${APP_NAME} - 📊 Votre activité en chiffres*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVoici ce que *${APP_NAME}* a enregistré pour votre salon :\n\n💰 Chiffre d'affaires suivi : *${revenue} CFA*\n✂️ Transactions enregistrées : *${txCount}*\n📅 Réservations terminées : *${bookings}*\n\nCes données vous appartiennent — elles vous aident à comprendre vos meilleures journées, vos services les plus rentables et la croissance de votre salon.\n\n👉 Consultez vos statistiques complètes : ${APP_URL}\n\nContinuez comme ça ! 💪\n\n*${APP_NAME}* ⭐`;
   };
 
-  // 5. INVITATION PARRAINAGE — gain concret, simplicité
   const getReferralInviteMessage = (userName: string) =>
     `*${APP_NAME} - 🎁 Gagnez 1 000 FCFA par salon parrainé*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nOn a une bonne nouvelle pour vous 🤩\n\nChaque salon que vous recommandez à *${APP_NAME}* vous rapporte *1 000 FCFA*, sans limite !\n\n📌 *Comment ça marche ?*\n1️⃣ Partagez votre lien personnel à un gérant de salon\n2️⃣ Il s'inscrit et active son abonnement\n3️⃣ Vous recevez automatiquement *1 000 FCFA* 🎉\n\n💡 Vous connaissez 5 salons autour de vous ? C'est *5 000 FCFA* dans votre poche.\n\nC'est simple, rapide, et sans aucune limite de parrainages.\n\n🔗 Accédez à votre lien ici :\n👉 ${APP_URL}\n\nMerci de faire partie de la famille *${APP_NAME}* ! 🙏✂️\n\n*${APP_NAME}* ⭐`;
 
-  // 6. PROMO RÉSERVATIONS — découverte fonctionnalité clé
   const getBookingPromoMessage = (userName: string, sub: UserSubscription) =>
     `*${APP_NAME} - 📅 Activez vos réservations en ligne !*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nSaviez-vous que votre abonnement *${sub?.plan_name || APP_NAME}* inclut une page de réservation en ligne pour votre salon ? 🚀\n\n*Ce que vos clients peuvent faire :*\n📱 Réserver un créneau depuis leur téléphone, à n'importe quelle heure\n🎟️ Recevoir un ticket avec QR code\n💳 Payer en ligne (Wave, Orange Money)\n✂️ Choisir leur coiffeur préféré\n\n*Ce que vous gagnez :*\n✅ Moins d'appels pour les rendez-vous\n✅ Zéro client en attente inutile\n✅ Validation rapide avec votre scanner QR\n✅ Toutes les réservations centralisées\n\n👉 Configurez votre page maintenant :\n${APP_URL}\n\nVos clients méritent le meilleur service — commencez aujourd'hui ! 💈\n\n*${APP_NAME}* ⭐`;
 
-  // 7. RÉACTIVATION INACTIF — empathie + urgence douce
   const getReactivationMessage = (userName: string, sub: UserSubscription) =>
     `*${APP_NAME} - On pense à vous 💈*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nCela fait un moment qu'on ne vous a pas vu sur *${APP_NAME}*… et on voulait prendre des nouvelles !\n\nVotre salon tourne toujours à plein régime ? 💪\n\nSi vous avez mis l'application de côté, pas de panique. Vos données sont toujours là, et reprendre là où vous en étiez prend moins d'une minute.\n\n*Quelques rappels de ce qui vous attend :*\n📊 Vos statistiques de revenus\n📅 Votre agenda de réservations\n✂️ Le suivi de votre équipe\n🎟️ Le scanner QR pour valider les clients\n\n👉 Reconnectez-vous ici : ${APP_URL}\n\nOn est là si vous avez besoin d'aide 🙏\n\n*${APP_NAME}* ⭐`;
 
-  // 8. UPSELL ANNUEL — économie, engagement long terme
   const getAnnualUpsellMessage = (userName: string, sub: UserSubscription) => {
     const monthlyPrice = PLAN_PRICES['Mensuel'] || 5000;
     const annualPrice = PLAN_PRICES['Annuel'] || 50000;
@@ -521,7 +725,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return `*${APP_NAME} - 💡 Économisez ${savings.toLocaleString()} CFA cette année*\n\nBonjour ${userName || 'Cher client'} 👋,\n\nVous utilisez actuellement le plan *${sub?.plan_name || 'Mensuel'}* à *${(sub?.price || monthlyPrice).toLocaleString()} CFA/mois*.\n\nSaviez-vous qu'en passant au plan *Annuel*, vous économisez *${savings.toLocaleString()} CFA* par an ?\n\n📌 *Plan Mensuel :* ${(monthlyPrice * 12).toLocaleString()} CFA/an\n✅ *Plan Annuel :* ${annualPrice.toLocaleString()} CFA/an seulement\n💰 *Économie :* ${savings.toLocaleString()} CFA\n\nC'est l'équivalent de *${Math.round(savings / monthlyPrice)} mois offerts* — pour exactement les mêmes fonctionnalités.\n\n👉 Passer à l'annuel maintenant :\n${APP_URL}/subscribe\n\nUne seule décision, 12 mois de tranquillité 🙏\n\n*${APP_NAME}* ⭐`;
   };
 
-  // 9. FÉLICITATIONS ACTIVITÉ — encouragement, fidélisation
   const getCongratulationsMessage = (userName: string, stats?: UserStats) => {
     const revenue = (stats?.total_revenue || 0).toLocaleString();
     const bookings = stats?.completed_bookings_count || 0;
@@ -589,7 +792,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     return matchesSearch && matchesStatus;
   });
 
-  // ── Menu items WhatsApp (réutilisés partout) ───────────────────────────────
+  // ── Menu items WhatsApp ───────────────────────────────────────────────────
 
   const whatsappMenuItems = [
     { type: 'payment_reminder' as const,  icon: <CreditCard className="w-3 h-3 text-red-400" />,    label: '⚠️ Rappel paiement urgent' },
@@ -787,6 +990,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                 <th className="pb-3 text-center">Jours restants</th>
                 <th className="pb-3 text-center">Réservations ✅</th>
                 <th className="pb-3">Statut</th>
+                <th className="pb-3">Gérer Abo</th>
                 <th className="pb-3">Transactions</th>
                 <th className="pb-3">Revenus</th>
                 <th className="pb-3">Actions</th>
@@ -822,7 +1026,13 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                         : <span className="text-zinc-600 text-sm">Non renseigné</span>}
                     </td>
                     <td className="py-3">
-                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${sub?.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                        sub?.status === 'active' 
+                          ? 'bg-green-500/20 text-green-400' 
+                          : sub?.status === 'inactive' 
+                            ? 'bg-red-500/20 text-red-400'
+                            : 'bg-zinc-600/20 text-zinc-400'
+                      }`}>
                         {sub?.plan_name || 'Aucun'}
                       </span>
                     </td>
@@ -865,10 +1075,35 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                     <td className="py-3">
                       <button onClick={() => toggleUserStatus(user.id, user.is_active)}
                         disabled={processingId === user.id || isCurrentUser}
-                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border ${user.is_active ? 'bg-green-500/20 text-green-400 border-green-500' : 'bg-red-500/20 text-red-400 border-red-500'} ${isCurrentUser ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+                        className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border ${
+                          user.is_active 
+                            ? 'bg-green-500/20 text-green-400 border-green-500' 
+                            : 'bg-red-500/20 text-red-400 border-red-500'
+                        } ${isCurrentUser ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
                         {user.is_active ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
                         {user.is_active ? 'Actif' : 'Inactif'}
                       </button>
+                    </td>
+                    <td className="py-3">
+                      {sub?.id && sub.id !== '' ? (
+                        <button
+                          onClick={() => toggleSubscriptionStatus(user.id, sub.status)}
+                          disabled={updatingSubscription === user.id}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1 ${
+                            sub.status === 'active'
+                              ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
+                              : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                          } ${updatingSubscription === user.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {updatingSubscription === user.id ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : (
+                            sub.status === 'active' ? 'Désactiver' : 'Activer'
+                          )}
+                        </button>
+                      ) : (
+                        <span className="text-zinc-500 text-xs">Aucun</span>
+                      )}
                     </td>
                     <td className="py-3">
                       {statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-white">{stats?.transaction_count || 0}</span>}
@@ -941,7 +1176,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
               <tbody className="divide-y divide-zinc-800">
                 {referrals.map(ref => (
                   <tr key={ref.id} className="hover:bg-zinc-800/30 transition">
-                    <td className="px-4 py-3 text-white">{ref.profiles_v3?.full_name || 'N/A'}</td>
+                    <td className="px-4 py-3 text-white">{ref.referrer_name || 'N/A'}</td>
                     <td className="px-4 py-3 text-white">{ref.referred_name}</td>
                     <td className="px-4 py-3 text-zinc-300">{ref.referred_phone}</td>
                     <td className="px-4 py-3 text-center">
@@ -1118,6 +1353,29 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                             {getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '')}
                           </span> jours
                         </p>
+                      </div>
+                    )}
+                    {/* Bouton d'action dans la modal */}
+                    {userSubscriptions[selectedUser.id]?.id && userSubscriptions[selectedUser.id]?.id !== '' && (
+                      <div className="mt-4 pt-3 border-t border-zinc-700 flex justify-center">
+                        <button
+                          onClick={() => {
+                            toggleSubscriptionStatus(selectedUser.id, userSubscriptions[selectedUser.id].status);
+                            setShowDetailsModal(false);
+                          }}
+                          disabled={updatingSubscription === selectedUser.id}
+                          className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 ${
+                            userSubscriptions[selectedUser.id].status === 'active'
+                              ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
+                              : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                          } ${updatingSubscription === selectedUser.id ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                          {updatingSubscription === selectedUser.id ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                          ) : (
+                            userSubscriptions[selectedUser.id].status === 'active' ? 'Désactiver l\'abonnement' : 'Activer l\'abonnement'
+                          )}
+                        </button>
                       </div>
                     )}
                   </div>

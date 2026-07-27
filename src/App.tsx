@@ -1,11 +1,9 @@
-// src/App.tsx — VERSION MISE À JOUR
-// Le RequirePhoneNumber s'affiche maintenant comme un message d'alerte dans le dashboard
-// plutôt qu'une modale bloquante
+// src/App.tsx — VERSION MISE À JOUR avec rappel de renouvellement automatique
 
 import { useState, useEffect } from 'react';
 import {
   Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X,
-  Share2, Check, Shield, CalendarCheck, CheckCircle2, Loader
+  Share2, Check, Shield, CalendarCheck, CheckCircle2, Loader, AlertTriangle
 } from 'lucide-react';
 import { ServiceSelector } from './components/ServiceSelector';
 import TransactionHistory from './components/TransactionHistory';
@@ -16,6 +14,8 @@ import { PromoBanner } from './components/PromoBanner';
 import { BookingSettingsPage } from './components/BookingSettingsPage';
 import { ReferralProgram } from './components/ReferralProgram';
 import RequirePhoneNumber from './components/Requirephonenumber';
+import { SubscribePage } from './components/Subscribepage';
+import { useSubscriptionStatus } from './hooks/useSubscriptionStatus';
 import { supabase } from './lib/supabase';
 import type { AuthUser } from './components/Clientapp';
 
@@ -30,11 +30,11 @@ interface AppProps {
 function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(3);
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
-  
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const subscriptionId = params.get('subscription_id');
-    
+
     if (!subscriptionId) {
       const timer = setInterval(() => {
         setCountdown((prev) => {
@@ -48,22 +48,22 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
       }, 1000);
       return () => clearInterval(timer);
     }
-    
+
     const checkSubscription = async () => {
       setStatus('activating');
-      
+
       let attempts = 0;
       const maxAttempts = 10;
-      
+
       const checkInterval = setInterval(async () => {
         attempts++;
-        
+
         const { data: subscription } = await supabase
           .from('subscriptions')
           .select('status')
           .eq('id', parseInt(subscriptionId))
           .maybeSingle();
-        
+
         if (subscription?.status === 'active') {
           clearInterval(checkInterval);
           setStatus('success');
@@ -78,13 +78,13 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
           }, 2000);
         }
       }, 2000);
-      
+
       return () => clearInterval(checkInterval);
     };
-    
+
     checkSubscription();
   }, [onComplete]);
-  
+
   return (
     <div className="min-h-screen bg-black flex items-center justify-center p-4">
       <div className="text-center max-w-md">
@@ -94,7 +94,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             <h2 className="text-white text-xl font-bold">Vérification du paiement...</h2>
           </>
         )}
-        
+
         {status === 'activating' && (
           <>
             <div className="w-16 h-16 bg-yellow-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -104,7 +104,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             <p className="text-zinc-400 mt-2">Votre abonnement est en cours d'activation</p>
           </>
         )}
-        
+
         {status === 'success' && (
           <>
             <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -124,7 +124,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
 // Composant Page d'Annulation
 function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(5);
-  
+
   useEffect(() => {
     const timer = setInterval(() => {
       setCountdown((prev) => {
@@ -136,10 +136,10 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         return prev - 1;
       });
     }, 1000);
-    
+
     return () => clearInterval(timer);
   }, [onComplete]);
-  
+
   return (
     <div className="min-h-screen bg-black flex items-center justify-center p-4">
       <div className="text-center max-w-md">
@@ -149,7 +149,7 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         <h2 className="text-white text-2xl font-bold mb-2">Paiement annulé</h2>
         <p className="text-zinc-400 mb-4">Vous n'avez pas confirmé le paiement.</p>
         <p className="text-zinc-500 text-sm">Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...</p>
-        <button 
+        <button
           onClick={onComplete}
           className="mt-6 bg-white text-black px-6 py-2 rounded-lg font-semibold hover:bg-zinc-200 transition"
         >
@@ -168,7 +168,7 @@ function App({ authUser, onLogout }: AppProps) {
   const [salonName] = useState<string>('LE COUPE');
   const [isAdmin, setIsAdmin] = useState(false);
   const [checkingAdmin, setCheckingAdmin] = useState(true);
-  
+
   // État pour les pages de paiement
   const [showPaymentSuccess, setShowPaymentSuccess] = useState(false);
   const [showPaymentCancel, setShowPaymentCancel] = useState(false);
@@ -177,11 +177,17 @@ function App({ authUser, onLogout }: AppProps) {
   const [hasActiveBanner, setHasActiveBanner] = useState(false);
   const [checkingBanner, setCheckingBanner] = useState(true);
 
+  // État pour le flux de renouvellement d'abonnement
+  const [showRenewPage, setShowRenewPage] = useState(false);
+
+  // Statut de l'abonnement en cours (rappel automatique 5 jours avant expiration)
+  const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser.id);
+
   // Vérifier l'URL pour les pages de paiement
   useEffect(() => {
     const pathname = window.location.pathname;
     const params = new URLSearchParams(window.location.search);
-    
+
     if (pathname === '/payment-success' || params.get('success') === 'true') {
       setShowPaymentSuccess(true);
       window.history.replaceState({}, '', '/');
@@ -202,7 +208,7 @@ function App({ authUser, onLogout }: AppProps) {
           .eq('is_active', true)
           .gte('expiry_date', new Date().toISOString())
           .maybeSingle();
-        
+
         setHasActiveBanner(!!data);
       } catch (err) {
         console.error('Erreur vérification bannière:', err);
@@ -211,7 +217,7 @@ function App({ authUser, onLogout }: AppProps) {
         setCheckingBanner(false);
       }
     };
-    
+
     checkActiveBanner();
   }, []);
 
@@ -279,9 +285,24 @@ function App({ authUser, onLogout }: AppProps) {
   if (showPaymentSuccess) {
     return <PaymentSuccessPage onComplete={handlePaymentComplete} />;
   }
-  
+
   if (showPaymentCancel) {
     return <PaymentCancelPage onComplete={handlePaymentComplete} />;
+  }
+
+  // Flux de renouvellement — réutilise SubscribePage (choix de plan + paiement PayDunya)
+  if (showRenewPage) {
+    return (
+      <SubscribePage
+        userId={authUser.id}
+        userEmail={authUser.email}
+        userFullName={authUser.fullName || ''}
+        onSubscribed={() => {
+          setShowRenewPage(false);
+          window.location.reload();
+        }}
+      />
+    );
   }
 
   if (checkingAdmin) {
@@ -392,19 +413,38 @@ function App({ authUser, onLogout }: AppProps) {
 
         {/* MAIN */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
+
+          {/* Bannière de rappel de renouvellement — visible sur toutes les pages, 5 jours avant expiration */}
+          {needsRenewal && daysLeft !== null && (
+            <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                {daysLeft <= 0
+                  ? 'Votre abonnement a expiré. Renouvelez-le pour continuer à utiliser LE COUPE.'
+                  : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}. Pensez à renouveler.`}
+              </span>
+              <button
+                onClick={() => setShowRenewPage(true)}
+                className="bg-white text-black px-4 py-2 rounded-lg font-bold whitespace-nowrap"
+              >
+                Payer maintenant
+              </button>
+            </div>
+          )}
+
           {currentPage === 'home' && (
             <div className="space-y-8">
               {/* Bannière publicitaire (toujours affichée si active) */}
               <PromoBanner />
-              
+
               {/* Parrainage - Affiche UNIQUEMENT si pas de bannière active */}
               {!checkingBanner && !hasActiveBanner && (
-                <ReferralProgram 
-                  userId={authUser.id} 
-                  userName={authUser.fullName || authUser.email} 
+                <ReferralProgram
+                  userId={authUser.id}
+                  userName={authUser.fullName || authUser.email}
                 />
               )}
-              
+
               <ServiceSelector
                 userId={authUser.id}
                 salonName={salonName}

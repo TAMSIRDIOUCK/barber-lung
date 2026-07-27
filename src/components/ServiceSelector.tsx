@@ -1,6 +1,7 @@
 // src/components/ServiceSelector.tsx
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Scissors, Sparkles, Baby, X, Printer, Box, Plus, Trash2, Edit2, AlertCircle, MoreHorizontal, Check } from 'lucide-react';import { supabase } from '../lib/supabase';
+import { Scissors, Sparkles, Baby, X, Printer, Box, Plus, Trash2, Edit2, AlertCircle, MoreHorizontal, Check } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 import { BarberManager } from './BarberManager';
 import type { AuthUser } from './Clientapp';
 
@@ -157,27 +158,6 @@ function ConfirmationDialog({ message, onConfirm, onCancel }: { message: string;
   );
 }
 
-function ActionButtons({ onEdit, onDelete, onClose }: { onEdit: () => void; onDelete: () => void; onClose: () => void }) {
-  return (
-    <div className="flex gap-2">
-      <button
-        onClick={(e) => { e.stopPropagation(); onEdit(); onClose(); }}
-        className="bg-blue-500 hover:bg-blue-600 text-white rounded-full p-1.5 transition-all shadow-lg"
-        title="Modifier"
-      >
-        <Edit2 className="w-3 h-3" />
-      </button>
-      <button
-        onClick={(e) => { e.stopPropagation(); onDelete(); onClose(); }}
-        className="bg-red-500 hover:bg-red-600 text-white rounded-full p-1.5 transition-all shadow-lg"
-        title="Supprimer"
-      >
-        <Trash2 className="w-3 h-3" />
-      </button>
-    </div>
-  );
-}
-
 function EditModal({ item, type, onSave, onClose }: { 
   item: any; 
   type: 'service' | 'product' | 'soin' | 'teinture';
@@ -236,8 +216,8 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
   const [selectedBarber, setSelectedBarber] = useState<string | null>(null);
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
   const [selectedSoins, setSelectedSoins] = useState<string[]>([]);
-  // Remplace le booléen "withTeinture" par l'id de l'option teinture précisément sélectionnée
-  const [selectedTeintureId, setSelectedTeintureId] = useState<number | null>(null);
+  // ✅ CHANGEMENT: Permettre la sélection MULTIPLE des teintures
+  const [selectedTeintureIds, setSelectedTeintureIds] = useState<number[]>([]);
   const [ticketData, setTicketData] = useState<any | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -292,20 +272,32 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     load();
   }, [userId]);
 
-  // Option teinture actuellement sélectionnée (objet complet, pas juste un booléen)
-  const selectedTeinture = useMemo(
-    () => teintureSuppOptions.find((t) => t.id === selectedTeintureId) ?? null,
-    [teintureSuppOptions, selectedTeintureId]
+  // ✅ CHANGEMENT: Récupérer toutes les teintures sélectionnées
+  const selectedTeintures = useMemo(
+    () => teintureSuppOptions.filter((t) => t.id !== undefined && selectedTeintureIds.includes(t.id)),
+    [teintureSuppOptions, selectedTeintureIds]
   );
 
+  // ✅ CHANGEMENT: Calculer le total avec toutes les teintures sélectionnées
   const totalAmount = useMemo(() => {
     if (!selectedService) return 0;
     let total = selectedService.basePrice;
-    if (selectedTeinture && selectedCategory !== 'teinture') total += selectedTeinture.price;
-    selectedProducts.forEach((name) => { const p = productOptions.find((p) => p.name === name); if (p) total += p.price; });
-    selectedSoins.forEach((name) => { const s = soinOptions.find((s) => s.name === name); if (s) total += s.price; });
+    
+    // Ajouter le prix de chaque teinture sélectionnée
+    selectedTeintures.forEach((teinture) => {
+      total += teinture.price;
+    });
+    
+    selectedProducts.forEach((name) => { 
+      const p = productOptions.find((p) => p.name === name); 
+      if (p) total += p.price; 
+    });
+    selectedSoins.forEach((name) => { 
+      const s = soinOptions.find((s) => s.name === name); 
+      if (s) total += s.price; 
+    });
     return total;
-  }, [selectedService, selectedTeinture, selectedProducts, selectedSoins, selectedCategory, productOptions, soinOptions]);
+  }, [selectedService, selectedTeintures, selectedProducts, selectedSoins, productOptions, soinOptions]);
 
   const formatCFA = (value: number) => `${value.toLocaleString('fr-FR')} CFA`;
 
@@ -313,9 +305,18 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     setList((prev) => prev.includes(name) ? prev.filter((i) => i !== name) : [...prev, name]);
   };
 
+  // ✅ CHANGEMENT: Fonction pour basculer la sélection d'une teinture
+  const toggleTeinture = (id: number) => {
+    setSelectedTeintureIds((prev) => 
+      prev.includes(id) 
+        ? prev.filter((tId) => tId !== id) 
+        : [...prev, id]
+    );
+  };
+
   const resetAll = () => {
     setSelectedCategory(null); setSelectedService(null); setSelectedBarber(null);
-    setSelectedProducts([]); setSelectedSoins([]); setSelectedTeintureId(null);
+    setSelectedProducts([]); setSelectedSoins([]); setSelectedTeintureIds([]);
   };
 
   // CRUD Services
@@ -421,8 +422,8 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
       onConfirm: async () => {
         await supabase.from('catalogue_teintures_supp').delete().eq('id', id);
         setTeintureSuppOptions((prev) => prev.filter((t) => t.id !== id));
-        // On ne désélectionne que si l'option supprimée était celle sélectionnée
-        setSelectedTeintureId((prev) => (prev === id ? null : prev));
+        // ✅ CHANGEMENT: Retirer l'ID des sélections
+        setSelectedTeintureIds((prev) => prev.filter((tId) => tId !== id));
         setConfirmDialog(null);
         setActiveMenuId(null);
       }
@@ -444,11 +445,13 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
         barber_name: selectedBarber ?? 'Non défini',
         amount: totalAmount,
         with_soin: selectedSoins.length > 0,
-        with_teinture: !!selectedTeinture,
+        with_teinture: selectedTeintures.length > 0,
         transaction_date_sec: now.toISOString(),
         user_id: userId,
       }]);
       if (insertError) throw insertError;
+      
+      // ✅ CHANGEMENT: Inclure toutes les teintures dans le ticket
       const newTicket = {
         receiptNumber: 'T' + Date.now().toString().slice(-6),
         salonName,
@@ -457,9 +460,8 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
         basePrice: selectedService.basePrice,
         produits: selectedProducts.map((name) => productOptions.find((p) => p.name === name)),
         soins: selectedSoins.map((name) => soinOptions.find((s) => s.name === name)),
-        withTeinture: !!selectedTeinture,
-        teintureName: selectedTeinture?.name ?? null,
-        teinturePrice: selectedTeinture && selectedCategory !== 'teinture' ? selectedTeinture.price : 0,
+        withTeinture: selectedTeintures.length > 0,
+        teintures: selectedTeintures.map((t) => ({ name: t.name, price: t.price })),
         total: totalAmount,
         date: now.toISOString(),
       };
@@ -513,7 +515,6 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
 
     return (
       <div className="relative bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-6 hover:border-white transition">
-        {/* Zone de sélection - clic sur toute la carte sauf le menu */}
         <div 
           onClick={() => setSelectedService(service)}
           className="w-full text-left cursor-pointer pr-8"
@@ -522,7 +523,6 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
           <p className="text-zinc-400 text-sm">{service.basePrice.toLocaleString('fr-FR')} CFA</p>
         </div>
         
-        {/* Bouton à 3 points */}
         <div className="absolute top-3 right-3" ref={isMenuOpen ? menuRef : null}>
           <button
             onClick={(e) => {
@@ -534,7 +534,6 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
             <MoreHorizontal className="w-5 h-5 text-zinc-400" />
           </button>
           
-          {/* Menu des actions */}
           {isMenuOpen && (
             <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]">
               <button
@@ -562,52 +561,6 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
     );
   };
 
-  // Composant pour les produits/soins/teinture
-  const ActionItem = ({ item, type, onEdit, onDelete, children }: { item: any; type: string; onEdit: () => void; onDelete: () => void; children: React.ReactNode }) => {
-    const isMenuOpen = activeMenuId === `${type}-${item.id}`;
-
-    return (
-      <div className="relative bg-zinc-800 rounded-lg">
-        {children}
-        <div className="absolute top-1 right-1" ref={isMenuOpen ? menuRef : null}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setActiveMenuId(isMenuOpen ? null : `${type}-${item.id}`);
-            }}
-            className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
-          >
-            <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-          </button>
-          
-          {/* Menu des actions */}
-          {isMenuOpen && (
-            <div className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]">
-              <button
-                onClick={() => {
-                  onEdit();
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Edit2 className="w-3 h-3" /> Modifier
-              </button>
-              <button
-                onClick={() => {
-                  onDelete();
-                  setActiveMenuId(null);
-                }}
-                className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-              >
-                <Trash2 className="w-3 h-3" /> Supprimer
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
   return (
     <div className="space-y-4 sm:space-y-6 px-4 sm:px-0">
 
@@ -620,10 +573,10 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
               if (cat === 'produitSeul') setSelectedService(services[cat][0] ?? { name: 'Produit Seul', basePrice: 0, category: cat });
               else setSelectedService({ name: '', basePrice: 0, category: cat });
             }} className="bg-zinc-900 border border-zinc-700 rounded-2xl p-4 sm:p-8 hover:border-white transition flex flex-col items-center group">
-              {cat === 'coupeAdulte' && <Scissors  className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
-              {cat === 'coupeEnfant' && <Baby      className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
-              {cat === 'teinture'    && <Sparkles  className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
-              {cat === 'produitSeul' && <Box       className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
+              {cat === 'coupeAdulte' && <Scissors className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
+              {cat === 'coupeEnfant' && <Baby className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
+              {cat === 'teinture' && <Sparkles className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
+              {cat === 'produitSeul' && <Box className="w-10 h-10 sm:w-16 sm:h-16 text-white mb-2 sm:mb-3" />}
               <h3 className="text-white text-base sm:text-2xl font-bold text-center">{catLabels[cat]}</h3>
             </button>
           ))}
@@ -673,275 +626,273 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
             />
           </div>
 
-        {/* Produits */}
-<div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
-  <div className="flex justify-between items-center mb-3">
-    <h4 className="text-white font-bold">Produits</h4>
-    <button 
-      onClick={() => setAddModal({ type: 'product', onAdd: addProduct, placeholder: 'produit' })}
-      className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
-    >
-      <Plus className="w-3 h-3" /> Ajouter
-    </button>
-  </div>
-  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-    {productOptions.map((p) => {
-      const isSelected = selectedProducts.includes(p.name);
-      const isMenuOpen = activeMenuId === `product-${p.id}`;
-      
-      return (
-        <div 
-          key={p.id} 
-          className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
-            isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
-          }`}
-          onClick={() => toggleItem(p.name, selectedProducts, setSelectedProducts)}
-        >
-          {/* Bouton à 3 points */}
-          <div 
-            className="absolute top-2 right-2"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveMenuId(isMenuOpen ? null : `product-${p.id}`);
-              }}
-              className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
-            >
-              <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-            </button>
-            
-            {isMenuOpen && (
-              <div 
-                className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
-                onClick={(e) => e.stopPropagation()}
+          {/* Produits */}
+          <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
+            <div className="flex justify-between items-center mb-3">
+              <h4 className="text-white font-bold">Produits</h4>
+              <button 
+                onClick={() => setAddModal({ type: 'product', onAdd: addProduct, placeholder: 'produit' })}
+                className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
               >
-                <button
-                  onClick={() => {
-                    setEditModal({ item: p, type: 'product' });
-                    setActiveMenuId(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
-                  <Edit2 className="w-3 h-3" /> Modifier
-                </button>
-                <button
-                  onClick={() => {
-                    removeProduct(p.id!, p.name);
-                    setActiveMenuId(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
-                  <Trash2 className="w-3 h-3" /> Supprimer
-                </button>
-              </div>
-            )}
-          </div>
-          
-          {/* Nom du produit */}
-          <div className="pr-6 mb-2">
-            <span className="text-white text-sm font-medium block break-all">{p.name}</span>
-          </div>
-          
-          {/* Prix et case à cocher - Case noire visible */}
-          <div className="flex justify-between items-center">
-            <span className="text-zinc-400 text-sm">{formatCFA(p.price)}</span>
-            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-              isSelected 
-                ? 'bg-black border-black' 
-                : 'bg-zinc-700 border-zinc-500'
-            }`}>
-              {isSelected && <Check className="w-3 h-3 text-white" />}
-            </div>
-          </div>
-        </div>
-      );
-    })}
-  </div>
-</div>
-
-{/* Soins */}
-<div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
-  <div className="flex justify-between items-center mb-3">
-    <h4 className="text-white font-bold">Soins</h4>
-    <button 
-      onClick={() => setAddModal({ type: 'soin', onAdd: addSoin, placeholder: 'soin' })}
-      className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
-    >
-      <Plus className="w-3 h-3" /> Ajouter
-    </button>
-  </div>
-  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-    {soinOptions.map((s) => {
-      const isSelected = selectedSoins.includes(s.name);
-      const isMenuOpen = activeMenuId === `soin-${s.id}`;
-      
-      return (
-        <div 
-          key={s.id} 
-          className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
-            isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
-          }`}
-          onClick={() => toggleItem(s.name, selectedSoins, setSelectedSoins)}
-        >
-          {/* Bouton à 3 points */}
-          <div 
-            className="absolute top-2 right-2"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setActiveMenuId(isMenuOpen ? null : `soin-${s.id}`);
-              }}
-              className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
-            >
-              <MoreHorizontal className="w-4 h-4 text-zinc-400" />
-            </button>
-            
-            {isMenuOpen && (
-              <div 
-                className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <button
-                  onClick={() => {
-                    setEditModal({ item: s, type: 'soin' });
-                    setActiveMenuId(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
-                  <Edit2 className="w-3 h-3" /> Modifier
-                </button>
-                <button
-                  onClick={() => {
-                    removeSoin(s.id!, s.name);
-                    setActiveMenuId(null);
-                  }}
-                  className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                >
-                  <Trash2 className="w-3 h-3" /> Supprimer
-                </button>
-              </div>
-            )}
-          </div>
-          
-          {/* Nom du soin */}
-          <div className="pr-6 mb-2">
-            <span className="text-white text-sm font-medium block break-all">{s.name}</span>
-          </div>
-          
-          {/* Prix et case à cocher - Case noire visible */}
-          <div className="flex justify-between items-center">
-            <span className="text-zinc-400 text-sm">{formatCFA(s.price)}</span>
-            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-              isSelected 
-                ? 'bg-black border-black' 
-                : 'bg-zinc-700 border-zinc-500'
-            }`}>
-              {isSelected && <Check className="w-3 h-3 text-white" />}
-            </div>
-          </div>
-        </div>
-      );
-    })}
-  </div>
-</div>
-
-{/* Teinture supp */}
-{selectedCategory !== 'teinture' && selectedCategory !== 'produitSeul' && (
-  <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
-    <div className="flex justify-between items-center mb-3">
-      <h4 className="text-white font-bold">Teinture</h4>
-      <button 
-        onClick={() => setAddModal({ type: 'teinture', onAdd: addTeintureSupp, placeholder: 'option teinture' })}
-        className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
-      >
-        <Plus className="w-3 h-3" /> Ajouter
-      </button>
-    </div>
-    {teintureSuppOptions.length === 0 && (
-      <p className="text-zinc-500 text-sm mb-3">Aucune option teinture</p>
-    )}
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-      {teintureSuppOptions.map((t) => {
-        // On compare l'id précis de CETTE option à l'id sélectionné, pas un booléen global
-        const isSelected = selectedTeintureId === t.id;
-        const isMenuOpen = activeMenuId === `teinture-${t.id}`;
-
-        return (
-          <div 
-            key={t.id} 
-            className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
-              isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
-            }`}
-            onClick={() => setSelectedTeintureId((prev) => (prev === t.id ? null : t.id!))}
-          >
-            {/* Bouton à 3 points */}
-            <div 
-              className="absolute top-2 right-2"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveMenuId(isMenuOpen ? null : `teinture-${t.id}`);
-                }}
-                className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
-              >
-                <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+                <Plus className="w-3 h-3" /> Ajouter
               </button>
-              
-              {isMenuOpen && (
-                <div 
-                  className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
-                  onClick={(e) => e.stopPropagation()}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+              {productOptions.map((p) => {
+                const isSelected = selectedProducts.includes(p.name);
+                const isMenuOpen = activeMenuId === `product-${p.id}`;
+                
+                return (
+                  <div 
+                    key={p.id} 
+                    className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+                      isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+                    }`}
+                    onClick={() => toggleItem(p.name, selectedProducts, setSelectedProducts)}
+                  >
+                    <div 
+                      className="absolute top-2 right-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMenuId(isMenuOpen ? null : `product-${p.id}`);
+                        }}
+                        className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+                      >
+                        <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+                      </button>
+                      
+                      {isMenuOpen && (
+                        <div 
+                          className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => {
+                              setEditModal({ item: p, type: 'product' });
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                          >
+                            <Edit2 className="w-3 h-3" /> Modifier
+                          </button>
+                          <button
+                            onClick={() => {
+                              removeProduct(p.id!, p.name);
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                          >
+                            <Trash2 className="w-3 h-3" /> Supprimer
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="pr-6 mb-2">
+                      <span className="text-white text-sm font-medium block break-all">{p.name}</span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center">
+                      <span className="text-zinc-400 text-sm">{formatCFA(p.price)}</span>
+                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                        isSelected 
+                          ? 'bg-black border-black' 
+                          : 'bg-zinc-700 border-zinc-500'
+                      }`}>
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Soins */}
+          <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
+            <div className="flex justify-between items-center mb-3">
+              <h4 className="text-white font-bold">Soins</h4>
+              <button 
+                onClick={() => setAddModal({ type: 'soin', onAdd: addSoin, placeholder: 'soin' })}
+                className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
+              >
+                <Plus className="w-3 h-3" /> Ajouter
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+              {soinOptions.map((s) => {
+                const isSelected = selectedSoins.includes(s.name);
+                const isMenuOpen = activeMenuId === `soin-${s.id}`;
+                
+                return (
+                  <div 
+                    key={s.id} 
+                    className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+                      isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+                    }`}
+                    onClick={() => toggleItem(s.name, selectedSoins, setSelectedSoins)}
+                  >
+                    <div 
+                      className="absolute top-2 right-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMenuId(isMenuOpen ? null : `soin-${s.id}`);
+                        }}
+                        className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+                      >
+                        <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+                      </button>
+                      
+                      {isMenuOpen && (
+                        <div 
+                          className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => {
+                              setEditModal({ item: s, type: 'soin' });
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                          >
+                            <Edit2 className="w-3 h-3" /> Modifier
+                          </button>
+                          <button
+                            onClick={() => {
+                              removeSoin(s.id!, s.name);
+                              setActiveMenuId(null);
+                            }}
+                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                          >
+                            <Trash2 className="w-3 h-3" /> Supprimer
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="pr-6 mb-2">
+                      <span className="text-white text-sm font-medium block break-all">{s.name}</span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center">
+                      <span className="text-zinc-400 text-sm">{formatCFA(s.price)}</span>
+                      <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                        isSelected 
+                          ? 'bg-black border-black' 
+                          : 'bg-zinc-700 border-zinc-500'
+                      }`}>
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ✅ Teinture - SÉLECTION MULTIPLE */}
+          {selectedCategory !== 'teinture' && selectedCategory !== 'produitSeul' && (
+            <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl">
+              <div className="flex justify-between items-center mb-3">
+                <h4 className="text-white font-bold">Teinture</h4>
+                <button 
+                  onClick={() => setAddModal({ type: 'teinture', onAdd: addTeintureSupp, placeholder: 'option teinture' })}
+                  className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs transition"
                 >
-                  <button
-                    onClick={() => {
-                      setEditModal({ item: t, type: 'teinture' });
-                      setActiveMenuId(null);
-                    }}
-                    className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                  >
-                    <Edit2 className="w-3 h-3" /> Modifier
-                  </button>
-                  <button
-                    onClick={() => {
-                      removeTeintureSupp(t.id!, t.name);
-                      setActiveMenuId(null);
-                    }}
-                    className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
-                  >
-                    <Trash2 className="w-3 h-3" /> Supprimer
-                  </button>
+                  <Plus className="w-3 h-3" /> Ajouter
+                </button>
+              </div>
+              {teintureSuppOptions.length === 0 && (
+                <p className="text-zinc-500 text-sm mb-3">Aucune option teinture</p>
+              )}
+              {/* ✅ Afficher le nombre de teintures sélectionnées */}
+              {selectedTeintureIds.length > 0 && (
+                <div className="mb-3 text-sm text-green-400">
+                  {selectedTeintureIds.length} teinture{selectedTeintureIds.length > 1 ? 's' : ''} sélectionnée{selectedTeintureIds.length > 1 ? 's' : ''}
                 </div>
               )}
-            </div>
-            
-            {/* Nom de la teinture */}
-            <div className="pr-6 mb-2">
-              <span className="text-white text-sm font-medium block break-all">+ {t.name}</span>
-            </div>
-            
-            {/* Prix et case à cocher - Case noire visible */}
-            <div className="flex justify-between items-center">
-              <span className="text-zinc-400 text-sm">{formatCFA(t.price)}</span>
-              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
-                isSelected 
-                  ? 'bg-black border-black' 
-                  : 'bg-zinc-700 border-zinc-500'
-              }`}>
-                {isSelected && <Check className="w-3 h-3 text-white" />}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+                {teintureSuppOptions.map((t) => {
+                  // ✅ Vérifier si cette teinture est sélectionnée
+                  const isSelected = t.id !== undefined && selectedTeintureIds.includes(t.id);
+                  const isMenuOpen = activeMenuId === `teinture-${t.id}`;
+
+                  return (
+                    <div 
+                      key={t.id} 
+                      className={`relative bg-zinc-800 rounded-lg p-3 transition-all cursor-pointer ${
+                        isSelected ? 'ring-2 ring-green-500 bg-green-950/20' : 'hover:bg-zinc-750'
+                      }`}
+                      // ✅ Basculer la sélection de cette teinture
+                      onClick={() => t.id !== undefined && toggleTeinture(t.id)}
+                    >
+                      <div 
+                        className="absolute top-2 right-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveMenuId(isMenuOpen ? null : `teinture-${t.id}`);
+                          }}
+                          className="p-1 rounded-full hover:bg-zinc-700 transition-colors"
+                        >
+                          <MoreHorizontal className="w-4 h-4 text-zinc-400" />
+                        </button>
+                        
+                        {isMenuOpen && (
+                          <div 
+                            className="absolute top-full right-0 mt-1 bg-zinc-800 rounded-lg shadow-lg border border-zinc-700 p-1 z-10 min-w-[120px]"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              onClick={() => {
+                                setEditModal({ item: t, type: 'teinture' });
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3 py-2 text-sm text-white hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                            >
+                              <Edit2 className="w-3 h-3" /> Modifier
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (t.id !== undefined) removeTeintureSupp(t.id, t.name);
+                                setActiveMenuId(null);
+                              }}
+                              className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-zinc-700 rounded-md transition flex items-center gap-2"
+                            >
+                              <Trash2 className="w-3 h-3" /> Supprimer
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="pr-6 mb-2">
+                        <span className="text-white text-sm font-medium block break-all">+ {t.name}</span>
+                      </div>
+                      
+                      <div className="flex justify-between items-center">
+                        <span className="text-zinc-400 text-sm">{formatCFA(t.price)}</span>
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                          isSelected 
+                            ? 'bg-black border-black' 
+                            : 'bg-zinc-700 border-zinc-500'
+                        }`}>
+                          {isSelected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          </div>
-        );
-      })}
-    </div>
-  </div>
-)}
+          )}
 
           {/* Total */}
           <div className="bg-zinc-900 border border-zinc-700 p-4 sm:p-6 rounded-xl text-right">
@@ -978,20 +929,28 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
                 <span>{formatCFA(ticketData.basePrice)}</span>
               </div>
 
-              {ticketData.withTeinture && ticketData.teinturePrice > 0 && (
-                <div className="flex justify-between text-sm mb-2">
-                  <span>+ {ticketData.teintureName ?? 'Teinture'}</span>
-                  <span>{formatCFA(ticketData.teinturePrice)}</span>
-                </div>
+              {/* ✅ Afficher TOUTES les teintures sélectionnées */}
+              {ticketData.teintures && ticketData.teintures.length > 0 && (
+                <>
+                  <h3 className="font-bold text-black mt-3 mb-1">Teintures :</h3>
+                  {ticketData.teintures.map((t: any, i: number) => (
+                    <div key={t.name + i} className="flex justify-between text-sm mb-1">
+                      <span>+ {t.name}</span>
+                      <span>{formatCFA(t.price)}</span>
+                    </div>
+                  ))}
+                </>
               )}
 
               {ticketData.produits.length > 0 && (
                 <>
                   <h3 className="font-bold text-black mt-3 mb-1">Produits :</h3>
                   {ticketData.produits.map((p: any, i: number) => (
-                    <div key={p.name + i} className="flex justify-between text-sm">
-                      <span>{p.name}</span><span>{formatCFA(p.price)}</span>
-                    </div>
+                    p && (
+                      <div key={p.name + i} className="flex justify-between text-sm">
+                        <span>{p.name}</span><span>{formatCFA(p.price)}</span>
+                      </div>
+                    )
                   ))}
                 </>
               )}
@@ -1000,9 +959,11 @@ export function ServiceSelector({ userId, salonName, authUser, onConfirm }: Serv
                 <>
                   <h3 className="font-bold text-black mt-3 mb-1">Soins :</h3>
                   {ticketData.soins.map((s: any, i: number) => (
-                    <div key={s.name + i} className="flex justify-between text-sm">
-                      <span>{s.name}</span><span>{formatCFA(s.price)}</span>
-                    </div>
+                    s && (
+                      <div key={s.name + i} className="flex justify-between text-sm">
+                        <span>{s.name}</span><span>{formatCFA(s.price)}</span>
+                      </div>
+                    )
                   ))}
                 </>
               )}

@@ -1,5 +1,5 @@
 // src/components/SubscribePage.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Scissors, Check, LogOut, Loader, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -34,6 +34,9 @@ export function SubscribePage({
   const [error, setError] = useState('');
   const [subscriptionId, setSubscriptionId] = useState<number | null>(null);
   const [hasUsedFreeTrial, setHasUsedFreeTrial] = useState(false);
+
+  // Verrou synchrone anti-double-clic / double-soumission (plus fiable que le seul état "loading")
+  const isSubmittingRef = useRef(false);
 
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
 
@@ -108,8 +111,10 @@ export function SubscribePage({
   }, [step, subscriptionId, onSubscribed]);
 
   const handleFreeTrial = async () => {
+    if (isSubmittingRef.current) return; // bloque toute soumission concurrente
     if (!selectedPlan) return;
 
+    isSubmittingRef.current = true;
     setError('');
     setLoading(true);
 
@@ -144,10 +149,12 @@ export function SubscribePage({
     } catch (e: any) {
       setError(e.message ?? "Erreur lors de l'activation de l'essai gratuit");
       setLoading(false);
+      isSubmittingRef.current = false;
     }
   };
 
   const handlePay = async () => {
+    if (isSubmittingRef.current) return; // bloque immédiatement toute soumission concurrente
     if (!selectedPlan || !paymentMethod || !phone.trim()) {
       return setError('Remplissez tous les champs');
     }
@@ -164,6 +171,7 @@ export function SubscribePage({
       );
     }
 
+    isSubmittingRef.current = true; // pose le verrou avant toute écriture en base
     setError('');
     setLoading(true);
     let redirecting = false;
@@ -233,7 +241,10 @@ export function SubscribePage({
       console.error('Erreur:', e);
       setError(e.message ?? 'Erreur lors du paiement');
     } finally {
-      if (!redirecting) setLoading(false);
+      if (!redirecting) {
+        setLoading(false);
+        isSubmittingRef.current = false; // libère le verrou seulement si on ne redirige pas vraiment
+      }
     }
   };
 
