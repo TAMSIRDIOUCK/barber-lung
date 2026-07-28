@@ -40,24 +40,13 @@ export function SubscribePage({
 
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
 
-  // Récupération des variables d'environnement pour PayDunya
+  // URL de Supabase (nécessaire pour appeler la fonction Edge)
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-  const paydunyaMasterKey = import.meta.env.VITE_PAYDUNYA_MASTER_KEY as string | undefined;
-  const paydunyaPrivateKey = import.meta.env.VITE_PAYDUNYA_PRIVATE_KEY as string | undefined;
-  const paydunyaToken = import.meta.env.VITE_PAYDUNYA_TOKEN as string | undefined;
-  const paydunyaMode = 'live'; // ← MODE PRODUCTION
 
   // URL de la fonction Edge pour les paiements
   const edgeFunctionUrl = supabaseUrl
     ? `${supabaseUrl}/functions/v1/initiate-payment`
     : null;
-
-  // Vérification de la configuration PayDunya
-  const isPaydunyaConfigured = !!(
-    paydunyaMasterKey && 
-    paydunyaPrivateKey && 
-    paydunyaToken
-  );
 
   useEffect(() => {
     const init = async () => {
@@ -87,7 +76,7 @@ export function SubscribePage({
   // Vérification du statut du paiement
   useEffect(() => {
     if (step !== 'pending' || !subscriptionId) return;
-    
+
     let attempts = 0;
     const interval = setInterval(async () => {
       attempts++;
@@ -96,7 +85,7 @@ export function SubscribePage({
         .select('status')
         .eq('id', subscriptionId)
         .maybeSingle();
-        
+
       if (data?.status === 'active') {
         clearInterval(interval);
         onSubscribed();
@@ -106,7 +95,7 @@ export function SubscribePage({
         setStep('choose');
       }
     }, 5000);
-    
+
     return () => clearInterval(interval);
   }, [step, subscriptionId, onSubscribed]);
 
@@ -154,7 +143,7 @@ export function SubscribePage({
   };
 
   const handlePay = async () => {
-    if (isSubmittingRef.current) return; // bloque immédiatement toute soumission concurrente
+    if (isSubmittingRef.current) return;
     if (!selectedPlan || !paymentMethod || !phone.trim()) {
       return setError('Remplissez tous les champs');
     }
@@ -165,21 +154,20 @@ export function SubscribePage({
       );
     }
 
-    if (!isPaydunyaConfigured) {
-      return setError(
-        'Configuration PayDunya manquante. Vérifiez vos clés API dans le fichier .env'
-      );
-    }
-
     isSubmittingRef.current = true;
     setError('');
     setLoading(true);
     let redirecting = false;
 
     try {
-      // Annule tout abonnement "pending" résiduel de cet utilisateur avant d'en créer un nouveau.
-      // Nécessaire à cause de la contrainte unique "one_pending_subscription_per_user" côté Supabase :
-      // sans ça, un paiement abandonné/échoué bloquerait définitivement toute nouvelle tentative.
+      // 1. Récupérer le token de session pour authentifier l'appel à la fonction Edge
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session?.access_token) {
+        throw new Error('Session expirée. Merci de vous reconnecter.');
+      }
+
+      // 2. Nettoyer les abonnements "pending" résiduels
       const { error: cleanupErr } = await supabase
         .from('subscriptions')
         .update({ status: 'cancelled' })
@@ -188,24 +176,23 @@ export function SubscribePage({
 
       if (cleanupErr) {
         console.warn('Nettoyage des abonnements pending résiduels échoué :', cleanupErr.message);
-        // On ne bloque pas le flux pour autant : on tente quand même l'insertion ci-dessous
       }
 
-      // Créer l'abonnement
+      // 3. Créer l'abonnement
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
-        .insert([{ 
-          user_id: userId, 
-          plan_id: selectedPlan.id, 
-          status: 'pending', 
-          is_free_trial: false 
+        .insert([{
+          user_id: userId,
+          plan_id: selectedPlan.id,
+          status: 'pending',
+          is_free_trial: false
         }])
         .select()
         .single();
 
       if (subErr) throw new Error('Erreur création abonnement : ' + subErr.message);
 
-      // Créer l'enregistrement de paiement
+      // 4. Créer l'enregistrement de paiement
       const { error: payErr } = await supabase.from('payments').insert([{
         user_id: userId,
         subscription_id: sub.id,
@@ -218,10 +205,15 @@ export function SubscribePage({
 
       setSubscriptionId(sub.id);
 
-      // Appeler la fonction Edge pour initier le paiement PayDunya
+      // 5. Appeler la fonction Edge pour initier le paiement PayDunya
+      // ✅ Le header Authorization avec le token est déjà ajouté
+      // ✅ paydunya_config est géré uniquement côté serveur (dans la fonction Edge)
       const res = await fetch(edgeFunctionUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
         body: JSON.stringify({
           subscription_id: sub.id,
           amount: selectedPlan.price,
@@ -229,15 +221,7 @@ export function SubscribePage({
           method: paymentMethod,
           customer_name: salonName,
           customer_email: userEmail,
-          description: `Abonnement ${selectedPlan.name} - ID:${sub.id}`, // ← Ajout de l'ID
-          success_url: `${window.location.origin}/payment-success?subscription_id=${sub.id}`,
-          cancel_url: `${window.location.origin}/payment-cancel`,
-          paydunya_config: {
-            master_key: paydunyaMasterKey,
-            private_key: paydunyaPrivateKey,
-            token: paydunyaToken,
-            mode: paydunyaMode
-          }
+          description: `Abonnement ${selectedPlan.name} - ID:${sub.id}`,
         }),
       });
 
@@ -295,15 +279,6 @@ export function SubscribePage({
         {!supabaseUrl && (
           <div className="bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl px-4 py-3 mb-6">
             ⚠️ <strong>VITE_SUPABASE_URL</strong> est manquant dans votre fichier <code>.env</code>.
-          </div>
-        )}
-
-        {supabaseUrl && !isPaydunyaConfigured && (
-          <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6">
-            ⚠️ Configuration PayDunya incomplète. Vérifiez vos clés API dans le fichier <code>.env</code>.
-            <div className="text-xs mt-1 text-yellow-400/70">
-              Variables requises : VITE_PAYDUNYA_MASTER_KEY, VITE_PAYDUNYA_PRIVATE_KEY, VITE_PAYDUNYA_TOKEN
-            </div>
           </div>
         )}
 
@@ -436,7 +411,7 @@ export function SubscribePage({
                   { id: 'wave', label: 'Wave', logo: '/assets/wavw.png' },
                   { id: 'orange_money', label: 'Orange Money', logo: '/assets/orange.png' },
                 ].map((m) => (
-                  <button 
+                  <button
                     key={m.id}
                     onClick={() => setPaymentMethod(m.id as any)}
                     className={`border-2 rounded-xl p-4 font-bold transition flex flex-col items-center gap-2 ${
@@ -483,7 +458,7 @@ export function SubscribePage({
 
             <button
               onClick={handlePay}
-              disabled={loading || !isPaydunyaConfigured}
+              disabled={loading}
               className="w-full bg-white text-black py-4 rounded-xl font-bold text-base hover:bg-zinc-200 transition disabled:opacity-50"
             >
               {loading ? (
