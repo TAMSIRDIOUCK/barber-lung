@@ -35,7 +35,7 @@ export function SubscribePage({
   const [subscriptionId, setSubscriptionId] = useState<number | null>(null);
   const [hasUsedFreeTrial, setHasUsedFreeTrial] = useState(false);
 
-  // Verrou synchrone anti-double-clic / double-soumission (plus fiable que le seul état "loading")
+  // Verrou synchrone anti-double-clic / double-soumission
   const isSubmittingRef = useRef(false);
 
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
@@ -111,7 +111,7 @@ export function SubscribePage({
   }, [step, subscriptionId, onSubscribed]);
 
   const handleFreeTrial = async () => {
-    if (isSubmittingRef.current) return; // bloque toute soumission concurrente
+    if (isSubmittingRef.current) return;
     if (!selectedPlan) return;
 
     isSubmittingRef.current = true;
@@ -171,12 +171,26 @@ export function SubscribePage({
       );
     }
 
-    isSubmittingRef.current = true; // pose le verrou avant toute écriture en base
+    isSubmittingRef.current = true;
     setError('');
     setLoading(true);
     let redirecting = false;
 
     try {
+      // Annule tout abonnement "pending" résiduel de cet utilisateur avant d'en créer un nouveau.
+      // Nécessaire à cause de la contrainte unique "one_pending_subscription_per_user" côté Supabase :
+      // sans ça, un paiement abandonné/échoué bloquerait définitivement toute nouvelle tentative.
+      const { error: cleanupErr } = await supabase
+        .from('subscriptions')
+        .update({ status: 'cancelled' })
+        .eq('user_id', userId)
+        .eq('status', 'pending');
+
+      if (cleanupErr) {
+        console.warn('Nettoyage des abonnements pending résiduels échoué :', cleanupErr.message);
+        // On ne bloque pas le flux pour autant : on tente quand même l'insertion ci-dessous
+      }
+
       // Créer l'abonnement
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
@@ -243,7 +257,7 @@ export function SubscribePage({
     } finally {
       if (!redirecting) {
         setLoading(false);
-        isSubmittingRef.current = false; // libère le verrou seulement si on ne redirige pas vraiment
+        isSubmittingRef.current = false;
       }
     }
   };
