@@ -1,5 +1,5 @@
 // src/App.tsx — VERSION MISE À JOUR avec rappel de renouvellement automatique
-// et gestion des popups de paiement (iOS PWA)
+// et gestion des popups de paiement (iOS PWA) + gestion de session
 
 import { useState, useEffect } from 'react';
 import {
@@ -33,7 +33,6 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
   const [error, setError] = useState<string | null>(null);
 
-  // Détecte si cette page a été ouverte via window.open() (popup séparé, cas iOS PWA)
   const wasOpenedAsPopup = !!window.opener;
 
   useEffect(() => {
@@ -41,7 +40,6 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
     const subscriptionId = params.get('subscription_id');
 
     if (!subscriptionId) {
-      // Pas d'ID d'abonnement, on redirige après un court délai
       const timer = setInterval(() => {
         setCountdown((prev) => {
           if (prev <= 1) {
@@ -59,7 +57,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
       setStatus('activating');
 
       let attempts = 0;
-      const maxAttempts = 15; // 15 * 2s = 30s max
+      const maxAttempts = 15;
 
       const checkInterval = setInterval(async () => {
         attempts++;
@@ -85,28 +83,19 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             clearInterval(checkInterval);
             setStatus('success');
             
-            // Si c'est un popup, on ferme automatiquement après 2 secondes
             if (wasOpenedAsPopup) {
-              setTimeout(() => {
-                window.close();
-              }, 2000);
+              setTimeout(() => window.close(), 2000);
             } else {
-              setTimeout(() => {
-                onComplete();
-              }, 2000);
+              setTimeout(() => onComplete(), 2000);
             }
           } else if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
             setStatus('success');
             
             if (wasOpenedAsPopup) {
-              setTimeout(() => {
-                window.close();
-              }, 2000);
+              setTimeout(() => window.close(), 2000);
             } else {
-              setTimeout(() => {
-                onComplete();
-              }, 2000);
+              setTimeout(() => onComplete(), 2000);
             }
           }
         } catch (err) {
@@ -243,6 +232,119 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   );
 }
 
+// Page de callback pour restaurer la session
+function CallbackPage() {
+  const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing');
+  const [message, setMessage] = useState('Traitement en cours...');
+
+  useEffect(() => {
+    const processCallback = async () => {
+      const hash = window.location.hash;
+      const params = new URLSearchParams(hash.split('?')[1]);
+      const subscriptionId = params.get('subscription_id');
+      const token = params.get('token');
+
+      console.log('📞 Callback reçu:', { subscriptionId, hasToken: !!token });
+
+      // Restaurer la session si token présent
+      if (token) {
+        try {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: token,
+            refresh_token: ''
+          });
+
+          if (error) {
+            console.warn('Impossible de restaurer la session:', error);
+          } else {
+            console.log('✅ Session restaurée avec succès');
+          }
+        } catch (err) {
+          console.warn('Erreur restauration session:', err);
+        }
+      }
+
+      // Vérifier le statut de l'abonnement
+      if (subscriptionId) {
+        let attempts = 0;
+        const maxAttempts = 10;
+
+        const checkSubscription = setInterval(async () => {
+          attempts++;
+          
+          try {
+            const { data: subscription } = await supabase
+              .from('subscriptions')
+              .select('status')
+              .eq('id', parseInt(subscriptionId))
+              .maybeSingle();
+
+            if (subscription?.status === 'active') {
+              clearInterval(checkSubscription);
+              setStatus('success');
+              setMessage('✅ Paiement réussi ! Redirection...');
+              
+              setTimeout(() => {
+                window.location.href = '/';
+              }, 2000);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(checkSubscription);
+              setStatus('success');
+              setMessage('Paiement confirmé ! Redirection...');
+              
+              setTimeout(() => {
+                window.location.href = '/';
+              }, 2000);
+            }
+          } catch (err) {
+            console.error('Erreur vérification:', err);
+          }
+        }, 2000);
+
+        return () => clearInterval(checkSubscription);
+      } else {
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 3000);
+      }
+    };
+
+    processCallback();
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+      <div className="text-center max-w-md">
+        {status === 'processing' && (
+          <>
+            <Loader className="w-16 h-16 text-white mx-auto mb-4 animate-spin" />
+            <h2 className="text-white text-xl font-bold">{message}</h2>
+            <p className="text-zinc-400 mt-2">Veuillez patienter...</p>
+          </>
+        )}
+
+        {status === 'success' && (
+          <>
+            <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <CheckCircle2 className="w-10 h-10 text-green-400" />
+            </div>
+            <h2 className="text-white text-2xl font-bold mb-2">✅ {message}</h2>
+          </>
+        )}
+
+        {status === 'error' && (
+          <>
+            <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+              <X className="w-10 h-10 text-red-400" />
+            </div>
+            <h2 className="text-white text-2xl font-bold mb-2">❌ {message}</h2>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App({ authUser, onLogout }: AppProps) {
   const [currentPage, setCurrentPage] = useState<Page>('home');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -252,32 +354,61 @@ function App({ authUser, onLogout }: AppProps) {
   const [isAdmin, setIsAdmin] = useState(false);
   const [checkingAdmin, setCheckingAdmin] = useState(true);
 
-  // État pour les pages de paiement
   const [showPaymentSuccess, setShowPaymentSuccess] = useState(false);
   const [showPaymentCancel, setShowPaymentCancel] = useState(false);
-
-  // État pour vérifier s'il y a une bannière active
   const [hasActiveBanner, setHasActiveBanner] = useState(false);
   const [checkingBanner, setCheckingBanner] = useState(true);
-
-  // État pour le flux de renouvellement d'abonnement
   const [showRenewPage, setShowRenewPage] = useState(false);
 
-  // Statut de l'abonnement en cours (rappel automatique 5 jours avant expiration)
   const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser.id);
 
-  // Vérifier l'URL pour les pages de paiement
-  useEffect(() => {
-    const pathname = window.location.pathname;
-    const params = new URLSearchParams(window.location.search);
+  // Vérifier le chemin pour la page de callback
+  const pathname = window.location.pathname;
+  if (pathname === '/auth/callback') {
+    return <CallbackPage />;
+  }
 
-    if (pathname === '/payment-success' || params.get('success') === 'true') {
-      setShowPaymentSuccess(true);
-      window.history.replaceState({}, '', '/');
-    } else if (pathname === '/payment-cancel' || params.get('cancelled') === 'true') {
-      setShowPaymentCancel(true);
-      window.history.replaceState({}, '', '/');
-    }
+  // Gérer les retours de paiement
+  useEffect(() => {
+    const handlePaymentCallback = async () => {
+      const hash = window.location.hash;
+      
+      if (hash.includes('payment_success') || hash.includes('payment_cancelled')) {
+        console.log('🔔 Retour de paiement détecté');
+        
+        // Vérifier que la session est toujours active
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (!session) {
+          console.log('⚠️ Session expirée, tentative de reconnexion...');
+          const { data: { user }, error } = await supabase.auth.getUser();
+          
+          if (error || !user) {
+            console.error('❌ Session invalide, redirection vers login');
+            window.location.href = '/login';
+            return;
+          }
+        }
+        
+        // Traiter le retour
+        if (hash.includes('payment_success')) {
+          console.log('✅ Paiement réussi');
+          setShowPaymentSuccess(true);
+        } else if (hash.includes('payment_cancelled')) {
+          console.log('❌ Paiement annulé');
+          setShowPaymentCancel(true);
+        }
+        
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    };
+
+    handlePaymentCallback();
+    window.addEventListener('hashchange', handlePaymentCallback);
+    
+    return () => {
+      window.removeEventListener('hashchange', handlePaymentCallback);
+    };
   }, []);
 
   // Vérifier s'il y a une bannière active
@@ -285,7 +416,7 @@ function App({ authUser, onLogout }: AppProps) {
     const checkActiveBanner = async () => {
       setCheckingBanner(true);
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from('public_banners')
           .select('id')
           .eq('is_active', true)
@@ -373,7 +504,7 @@ function App({ authUser, onLogout }: AppProps) {
     return <PaymentCancelPage onComplete={handlePaymentComplete} />;
   }
 
-  // Flux de renouvellement — réutilise SubscribePage (choix de plan + paiement PayDunya)
+  // Flux de renouvellement
   if (showRenewPage) {
     return (
       <SubscribePage
@@ -497,7 +628,7 @@ function App({ authUser, onLogout }: AppProps) {
         {/* MAIN */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
 
-          {/* Bannière de rappel de renouvellement — visible sur toutes les pages, 5 jours avant expiration */}
+          {/* Bannière de rappel de renouvellement */}
           {needsRenewal && daysLeft !== null && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span className="flex items-center gap-2">
@@ -517,17 +648,13 @@ function App({ authUser, onLogout }: AppProps) {
 
           {currentPage === 'home' && (
             <div className="space-y-8">
-              {/* Bannière publicitaire (toujours affichée si active) */}
               <PromoBanner />
-
-              {/* Parrainage - Affiche UNIQUEMENT si pas de bannière active */}
               {!checkingBanner && !hasActiveBanner && (
                 <ReferralProgram
                   userId={authUser.id}
                   userName={authUser.fullName || authUser.email}
                 />
               )}
-
               <ServiceSelector
                 userId={authUser.id}
                 salonName={salonName}

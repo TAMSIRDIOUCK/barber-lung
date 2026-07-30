@@ -35,22 +35,17 @@ export function SubscribePage({
   const [subscriptionId, setSubscriptionId] = useState<number | null>(null);
   const [hasUsedFreeTrial, setHasUsedFreeTrial] = useState(false);
 
-  // Verrou synchrone anti-double-clic / double-soumission
   const isSubmittingRef = useRef(false);
 
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
 
-  // URL de Supabase (nécessaire pour appeler la fonction Edge)
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-
-  // URL de la fonction Edge pour les paiements
   const edgeFunctionUrl = supabaseUrl
     ? `${supabaseUrl}/functions/v1/initiate-payment`
     : null;
 
   useEffect(() => {
     const init = async () => {
-      // Vérifier si l'utilisateur a déjà utilisé l'essai gratuit
       const { data } = await supabase
         .from('subscriptions')
         .select('id')
@@ -60,7 +55,6 @@ export function SubscribePage({
 
       if (data) setHasUsedFreeTrial(true);
 
-      // Charger les plans d'abonnement
       const { data: plansData, error: plansErr } = await supabase
         .from('subscription_plans')
         .select('*')
@@ -160,14 +154,13 @@ export function SubscribePage({
     let redirecting = false;
 
     try {
-      // 1. Récupérer le token de session pour authentifier l'appel à la fonction Edge
       const { data: { session } } = await supabase.auth.getSession();
 
       if (!session?.access_token) {
         throw new Error('Session expirée. Merci de vous reconnecter.');
       }
 
-      // 2. Nettoyer les abonnements "pending" résiduels
+      // Nettoyer les abonnements "pending" résiduels
       const { error: cleanupErr } = await supabase
         .from('subscriptions')
         .update({ status: 'cancelled' })
@@ -178,7 +171,7 @@ export function SubscribePage({
         console.warn('Nettoyage des abonnements pending résiduels échoué :', cleanupErr.message);
       }
 
-      // 3. Créer l'abonnement
+      // Créer l'abonnement
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
         .insert([{
@@ -192,7 +185,7 @@ export function SubscribePage({
 
       if (subErr) throw new Error('Erreur création abonnement : ' + subErr.message);
 
-      // 4. Créer l'enregistrement de paiement
+      // Créer l'enregistrement de paiement
       const { error: payErr } = await supabase.from('payments').insert([{
         user_id: userId,
         subscription_id: sub.id,
@@ -205,20 +198,22 @@ export function SubscribePage({
 
       setSubscriptionId(sub.id);
 
-      // 5. Construire les URLs dynamiquement depuis le frontend
+      // ✅ Construire les URLs avec le token pour maintenir la session
       const appUrl = window.location.origin;
-      const returnUrl = `${appUrl}/auth/callback#payment_success?subscription_id=${sub.id}`;
-      const cancelUrl = `${appUrl}/auth/callback#payment_cancelled?subscription_id=${sub.id}`;
+      const token = session.access_token;
+      
+      const returnUrl = `${appUrl}/auth/callback#payment_success?subscription_id=${sub.id}&token=${token}`;
+      const cancelUrl = `${appUrl}/auth/callback#payment_cancelled?subscription_id=${sub.id}&token=${token}`;
       const callbackUrl = `https://vzhcjvvgpbtfolxnpapy.supabase.co/functions/v1/ipn?subscription_id=${sub.id}`;
 
-      console.log('URLs construites:', { returnUrl, cancelUrl, callbackUrl });
+      console.log('URLs construites avec token:', { returnUrl, cancelUrl, callbackUrl });
 
-      // 6. Appeler la fonction Edge avec les URLs
+      // Appeler la fonction Edge
       const res = await fetch(edgeFunctionUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           subscription_id: sub.id,
@@ -229,7 +224,6 @@ export function SubscribePage({
           customer_email: userEmail,
           description: `Abonnement ${selectedPlan.name} - ID:${sub.id}`,
           plan_name: selectedPlan.name,
-          // Envoyer les URLs depuis le frontend
           return_url: returnUrl,
           cancel_url: cancelUrl,
           callback_url: callbackUrl,
@@ -245,7 +239,6 @@ export function SubscribePage({
 
       if (data.success && data.invoice_url) {
         redirecting = true;
-        // Rediriger vers l'URL de paiement PayDunya
         window.location.href = data.invoice_url;
         return;
       }
