@@ -34,11 +34,6 @@ type Plan = {
   price: number | string;
 };
 
-// Supprimer l'interface ClientAppProps car nous n'utilisons pas children
-// interface ClientAppProps {
-//   children: (authUser: AuthUser, onLogout: () => void) => React.ReactNode;
-// }
-
 function withTimeout<T>(promiseLike: PromiseLike<T>, ms: number): Promise<T> {
   const promise = Promise.resolve(promiseLike);
   const timeout = new Promise<never>((_, reject) =>
@@ -63,12 +58,91 @@ async function retryWithTimeout<T>(
   throw new Error('Failed after retries');
 }
 
-// Supprimer les props car nous n'utilisons pas children
 export function ClientApp() {
   const [appState, setAppState] = useState<AppState>('loading');
   const [user, setUser] = useState<User | null>(null);
   const [activeSub, setActiveSub] = useState<AuthUser['subscription'] | null>(null);
   const initLock = useRef(false);
+  const [AppComponent, setAppComponent] = useState<React.ComponentType<{ authUser: AuthUser; onLogout: () => void }> | null>(null);
+
+  // ✅ Vérifier si on a un token de paiement dans sessionStorage
+  useEffect(() => {
+    const paymentToken = sessionStorage.getItem('payment_token');
+    const subscriptionId = sessionStorage.getItem('payment_subscription_id');
+    
+    if (paymentToken) {
+      console.log('🔑 Token de paiement trouvé dans sessionStorage');
+      
+      // Restaurer la session avec le token
+      supabase.auth.setSession({
+        access_token: paymentToken,
+        refresh_token: ''
+      }).then(({ data, error }) => {
+        if (error) {
+          console.warn('⚠️ Erreur restauration session:', error);
+        } else if (data.session) {
+          console.log('✅ Session restaurée avec succès');
+          // Nettoyer le token
+          sessionStorage.removeItem('payment_token');
+          sessionStorage.removeItem('payment_subscription_id');
+          
+          // Vérifier le statut de l'abonnement
+          if (subscriptionId) {
+            checkSubscriptionStatus(subscriptionId);
+          }
+        }
+      });
+    }
+  }, []);
+
+  // ✅ Vérifier le statut de l'abonnement après paiement
+  const checkSubscriptionStatus = async (subscriptionId: string) => {
+    try {
+      let attempts = 0;
+      const maxAttempts = 10;
+      
+      const checkInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const { data: subscription } = await supabase
+            .from('subscriptions')
+            .select('status')
+            .eq('id', parseInt(subscriptionId))
+            .maybeSingle();
+
+          if (subscription?.status === 'active') {
+            clearInterval(checkInterval);
+            console.log('✅ Abonnement actif, rechargement...');
+            // Recharger l'utilisateur
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.user) {
+              await initUser(session.user);
+            }
+          } else if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            console.log('⏰ Délai dépassé, rechargement...');
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.user) {
+              await initUser(session.user);
+            }
+          }
+        } catch (err) {
+          console.error('Erreur vérification:', err);
+          if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.user) {
+              await initUser(session.user);
+            }
+          }
+        }
+      }, 2000);
+
+      return () => clearInterval(checkInterval);
+    } catch (err) {
+      console.error('Erreur:', err);
+    }
+  };
 
   const initUser = useCallback(async (u: User) => {
     if (initLock.current) return;
@@ -209,9 +283,7 @@ export function ClientApp() {
     }
   }, [initUser]);
 
-  // Importer App dynamiquement pour éviter les dépendances circulaires
-  const [AppComponent, setAppComponent] = useState<React.ComponentType<{ authUser: AuthUser; onLogout: () => void }> | null>(null);
-
+  // Importer App dynamiquement
   useEffect(() => {
     if (appState === 'app') {
       import('../App').then(module => {

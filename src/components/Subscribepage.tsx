@@ -239,6 +239,8 @@ export function SubscribePage({
 
       if (data.success && data.invoice_url) {
         redirecting = true;
+        // Passer en mode pending avant la redirection
+        setStep('pending');
         window.location.href = data.invoice_url;
         return;
       }
@@ -492,7 +494,9 @@ export function SubscribePage({
         {/* ── Étape 3 : en attente ── */}
         {step === 'pending' && selectedPlan && (
           <div className="text-center py-12">
-            <Loader className="w-12 h-12 text-white mx-auto mb-6 animate-spin" />
+            <div className="w-16 h-16 bg-yellow-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
+            </div>
             <h2 className="text-white text-2xl font-bold mb-3">Paiement en attente</h2>
             <p className="text-zinc-400 text-sm leading-relaxed max-w-sm mx-auto">
               Confirmez le paiement sur votre téléphone.<br />
@@ -502,6 +506,11 @@ export function SubscribePage({
               <p className="text-zinc-400 text-xs">Montant</p>
               <p className="text-white text-2xl font-bold">{formatCFA(selectedPlan.price)}</p>
             </div>
+            {error && (
+              <div className="mt-4 p-3 bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl">
+                {error}
+              </div>
+            )}
           </div>
         )}
       </div>

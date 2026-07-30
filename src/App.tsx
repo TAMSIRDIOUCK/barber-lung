@@ -1,6 +1,4 @@
-// src/App.tsx — VERSION MISE À JOUR avec rappel de renouvellement automatique
-// et gestion des popups de paiement (iOS PWA) + gestion de session
-
+// src/App.tsx
 import { useState, useEffect } from 'react';
 import {
   Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X,
@@ -27,12 +25,11 @@ interface AppProps {
   onLogout: () => void;
 }
 
-// Composant Page de Succès de Paiement — Version améliorée avec gestion popup
+// Composant Page de Succès de Paiement
 function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(3);
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
   const [error, setError] = useState<string | null>(null);
-
   const wasOpenedAsPopup = !!window.opener;
 
   useEffect(() => {
@@ -55,34 +52,21 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
 
     const checkSubscription = async () => {
       setStatus('activating');
-
       let attempts = 0;
       const maxAttempts = 15;
 
       const checkInterval = setInterval(async () => {
         attempts++;
-
         try {
-          const { data: subscription, error: fetchError } = await supabase
+          const { data: subscription } = await supabase
             .from('subscriptions')
             .select('status')
             .eq('id', parseInt(subscriptionId))
             .maybeSingle();
 
-          if (fetchError) {
-            console.warn('Erreur vérification abonnement:', fetchError);
-            if (attempts >= maxAttempts) {
-              clearInterval(checkInterval);
-              setError('Impossible de vérifier le statut de votre abonnement. Contactez le support.');
-              setStatus('success');
-            }
-            return;
-          }
-
           if (subscription?.status === 'active') {
             clearInterval(checkInterval);
             setStatus('success');
-            
             if (wasOpenedAsPopup) {
               setTimeout(() => window.close(), 2000);
             } else {
@@ -91,7 +75,6 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
           } else if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
             setStatus('success');
-            
             if (wasOpenedAsPopup) {
               setTimeout(() => window.close(), 2000);
             } else {
@@ -99,10 +82,10 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             }
           }
         } catch (err) {
-          console.error('Erreur lors de la vérification:', err);
+          console.error('Erreur vérification:', err);
           if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
-            setError('Une erreur est survenue. Veuillez vérifier votre abonnement dans l\'application.');
+            setError('Une erreur est survenue.');
             setStatus('success');
           }
         }
@@ -122,25 +105,20 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             {error}
           </div>
         )}
-
         {status === 'checking' && (
           <>
             <Loader className="w-16 h-16 text-white mx-auto mb-4 animate-spin" />
             <h2 className="text-white text-xl font-bold">Vérification du paiement...</h2>
-            <p className="text-zinc-400 mt-2">Nous vérifions votre transaction</p>
           </>
         )}
-
         {status === 'activating' && (
           <>
             <div className="w-16 h-16 bg-yellow-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
               <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
             </div>
             <h2 className="text-white text-xl font-bold">Activation en cours...</h2>
-            <p className="text-zinc-400 mt-2">Votre abonnement est en cours d'activation</p>
           </>
         )}
-
         {status === 'success' && (
           <>
             <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -148,22 +126,12 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             </div>
             <h2 className="text-white text-2xl font-bold mb-2">Paiement réussi ! 🎉</h2>
             <p className="text-zinc-400 mb-4">Votre abonnement est maintenant actif.</p>
-            
             {wasOpenedAsPopup ? (
-              <>
-                <p className="text-zinc-500 text-sm mb-4">
-                  Cet onglet va se fermer automatiquement dans quelques secondes.<br />
-                  Retournez sur l'application LE COUPE 💈
-                </p>
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto" />
-              </>
+              <p className="text-zinc-500 text-sm">Cet onglet va se fermer automatiquement.</p>
             ) : (
-              <>
-                <p className="text-zinc-500 text-sm">
-                  Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
-                </p>
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto mt-4" />
-              </>
+              <p className="text-zinc-500 text-sm">
+                Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
+              </p>
             )}
           </>
         )}
@@ -192,7 +160,6 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         return prev - 1;
       });
     }, 1000);
-
     return () => clearInterval(timer);
   }, [onComplete, wasOpenedAsPopup]);
 
@@ -204,17 +171,13 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         </div>
         <h2 className="text-white text-2xl font-bold mb-2">Paiement annulé</h2>
         <p className="text-zinc-400 mb-4">Vous n'avez pas confirmé le paiement.</p>
-        
         {wasOpenedAsPopup ? (
-          <p className="text-zinc-500 text-sm mb-4">
-            Cet onglet va se fermer automatiquement.
-          </p>
+          <p className="text-zinc-500 text-sm">Cet onglet va se fermer automatiquement.</p>
         ) : (
-          <p className="text-zinc-500 text-sm mb-4">
+          <p className="text-zinc-500 text-sm">
             Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
           </p>
         )}
-        
         <button
           onClick={() => {
             if (wasOpenedAsPopup) {
@@ -227,119 +190,6 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         >
           {wasOpenedAsPopup ? 'Fermer' : 'Retour à l\'accueil'}
         </button>
-      </div>
-    </div>
-  );
-}
-
-// Page de callback pour restaurer la session
-function CallbackPage() {
-  const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing');
-  const [message, setMessage] = useState('Traitement en cours...');
-
-  useEffect(() => {
-    const processCallback = async () => {
-      const hash = window.location.hash;
-      const params = new URLSearchParams(hash.split('?')[1]);
-      const subscriptionId = params.get('subscription_id');
-      const token = params.get('token');
-
-      console.log('📞 Callback reçu:', { subscriptionId, hasToken: !!token });
-
-      // Restaurer la session si token présent
-      if (token) {
-        try {
-          const { data, error } = await supabase.auth.setSession({
-            access_token: token,
-            refresh_token: ''
-          });
-
-          if (error) {
-            console.warn('Impossible de restaurer la session:', error);
-          } else {
-            console.log('✅ Session restaurée avec succès');
-          }
-        } catch (err) {
-          console.warn('Erreur restauration session:', err);
-        }
-      }
-
-      // Vérifier le statut de l'abonnement
-      if (subscriptionId) {
-        let attempts = 0;
-        const maxAttempts = 10;
-
-        const checkSubscription = setInterval(async () => {
-          attempts++;
-          
-          try {
-            const { data: subscription } = await supabase
-              .from('subscriptions')
-              .select('status')
-              .eq('id', parseInt(subscriptionId))
-              .maybeSingle();
-
-            if (subscription?.status === 'active') {
-              clearInterval(checkSubscription);
-              setStatus('success');
-              setMessage('✅ Paiement réussi ! Redirection...');
-              
-              setTimeout(() => {
-                window.location.href = '/';
-              }, 2000);
-            } else if (attempts >= maxAttempts) {
-              clearInterval(checkSubscription);
-              setStatus('success');
-              setMessage('Paiement confirmé ! Redirection...');
-              
-              setTimeout(() => {
-                window.location.href = '/';
-              }, 2000);
-            }
-          } catch (err) {
-            console.error('Erreur vérification:', err);
-          }
-        }, 2000);
-
-        return () => clearInterval(checkSubscription);
-      } else {
-        setTimeout(() => {
-          window.location.href = '/';
-        }, 3000);
-      }
-    };
-
-    processCallback();
-  }, []);
-
-  return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-4">
-      <div className="text-center max-w-md">
-        {status === 'processing' && (
-          <>
-            <Loader className="w-16 h-16 text-white mx-auto mb-4 animate-spin" />
-            <h2 className="text-white text-xl font-bold">{message}</h2>
-            <p className="text-zinc-400 mt-2">Veuillez patienter...</p>
-          </>
-        )}
-
-        {status === 'success' && (
-          <>
-            <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <CheckCircle2 className="w-10 h-10 text-green-400" />
-            </div>
-            <h2 className="text-white text-2xl font-bold mb-2">✅ {message}</h2>
-          </>
-        )}
-
-        {status === 'error' && (
-          <>
-            <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <X className="w-10 h-10 text-red-400" />
-            </div>
-            <h2 className="text-white text-2xl font-bold mb-2">❌ {message}</h2>
-          </>
-        )}
       </div>
     </div>
   );
@@ -362,53 +212,57 @@ function App({ authUser, onLogout }: AppProps) {
 
   const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser.id);
 
-  // Vérifier le chemin pour la page de callback
-  const pathname = window.location.pathname;
-  if (pathname === '/auth/callback') {
-    return <CallbackPage />;
-  }
-
-  // Gérer les retours de paiement
+  // ✅ Gestion du callback après paiement
   useEffect(() => {
-    const handlePaymentCallback = async () => {
+    const handleCallback = async () => {
       const hash = window.location.hash;
+      const isCallbackPage = window.location.pathname === '/auth/callback';
       
-      if (hash.includes('payment_success') || hash.includes('payment_cancelled')) {
+      console.log('📍 Pathname:', window.location.pathname);
+      console.log('📍 Hash:', hash);
+      console.log('📍 Is Callback Page:', isCallbackPage);
+
+      if (isCallbackPage || hash.includes('payment_success') || hash.includes('payment_cancelled')) {
         console.log('🔔 Retour de paiement détecté');
-        
-        // Vérifier que la session est toujours active
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (!session) {
-          console.log('⚠️ Session expirée, tentative de reconnexion...');
-          const { data: { user }, error } = await supabase.auth.getUser();
-          
-          if (error || !user) {
-            console.error('❌ Session invalide, redirection vers login');
-            window.location.href = '/login';
-            return;
+
+        const params = new URLSearchParams(hash.split('?')[1]);
+        const subscriptionId = params.get('subscription_id');
+        const token = params.get('token');
+
+        console.log('📋 Subscription ID:', subscriptionId);
+        console.log('📋 Token présent:', !!token);
+
+        // Restaurer la session si token présent
+        if (token) {
+          try {
+            const { data, error } = await supabase.auth.setSession({
+              access_token: token,
+              refresh_token: ''
+            });
+            if (error) {
+              console.warn('⚠️ Erreur restauration session:', error);
+            } else {
+              console.log('✅ Session restaurée avec succès');
+            }
+          } catch (err) {
+            console.warn('⚠️ Erreur restauration session:', err);
           }
         }
-        
-        // Traiter le retour
+
+        // Déterminer le type de retour
         if (hash.includes('payment_success')) {
           console.log('✅ Paiement réussi');
           setShowPaymentSuccess(true);
+          window.history.replaceState({}, document.title, '/');
         } else if (hash.includes('payment_cancelled')) {
           console.log('❌ Paiement annulé');
           setShowPaymentCancel(true);
+          window.history.replaceState({}, document.title, '/');
         }
-        
-        window.history.replaceState({}, document.title, window.location.pathname);
       }
     };
 
-    handlePaymentCallback();
-    window.addEventListener('hashchange', handlePaymentCallback);
-    
-    return () => {
-      window.removeEventListener('hashchange', handlePaymentCallback);
-    };
+    handleCallback();
   }, []);
 
   // Vérifier s'il y a une bannière active
@@ -422,7 +276,6 @@ function App({ authUser, onLogout }: AppProps) {
           .eq('is_active', true)
           .gte('expiry_date', new Date().toISOString())
           .maybeSingle();
-
         setHasActiveBanner(!!data);
       } catch (err) {
         console.error('Erreur vérification bannière:', err);
@@ -431,14 +284,13 @@ function App({ authUser, onLogout }: AppProps) {
         setCheckingBanner(false);
       }
     };
-
     checkActiveBanner();
   }, []);
 
   const handlePaymentComplete = () => {
     setShowPaymentSuccess(false);
     setShowPaymentCancel(false);
-    window.location.reload();
+    window.location.href = '/';
   };
 
   useEffect(() => {
@@ -481,9 +333,9 @@ function App({ authUser, onLogout }: AppProps) {
   };
 
   const userPages: { id: Page; label: string; Icon: any }[] = [
-    { id: 'home',     label: 'Services',     Icon: Scissors },
-    { id: 'revenue',  label: 'Revenus',      Icon: TrendingUp },
-    { id: 'expenses', label: 'Dépenses',     Icon: DollarSign },
+    { id: 'home', label: 'Services', Icon: Scissors },
+    { id: 'revenue', label: 'Revenus', Icon: TrendingUp },
+    { id: 'expenses', label: 'Dépenses', Icon: DollarSign },
     { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
   ];
 
@@ -543,16 +395,22 @@ function App({ authUser, onLogout }: AppProps) {
               </div>
               <nav className="flex items-center gap-1">
                 {pages.map(({ id, label, Icon }) => (
-                  <button key={id} onClick={() => navigate(id)}
+                  <button
+                    key={id}
+                    onClick={() => navigate(id)}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                       currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                    }`}>
+                    }`}
+                  >
                     <Icon className="w-4 h-4" />{label}
                   </button>
                 ))}
               </nav>
               <div className="flex items-center gap-3">
-                <button onClick={handleShare} className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700">
+                <button
+                  onClick={handleShare}
+                  className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700"
+                >
                   {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5" />}
                   <span className="text-xs">{copied ? 'Copié !' : 'Partager'}</span>
                 </button>
@@ -599,15 +457,21 @@ function App({ authUser, onLogout }: AppProps) {
           {mobileMenuOpen && (
             <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full">
               {pages.map(({ id, label, Icon }) => (
-                <button key={id} onClick={() => navigate(id)}
+                <button
+                  key={id}
+                  onClick={() => navigate(id)}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                     currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                  }`}>
+                  }`}
+                >
                   <Icon className="w-4 h-4" />{label}
                 </button>
               ))}
               <div className="pt-2 border-t border-zinc-800 mt-2 space-y-2">
-                <button onClick={handleShare} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition">
+                <button
+                  onClick={handleShare}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+                >
                   {copied ? <Check className="w-4 h-4 text-green-400" /> : <Share2 className="w-4 h-4" />}
                   {copied ? 'Lien copié !' : "Partager l'application"}
                 </button>
@@ -664,10 +528,10 @@ function App({ authUser, onLogout }: AppProps) {
               <TransactionHistory userId={authUser.id} refreshTrigger={refreshTrigger} />
             </div>
           )}
-          {currentPage === 'revenue'   && <RevenuePage userId={authUser.id} refreshTrigger={refreshTrigger} />}
-          {currentPage === 'expenses'  && <ExpensesPage userId={authUser.id} onExpenseAdded={handleExpenseAdded} />}
-          {currentPage === 'bookings'  && <BookingSettingsPage userId={authUser.id} />}
-          {currentPage === 'admin'     && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
+          {currentPage === 'revenue' && <RevenuePage userId={authUser.id} refreshTrigger={refreshTrigger} />}
+          {currentPage === 'expenses' && <ExpensesPage userId={authUser.id} onExpenseAdded={handleExpenseAdded} />}
+          {currentPage === 'bookings' && <BookingSettingsPage userId={authUser.id} />}
+          {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
         {/* BOTTOM NAV MOBILE */}
