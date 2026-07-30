@@ -205,9 +205,15 @@ export function SubscribePage({
 
       setSubscriptionId(sub.id);
 
-      // 5. Appeler la fonction Edge pour initier le paiement PayDunya
-      // ✅ Le header Authorization avec le token est déjà ajouté
-      // ✅ paydunya_config est géré uniquement côté serveur (dans la fonction Edge)
+      // 5. Construire les URLs dynamiquement depuis le frontend
+      const appUrl = window.location.origin;
+      const returnUrl = `${appUrl}/auth/callback#payment_success?subscription_id=${sub.id}`;
+      const cancelUrl = `${appUrl}/auth/callback#payment_cancelled?subscription_id=${sub.id}`;
+      const callbackUrl = `https://vzhcjvvgpbtfolxnpapy.supabase.co/functions/v1/ipn?subscription_id=${sub.id}`;
+
+      console.log('URLs construites:', { returnUrl, cancelUrl, callbackUrl });
+
+      // 6. Appeler la fonction Edge avec les URLs
       const res = await fetch(edgeFunctionUrl, {
         method: 'POST',
         headers: {
@@ -222,22 +228,40 @@ export function SubscribePage({
           customer_name: salonName,
           customer_email: userEmail,
           description: `Abonnement ${selectedPlan.name} - ID:${sub.id}`,
+          plan_name: selectedPlan.name,
+          // Envoyer les URLs depuis le frontend
+          return_url: returnUrl,
+          cancel_url: cancelUrl,
+          callback_url: callbackUrl,
         }),
       });
 
       const data = await res.json();
-      console.log('Réponse:', data);
+      console.log('Réponse de la fonction Edge:', data);
+
+      if (!res.ok) {
+        throw new Error(data.error || `Erreur ${res.status}: ${res.statusText}`);
+      }
 
       if (data.success && data.invoice_url) {
         redirecting = true;
+        // Rediriger vers l'URL de paiement PayDunya
         window.location.href = data.invoice_url;
         return;
       }
 
       throw new Error(data.error || "Erreur lors de l'initiation du paiement");
+      
     } catch (e: any) {
-      console.error('Erreur:', e);
-      setError(e.message ?? 'Erreur lors du paiement');
+      console.error('Erreur complète:', e);
+      
+      if (e.message?.includes('fetch') || e.message?.includes('network')) {
+        setError('Impossible de contacter le serveur de paiement. Vérifiez votre connexion internet et réessayez.');
+      } else {
+        setError(e.message || 'Erreur lors du paiement');
+      }
+      
+      setStep('choose');
     } finally {
       if (!redirecting) {
         setLoading(false);
