@@ -1,4 +1,5 @@
 // src/App.tsx — VERSION MISE À JOUR avec rappel de renouvellement automatique
+// et gestion des popups de paiement (iOS PWA)
 
 import { useState, useEffect } from 'react';
 import {
@@ -26,16 +27,21 @@ interface AppProps {
   onLogout: () => void;
 }
 
-// Composant Page de Succès de Paiement
+// Composant Page de Succès de Paiement — Version améliorée avec gestion popup
 function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(3);
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
+  const [error, setError] = useState<string | null>(null);
+
+  // Détecte si cette page a été ouverte via window.open() (popup séparé, cas iOS PWA)
+  const wasOpenedAsPopup = !!window.opener;
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const subscriptionId = params.get('subscription_id');
 
     if (!subscriptionId) {
+      // Pas d'ID d'abonnement, on redirige après un court délai
       const timer = setInterval(() => {
         setCountdown((prev) => {
           if (prev <= 1) {
@@ -53,29 +59,63 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
       setStatus('activating');
 
       let attempts = 0;
-      const maxAttempts = 10;
+      const maxAttempts = 15; // 15 * 2s = 30s max
 
       const checkInterval = setInterval(async () => {
         attempts++;
 
-        const { data: subscription } = await supabase
-          .from('subscriptions')
-          .select('status')
-          .eq('id', parseInt(subscriptionId))
-          .maybeSingle();
+        try {
+          const { data: subscription, error: fetchError } = await supabase
+            .from('subscriptions')
+            .select('status')
+            .eq('id', parseInt(subscriptionId))
+            .maybeSingle();
 
-        if (subscription?.status === 'active') {
-          clearInterval(checkInterval);
-          setStatus('success');
-          setTimeout(() => {
-            onComplete();
-          }, 2000);
-        } else if (attempts >= maxAttempts) {
-          clearInterval(checkInterval);
-          setStatus('success');
-          setTimeout(() => {
-            onComplete();
-          }, 2000);
+          if (fetchError) {
+            console.warn('Erreur vérification abonnement:', fetchError);
+            if (attempts >= maxAttempts) {
+              clearInterval(checkInterval);
+              setError('Impossible de vérifier le statut de votre abonnement. Contactez le support.');
+              setStatus('success');
+            }
+            return;
+          }
+
+          if (subscription?.status === 'active') {
+            clearInterval(checkInterval);
+            setStatus('success');
+            
+            // Si c'est un popup, on ferme automatiquement après 2 secondes
+            if (wasOpenedAsPopup) {
+              setTimeout(() => {
+                window.close();
+              }, 2000);
+            } else {
+              setTimeout(() => {
+                onComplete();
+              }, 2000);
+            }
+          } else if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            setStatus('success');
+            
+            if (wasOpenedAsPopup) {
+              setTimeout(() => {
+                window.close();
+              }, 2000);
+            } else {
+              setTimeout(() => {
+                onComplete();
+              }, 2000);
+            }
+          }
+        } catch (err) {
+          console.error('Erreur lors de la vérification:', err);
+          if (attempts >= maxAttempts) {
+            clearInterval(checkInterval);
+            setError('Une erreur est survenue. Veuillez vérifier votre abonnement dans l\'application.');
+            setStatus('success');
+          }
         }
       }, 2000);
 
@@ -83,15 +123,22 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
     };
 
     checkSubscription();
-  }, [onComplete]);
+  }, [onComplete, wasOpenedAsPopup]);
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center p-4">
       <div className="text-center max-w-md">
+        {error && (
+          <div className="mb-4 p-3 bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl">
+            {error}
+          </div>
+        )}
+
         {status === 'checking' && (
           <>
             <Loader className="w-16 h-16 text-white mx-auto mb-4 animate-spin" />
             <h2 className="text-white text-xl font-bold">Vérification du paiement...</h2>
+            <p className="text-zinc-400 mt-2">Nous vérifions votre transaction</p>
           </>
         )}
 
@@ -112,8 +159,23 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             </div>
             <h2 className="text-white text-2xl font-bold mb-2">Paiement réussi ! 🎉</h2>
             <p className="text-zinc-400 mb-4">Votre abonnement est maintenant actif.</p>
-            <p className="text-zinc-500 text-sm">Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...</p>
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto mt-4" />
+            
+            {wasOpenedAsPopup ? (
+              <>
+                <p className="text-zinc-500 text-sm mb-4">
+                  Cet onglet va se fermer automatiquement dans quelques secondes.<br />
+                  Retournez sur l'application LE COUPE 💈
+                </p>
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto" />
+              </>
+            ) : (
+              <>
+                <p className="text-zinc-500 text-sm">
+                  Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
+                </p>
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mx-auto mt-4" />
+              </>
+            )}
           </>
         )}
       </div>
@@ -124,13 +186,18 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
 // Composant Page d'Annulation
 function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(5);
+  const wasOpenedAsPopup = !!window.opener;
 
   useEffect(() => {
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          onComplete();
+          if (wasOpenedAsPopup) {
+            window.close();
+          } else {
+            onComplete();
+          }
           return 0;
         }
         return prev - 1;
@@ -138,7 +205,7 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [onComplete]);
+  }, [onComplete, wasOpenedAsPopup]);
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center p-4">
@@ -148,12 +215,28 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         </div>
         <h2 className="text-white text-2xl font-bold mb-2">Paiement annulé</h2>
         <p className="text-zinc-400 mb-4">Vous n'avez pas confirmé le paiement.</p>
-        <p className="text-zinc-500 text-sm">Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...</p>
+        
+        {wasOpenedAsPopup ? (
+          <p className="text-zinc-500 text-sm mb-4">
+            Cet onglet va se fermer automatiquement.
+          </p>
+        ) : (
+          <p className="text-zinc-500 text-sm mb-4">
+            Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
+          </p>
+        )}
+        
         <button
-          onClick={onComplete}
-          className="mt-6 bg-white text-black px-6 py-2 rounded-lg font-semibold hover:bg-zinc-200 transition"
+          onClick={() => {
+            if (wasOpenedAsPopup) {
+              window.close();
+            } else {
+              onComplete();
+            }
+          }}
+          className="mt-4 bg-white text-black px-6 py-2 rounded-lg font-semibold hover:bg-zinc-200 transition"
         >
-          Retour à l'accueil
+          {wasOpenedAsPopup ? 'Fermer' : 'Retour à l\'accueil'}
         </button>
       </div>
     </div>
