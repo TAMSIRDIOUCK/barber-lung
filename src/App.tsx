@@ -212,57 +212,30 @@ function App({ authUser, onLogout }: AppProps) {
 
   const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser.id);
 
-  // ✅ Gestion du callback après paiement
+  // ✅ Gestion du retour de paiement depuis l'URL
   useEffect(() => {
-    const handleCallback = async () => {
-      const hash = window.location.hash;
-      const isCallbackPage = window.location.pathname === '/auth/callback';
+    const handlePaymentReturn = () => {
+      const params = new URLSearchParams(window.location.search);
+      const isSuccess = params.get('payment_success') === 'true';
+      const isCancelled = params.get('payment_cancelled') === 'true';
       
-      console.log('📍 Pathname:', window.location.pathname);
-      console.log('📍 Hash:', hash);
-      console.log('📍 Is Callback Page:', isCallbackPage);
-
-      if (isCallbackPage || hash.includes('payment_success') || hash.includes('payment_cancelled')) {
-        console.log('🔔 Retour de paiement détecté');
-
-        const params = new URLSearchParams(hash.split('?')[1]);
-        const subscriptionId = params.get('subscription_id');
-        const token = params.get('token');
-
-        console.log('📋 Subscription ID:', subscriptionId);
-        console.log('📋 Token présent:', !!token);
-
-        // Restaurer la session si token présent
-        if (token) {
-          try {
-            const { data, error } = await supabase.auth.setSession({
-              access_token: token,
-              refresh_token: ''
-            });
-            if (error) {
-              console.warn('⚠️ Erreur restauration session:', error);
-            } else {
-              console.log('✅ Session restaurée avec succès');
-            }
-          } catch (err) {
-            console.warn('⚠️ Erreur restauration session:', err);
-          }
-        }
-
-        // Déterminer le type de retour
-        if (hash.includes('payment_success')) {
-          console.log('✅ Paiement réussi');
-          setShowPaymentSuccess(true);
-          window.history.replaceState({}, document.title, '/');
-        } else if (hash.includes('payment_cancelled')) {
-          console.log('❌ Paiement annulé');
-          setShowPaymentCancel(true);
-          window.history.replaceState({}, document.title, '/');
-        }
+      console.log('🔔 App - Vérification retour paiement:', {
+        isSuccess,
+        isCancelled
+      });
+      
+      if (isSuccess) {
+        console.log('✅ Paiement réussi');
+        setShowPaymentSuccess(true);
+        window.history.replaceState({}, document.title, '/');
+      } else if (isCancelled) {
+        console.log('❌ Paiement annulé');
+        setShowPaymentCancel(true);
+        window.history.replaceState({}, document.title, '/');
       }
     };
 
-    handleCallback();
+    handlePaymentReturn();
   }, []);
 
   // Vérifier s'il y a une bannière active
@@ -382,7 +355,6 @@ function App({ authUser, onLogout }: AppProps) {
   return (
     <RequirePhoneNumber userId={authUser.id}>
       <div className="min-h-[100dvh] bg-zinc-950 overflow-x-hidden">
-
         {/* HEADER DESKTOP */}
         <header className="hidden md:block bg-black border-b border-zinc-800 sticky top-0 z-40">
           <div className="max-w-7xl mx-auto px-6 lg:px-8">
@@ -491,7 +463,6 @@ function App({ authUser, onLogout }: AppProps) {
 
         {/* MAIN */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
-
           {/* Bannière de rappel de renouvellement */}
           {needsRenewal && daysLeft !== null && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

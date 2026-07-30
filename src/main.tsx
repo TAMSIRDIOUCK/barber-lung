@@ -14,7 +14,6 @@ function BookingPageWrapper() {
 
 // Composant pour la route /auth/callback
 function CallbackRoute() {
-  // On vérifie si on a un token dans l'URL
   const hash = window.location.hash;
   const params = new URLSearchParams(hash.split('?')[1]);
   const token = params.get('token');
@@ -24,27 +23,35 @@ function CallbackRoute() {
   console.log('📍 CallbackRoute - Token:', !!token);
   console.log('📍 CallbackRoute - Subscription ID:', subscriptionId);
   
-  // Si on a un token, on le stocke dans sessionStorage pour le récupérer après
+  // Stocker le token pour restauration
   if (token) {
     sessionStorage.setItem('payment_token', token);
     sessionStorage.setItem('payment_subscription_id', subscriptionId || '');
+    console.log('✅ Token stocké dans sessionStorage');
   }
   
-  // Rediriger vers l'app principale
-  return <ClientApp />;
+  // Rediriger vers l'accueil avec les paramètres de succès/annulation
+  const isSuccess = hash.includes('payment_success');
+  const isCancelled = hash.includes('payment_cancelled');
+  
+  let redirectUrl = '/';
+  if (isSuccess) {
+    redirectUrl = '/?payment_success=true';
+  } else if (isCancelled) {
+    redirectUrl = '/?payment_cancelled=true';
+  }
+  
+  // Rediriger vers l'accueil
+  window.location.href = redirectUrl;
+  return null;
 }
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
-        {/* Route pour le booking public */}
         <Route path="/booking/:slug" element={<BookingPageWrapper />} />
-        
-        {/* Route pour le callback de paiement */}
         <Route path="/auth/callback" element={<CallbackRoute />} />
-        
-        {/* Route par défaut - L'application principale */}
         <Route path="/*" element={<ClientApp />} />
       </Routes>
     </BrowserRouter>
