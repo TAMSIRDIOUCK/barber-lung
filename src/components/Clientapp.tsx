@@ -1,4 +1,4 @@
-// src/components/Clientapp.tsx
+// src/components/Clientapp.tsx - Partie gestion du callback
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { AuthPage } from './Authpage';
@@ -65,22 +65,29 @@ export function ClientApp() {
   const initLock = useRef(false);
   const [AppComponent, setAppComponent] = useState<React.ComponentType<{ authUser: AuthUser; onLogout: () => void }> | null>(null);
 
-  // ✅ Vérifier le retour de paiement
+  // ✅ Vérifier le retour de paiement - AMÉLIORÉ
   useEffect(() => {
     const handlePaymentReturn = async () => {
       const params = new URLSearchParams(window.location.search);
       const isSuccess = params.get('payment_success') === 'true';
       const isCancelled = params.get('payment_cancelled') === 'true';
       
-      // Vérifier si on a un token dans sessionStorage
-      const paymentToken = sessionStorage.getItem('payment_token');
-      const subscriptionId = sessionStorage.getItem('payment_subscription_id');
-      
       console.log('🔍 Vérification retour paiement:', {
         isSuccess,
         isCancelled,
+        url: window.location.href,
+        search: window.location.search
+      });
+      
+      // Vérifier si on a un token dans sessionStorage
+      const paymentToken = sessionStorage.getItem('payment_token');
+      const subscriptionId = sessionStorage.getItem('payment_subscription_id');
+      const paymentStatus = sessionStorage.getItem('payment_status');
+      
+      console.log('📦 SessionStorage:', {
         hasToken: !!paymentToken,
-        subscriptionId
+        subscriptionId,
+        paymentStatus
       });
       
       // Si on a un token de paiement, restaurer la session
@@ -97,14 +104,16 @@ export function ClientApp() {
             console.warn('⚠️ Erreur restauration:', error);
             sessionStorage.removeItem('payment_token');
             sessionStorage.removeItem('payment_subscription_id');
+            sessionStorage.removeItem('payment_status');
           } else if (data.session) {
             console.log('✅ Session restaurée avec succès');
+            console.log('👤 Utilisateur:', data.session.user?.email);
             
             // Nettoyer le token après restauration
             sessionStorage.removeItem('payment_token');
             sessionStorage.removeItem('payment_subscription_id');
             
-            // Vérifier le statut de l'abonnement
+            // Si on a un subscriptionId, vérifier le statut
             if (subscriptionId) {
               await checkSubscriptionStatus(subscriptionId);
             } else if (data.session.user) {
@@ -119,7 +128,24 @@ export function ClientApp() {
           console.warn('⚠️ Erreur restauration:', err);
           sessionStorage.removeItem('payment_token');
           sessionStorage.removeItem('payment_subscription_id');
+          sessionStorage.removeItem('payment_status');
         }
+      }
+      
+      // Si on a un statut dans sessionStorage mais pas de token (cas où le token a été utilisé)
+      if (paymentStatus === 'success' || paymentStatus === 'cancelled') {
+        console.log('🔄 Statut de paiement trouvé:', paymentStatus);
+        
+        // Vérifier si l'utilisateur est déjà connecté
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          console.log('👤 Utilisateur déjà connecté:', session.user.email);
+          await initUser(session.user);
+        }
+        
+        sessionStorage.removeItem('payment_status');
+        window.history.replaceState({}, document.title, '/');
+        return;
       }
       
       // Si pas de token mais qu'on a un retour de paiement, recharger l'utilisateur
@@ -142,16 +168,24 @@ export function ClientApp() {
       let attempts = 0;
       const maxAttempts = 15;
       
+      console.log(`🔄 Vérification abonnement ${subscriptionId}...`);
+      
       const checkInterval = setInterval(async () => {
         attempts++;
-        console.log(`🔄 Vérification abonnement ${attempts}/${maxAttempts}`);
+        console.log(`🔄 Tentative ${attempts}/${maxAttempts}`);
         
         try {
-          const { data: subscription } = await supabase
+          const { data: subscription, error } = await supabase
             .from('subscriptions')
             .select('status')
             .eq('id', parseInt(subscriptionId))
             .maybeSingle();
+
+          if (error) {
+            console.error('Erreur requête:', error);
+          }
+
+          console.log('📊 Statut abonnement:', subscription?.status);
 
           if (subscription?.status === 'active') {
             clearInterval(checkInterval);
@@ -162,7 +196,7 @@ export function ClientApp() {
             }
           } else if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
-            console.log('⏰ Délai dépassé, rechargement...');
+            console.log('⏰ Délai dépassé, rechargement forcé...');
             const { data: { session } } = await supabase.auth.getSession();
             if (session?.user) {
               await initUser(session.user);
@@ -190,7 +224,7 @@ export function ClientApp() {
     if (initLock.current) return;
     initLock.current = true;
 
-    console.log('👤 Initialisation utilisateur:', u.id);
+    console.log('👤 Initialisation utilisateur:', u.id, u.email);
     setUser(u);
 
     try {
