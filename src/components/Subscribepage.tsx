@@ -18,6 +18,9 @@ interface SubscribePageProps {
   onSubscribed: () => void;
 }
 
+// Un mois d'essai gratuit (30 jours).
+const FREE_TRIAL_DAYS = 30;
+
 export function SubscribePage({
   userId,
   userEmail,
@@ -46,28 +49,43 @@ export function SubscribePage({
 
   useEffect(() => {
     const init = async () => {
-      const { data } = await supabase
+      // Verifier si l'utilisateur a deja utilise l'essai gratuit
+      const { data, error: trialCheckError } = await supabase
         .from('subscriptions')
         .select('id')
         .eq('user_id', userId)
         .eq('is_free_trial', true)
+        .limit(1)
         .maybeSingle();
 
+      if (trialCheckError) {
+        console.error('Erreur verification essai gratuit:', trialCheckError.message);
+      }
       if (data) setHasUsedFreeTrial(true);
 
+      // Charger les plans d'abonnement
       const { data: plansData, error: plansErr } = await supabase
         .from('subscription_plans')
         .select('*')
         .order('price');
 
       if (plansErr) setPlansError('Impossible de charger les plans : ' + plansErr.message);
-      if (plansData) setPlans(plansData);
+      if (plansData) {
+        // Garantir que le plan gratuit affiche bien un mois d'essai.
+        const modifiedPlans = plansData.map((plan: Plan) => {
+          if (plan.is_free === true) {
+            return { ...plan, duration_days: FREE_TRIAL_DAYS };
+          }
+          return plan;
+        });
+        setPlans(modifiedPlans);
+      }
     };
 
     init();
   }, [userId]);
 
-  // Vérification du statut du paiement
+  // Verification du statut du paiement
   useEffect(() => {
     if (step !== 'pending' || !subscriptionId) return;
 
@@ -85,7 +103,7 @@ export function SubscribePage({
         onSubscribed();
       } else if (attempts > 20) {
         clearInterval(interval);
-        setError('Le paiement prend plus de temps que prévu. Vérifiez votre compte ou contactez le support.');
+        setError('Le paiement prend plus de temps que prevu. Verifiez votre compte ou contactez le support.');
         setStep('choose');
       }
     }, 5000);
@@ -102,16 +120,32 @@ export function SubscribePage({
     setLoading(true);
 
     try {
-      const { data: existingTrial } = await supabase
+      // Verifier si l'utilisateur a deja utilise l'essai gratuit
+      const { data: existingTrial, error: trialCheckError } = await supabase
         .from('subscriptions')
         .select('id')
         .eq('user_id', userId)
         .eq('is_free_trial', true)
+        .limit(1)
         .maybeSingle();
 
-      if (existingTrial) {
-        throw new Error('Vous avez déjà utilisé votre essai gratuit');
+      if (trialCheckError) {
+        throw new Error('Impossible de verifier votre eligibilite : ' + trialCheckError.message);
       }
+
+      if (existingTrial) {
+        throw new Error('Vous avez deja utilise votre essai gratuit');
+      }
+
+      // La date utilisee par le reste de l'application est expires_at.
+      const startDate = new Date();
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + FREE_TRIAL_DAYS);
+
+      console.log(`✅ Essai gratuit de ${FREE_TRIAL_DAYS} jours:`, {
+        start: startDate.toISOString(),
+        end: endDate.toISOString()
+      });
 
       const { error: subErr } = await supabase
         .from('subscriptions')
@@ -120,13 +154,13 @@ export function SubscribePage({
           plan_id: selectedPlan.id,
           status: 'active',
           is_free_trial: true,
-          start_date: new Date().toISOString(),
-          end_date: new Date(Date.now() + selectedPlan.duration_days * 24 * 60 * 60 * 1000).toISOString(),
+          start_date: startDate.toISOString(),
+          expires_at: endDate.toISOString(),
         }])
         .select()
         .single();
 
-      if (subErr) throw new Error('Erreur création abonnement : ' + subErr.message);
+      if (subErr) throw new Error('Erreur creation abonnement : ' + subErr.message);
 
       onSubscribed();
     } catch (e: any) {
@@ -144,7 +178,7 @@ export function SubscribePage({
 
     if (!edgeFunctionUrl) {
       return setError(
-        'Configuration manquante : VITE_SUPABASE_URL n\'est pas défini dans votre fichier .env'
+        'Configuration manquante : VITE_SUPABASE_URL n\'est pas defini dans votre fichier .env'
       );
     }
 
@@ -157,10 +191,10 @@ export function SubscribePage({
       const { data: { session } } = await supabase.auth.getSession();
 
       if (!session?.access_token) {
-        throw new Error('Session expirée. Merci de vous reconnecter.');
+        throw new Error('Session expiree. Merci de vous reconnecter.');
       }
 
-      // Nettoyer les abonnements "pending" résiduels
+      // Nettoyer les abonnements "pending" residuels
       const { error: cleanupErr } = await supabase
         .from('subscriptions')
         .update({ status: 'cancelled' })
@@ -168,10 +202,10 @@ export function SubscribePage({
         .eq('status', 'pending');
 
       if (cleanupErr) {
-        console.warn('Nettoyage des abonnements pending résiduels échoué :', cleanupErr.message);
+        console.warn('Nettoyage des abonnements pending residuels echoue :', cleanupErr.message);
       }
 
-      // Créer l'abonnement
+      // Creer l'abonnement
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
         .insert([{
@@ -183,9 +217,9 @@ export function SubscribePage({
         .select()
         .single();
 
-      if (subErr) throw new Error('Erreur création abonnement : ' + subErr.message);
+      if (subErr) throw new Error('Erreur creation abonnement : ' + subErr.message);
 
-      // Créer l'enregistrement de paiement
+      // Creer l'enregistrement de paiement
       const { error: payErr } = await supabase.from('payments').insert([{
         user_id: userId,
         subscription_id: sub.id,
@@ -194,11 +228,11 @@ export function SubscribePage({
         status: 'pending',
       }]);
 
-      if (payErr) throw new Error('Erreur création paiement : ' + payErr.message);
+      if (payErr) throw new Error('Erreur creation paiement : ' + payErr.message);
 
       setSubscriptionId(sub.id);
 
-      // ✅ Construire les URLs avec le token pour maintenir la session
+      // Construire les URLs avec le token pour maintenir la session
       const appUrl = window.location.origin;
       const token = session.access_token;
       
@@ -231,7 +265,7 @@ export function SubscribePage({
       });
 
       const data = await res.json();
-      console.log('Réponse de la fonction Edge:', data);
+      console.log('Reponse de la fonction Edge:', data);
 
       if (!res.ok) {
         throw new Error(data.error || `Erreur ${res.status}: ${res.statusText}`);
@@ -248,10 +282,10 @@ export function SubscribePage({
       throw new Error(data.error || "Erreur lors de l'initiation du paiement");
       
     } catch (e: any) {
-      console.error('Erreur complète:', e);
+      console.error('Erreur complete:', e);
       
       if (e.message?.includes('fetch') || e.message?.includes('network')) {
-        setError('Impossible de contacter le serveur de paiement. Vérifiez votre connexion internet et réessayez.');
+        setError('Impossible de contacter le serveur de paiement. Verifiez votre connexion internet et reessayez.');
       } else {
         setError(e.message || 'Erreur lors du paiement');
       }
@@ -290,23 +324,23 @@ export function SubscribePage({
             onClick={handleLogout}
             className="text-zinc-500 hover:text-white transition flex items-center gap-1.5 text-sm"
           >
-            <LogOut className="w-4 h-4" /> Déconnexion
+            <LogOut className="w-4 h-4" /> Deconnexion
           </button>
         </div>
 
         {/* Alertes de configuration */}
         {!supabaseUrl && (
           <div className="bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl px-4 py-3 mb-6">
-            ⚠️ <strong>VITE_SUPABASE_URL</strong> est manquant dans votre fichier <code>.env</code>.
+            <span>⚠️ </span><strong>VITE_SUPABASE_URL</strong> est manquant dans votre fichier <code>.env</code>.
           </div>
         )}
 
-        {/* ── Étape 1 : choisir un plan ── */}
+        {/* Etape 1 : choisir un plan */}
         {step === 'choose' && (
           <div>
             <h2 className="text-white text-2xl font-bold mb-2">Choisissez votre abonnement</h2>
             <p className="text-zinc-400 text-sm mb-8">
-              Accédez à tous les services du salon avec un abonnement actif.
+              Accedez a tous les services du salon avec un abonnement actif.
             </p>
 
             {plansError && (
@@ -339,7 +373,7 @@ export function SubscribePage({
                   >
                     {isAnnual && (
                       <span className="absolute top-4 right-4 bg-white text-black text-xs font-bold px-3 py-1 rounded-full">
-                        ÉCONOMIE 17%
+                        ECONOMIE 17%
                       </span>
                     )}
                     {isFree && !hasUsedFreeTrial && (
@@ -349,7 +383,7 @@ export function SubscribePage({
                     )}
                     {isFree && hasUsedFreeTrial && (
                       <span className="absolute top-4 right-4 bg-zinc-700 text-zinc-400 text-xs font-bold px-3 py-1 rounded-full">
-                        DÉJÀ UTILISÉ
+                        DEJA UTILISE
                       </span>
                     )}
                     <div className="flex items-center gap-3 mb-1">
@@ -372,7 +406,12 @@ export function SubscribePage({
                     </p>
                     {isFree && !hasUsedFreeTrial && (
                       <p className="text-green-400 text-xs ml-8 mt-2">
-                        ✨ Offre valable une seule fois
+                        Offre valable une seule fois
+                      </p>
+                    )}
+                    {isFree && hasUsedFreeTrial && (
+                      <p className="text-zinc-500 text-xs ml-8 mt-2">
+                        Vous avez deja utilise votre essai gratuit
                       </p>
                     )}
                   </button>
@@ -403,17 +442,17 @@ export function SubscribePage({
                   <Loader className="w-4 h-4 animate-spin" /> Activation...
                 </span>
               ) : (
-                selectedPlan?.is_free ? 'Commencer mon essai gratuit →' : 'Continuer →'
+                selectedPlan?.is_free ? 'Commencer mon essai gratuit' : 'Continuer'
               )}
             </button>
           </div>
         )}
 
-        {/* ── Étape 2 : paiement ── */}
+        {/* Etape 2 : paiement */}
         {step === 'pay' && selectedPlan && (
           <div>
             <button onClick={() => setStep('choose')} className="text-zinc-400 mb-6 text-sm">
-              ← Retour
+              Retour
             </button>
             <h2 className="text-white text-2xl font-bold mb-2">Paiement</h2>
             <p className="text-zinc-400 text-sm mb-8">
@@ -423,7 +462,7 @@ export function SubscribePage({
 
             <div className="mb-6">
               <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-3 block">
-                Méthode de paiement
+                Methode de paiement
               </label>
               <div className="grid grid-cols-2 gap-3">
                 {[
@@ -453,7 +492,7 @@ export function SubscribePage({
 
             <div className="mb-6">
               <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
-                Numéro de téléphone
+                Numero de telephone
               </label>
               <input
                 type="tel"
@@ -471,7 +510,7 @@ export function SubscribePage({
             )}
 
             <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 mb-6 flex justify-between items-center">
-              <span className="text-zinc-400 text-sm">Total à payer</span>
+              <span className="text-zinc-400 text-sm">Total a payer</span>
               <span className="text-white text-xl font-bold">{formatCFA(selectedPlan.price)}</span>
             </div>
 
@@ -491,7 +530,7 @@ export function SubscribePage({
           </div>
         )}
 
-        {/* ── Étape 3 : en attente ── */}
+        {/* Etape 3 : en attente */}
         {step === 'pending' && selectedPlan && (
           <div className="text-center py-12">
             <div className="w-16 h-16 bg-yellow-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -499,8 +538,8 @@ export function SubscribePage({
             </div>
             <h2 className="text-white text-2xl font-bold mb-3">Paiement en attente</h2>
             <p className="text-zinc-400 text-sm leading-relaxed max-w-sm mx-auto">
-              Confirmez le paiement sur votre téléphone.<br />
-              Cette page se mettra à jour automatiquement une fois le paiement validé.
+              Confirmez le paiement sur votre telephone.<br />
+              Cette page se mettra a jour automatiquement une fois le paiement valide.
             </p>
             <div className="mt-8 bg-zinc-900 border border-zinc-700 rounded-xl px-6 py-4 inline-block">
               <p className="text-zinc-400 text-xs">Montant</p>

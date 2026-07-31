@@ -14,13 +14,15 @@ export function useSubscriptionStatus(userId: string) {
         .select('*, subscription_plans(*)')
         .eq('user_id', userId)
         .eq('status', 'active')
-        .order('end_date', { ascending: false })
+        .order('expires_at', { ascending: false })
         .maybeSingle();
 
       if (!data) return;
 
       setSubscription(data);
-      const end = new Date(data.end_date).getTime();
+      if (!data.expires_at) return;
+
+      const end = new Date(data.expires_at).getTime();
       const diffDays = Math.ceil((end - Date.now()) / (1000 * 60 * 60 * 24));
       setDaysLeft(diffDays);
       setNeedsRenewal(diffDays <= 5 && diffDays >= 0);
