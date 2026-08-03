@@ -63,7 +63,7 @@ const getBaseUrl = (): string => {
     return window.location.origin;
   }
 
-  console.warn('⚠️ Impossible de déterminer l’URL de base, utilisation de la valeur par défaut');
+  console.warn('⚠️ Impossible de déterminer l\'URL de base, utilisation de la valeur par défaut');
   return 'https://barber-lunge.vercel.app';
 };
 
@@ -99,29 +99,76 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
   const [verifEmail, setVerifEmail]                   = useState('');
   const [isProcessingCallback, setIsProcessingCallback] = useState(false);
 
+  // ✅ Gestion du callback OAuth (Google)
   useEffect(() => {
     const handleCallback = async () => {
       const hash = window.location.hash;
       const params = new URLSearchParams(window.location.search);
       const code = params.get('code');
       const type = params.get('type');
+      const accessToken = params.get('access_token');
+      const refreshToken = params.get('refresh_token');
 
+      console.log('🔐 Traitement du callback...', { hash, hasCode: !!code, hasAccessToken: !!accessToken });
+
+      // Si on a un access_token dans l'URL (cas Google OAuth)
+      if (accessToken && refreshToken) {
+        console.log('🔄 Token trouvé dans l\'URL, restauration...');
+        try {
+          const { data, error } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken
+          });
+          
+          if (error) {
+            console.error('❌ Erreur restauration session:', error);
+            setError(translateError(error.message));
+          } else if (data.session) {
+            console.log('✅ Session restaurée avec succès');
+            // Nettoyer l'URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+            if (onAuthSuccess) onAuthSuccess();
+            return;
+          }
+        } catch (err) {
+          console.error('❌ Erreur:', err);
+        }
+      }
+
+      // Vérifier si on a une session existante
       if (hash || code || type === 'recovery') {
         setIsProcessingCallback(true);
         console.log('🔐 Traitement du callback...');
 
-        const { data: { session }, error } = await supabase.auth.getSession();
+        try {
+          const { data: { session }, error } = await supabase.auth.getSession();
 
-        if (error) {
-          console.error('Erreur callback:', error);
-          setError(translateError(error.message));
-          setIsProcessingCallback(false);
-        } else if (session) {
-          console.log('✅ Session récupérée avec succès');
-          window.history.replaceState({}, document.title, window.location.pathname);
-          setIsProcessingCallback(false);
-          if (onAuthSuccess) onAuthSuccess();
-        } else {
+          if (error) {
+            console.error('❌ Erreur callback:', error);
+            setError(translateError(error.message));
+            setIsProcessingCallback(false);
+          } else if (session) {
+            console.log('✅ Session récupérée avec succès');
+            window.history.replaceState({}, document.title, window.location.pathname);
+            setIsProcessingCallback(false);
+            if (onAuthSuccess) onAuthSuccess();
+          } else {
+            console.log('⏳ Aucune session trouvée, attente...');
+            // Attendre un peu pour le callback OAuth
+            setTimeout(async () => {
+              const { data: { session: retrySession } } = await supabase.auth.getSession();
+              if (retrySession) {
+                console.log('✅ Session récupérée après attente');
+                window.history.replaceState({}, document.title, window.location.pathname);
+                setIsProcessingCallback(false);
+                if (onAuthSuccess) onAuthSuccess();
+              } else {
+                setIsProcessingCallback(false);
+              }
+            }, 2000);
+          }
+        } catch (err) {
+          console.error('❌ Erreur:', err);
           setIsProcessingCallback(false);
         }
       }
@@ -130,21 +177,36 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     handleCallback();
   }, [onAuthSuccess]);
 
+  // ✅ Vérification de la session au chargement
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (session && onAuthSuccess) {
+        console.log('✅ Session existante trouvée');
         onAuthSuccess();
       }
     };
     checkSession();
 
+    // Écouter les changements d'état d'authentification
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('🔐 Auth state change:', event);
 
       if (event === 'SIGNED_IN' && session) {
         console.log('✅ Utilisateur connecté, redirection automatique...');
+        // Créer le profil si nécessaire
+        if (session.user) {
+          const name = session.user.user_metadata?.full_name || 
+                       session.user.user_metadata?.name || 
+                       session.user.email?.split('@')[0] || '';
+          const phoneNum = session.user.user_metadata?.phone || '';
+          await ensureProfile(session.user.id, name, phoneNum, session.user.email || '');
+        }
         if (onAuthSuccess) onAuthSuccess();
+      }
+
+      if (event === 'TOKEN_REFRESHED') {
+        console.log('🔄 Token rafraîchi');
       }
     });
 
@@ -197,10 +259,12 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     }
   };
 
+  // ✅ Connexion Google - Version améliorée
   const handleGoogleLogin = async () => {
     setError('');
     setLoading(true);
     try {
+      // Nettoyer l'URL des anciens paramètres
       if (window.location.hash || window.location.search.includes('code')) {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
@@ -208,19 +272,33 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
       const redirectUrl = `${getBaseUrl()}/auth/callback`;
       console.log('🔗 Redirection Google vers:', redirectUrl);
 
-      const { error: e } = await supabase.auth.signInWithOAuth({
+      const { data, error: e } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: redirectUrl,
-          queryParams: { access_type: 'offline', prompt: 'consent' },
+          queryParams: { 
+            access_type: 'offline', 
+            prompt: 'consent' 
+          },
         },
       });
-      if (e) setError(translateError(e.message));
+      
+      if (e) {
+        console.error('❌ Erreur Google:', e);
+        setError(translateError(e.message));
+        setLoading(false);
+        return;
+      }
+
+      console.log('✅ Google OAuth initié avec succès');
+      // La redirection sera automatique
+      
     } catch (e: any) {
+      console.error('❌ Exception Google:', e);
       setError(translateError(e?.message ?? ''));
-    } finally {
       setLoading(false);
     }
+    // Ne pas désactiver loading ici car la redirection est automatique
   };
 
   const handleReset = async () => {
@@ -407,7 +485,8 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-white text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
-          <p>Traitement en cours...</p>
+          <p>Connexion en cours...</p>
+          <p className="text-zinc-500 text-sm mt-2">Veuillez patienter</p>
         </div>
       </div>
     );
