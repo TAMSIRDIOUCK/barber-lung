@@ -4,7 +4,7 @@ import { Scissors, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 const PROFILE_TABLE = import.meta.env.VITE_APP_PROFILE_TABLE ?? 'profiles_v3';
-const APP_NAME      = import.meta.env.VITE_APP_NAME ?? 'LA COUPE';
+const APP_NAME = import.meta.env.VITE_APP_NAME ?? 'LA COUPE';
 
 type Mode = 'login' | 'register' | 'reset';
 
@@ -67,14 +67,12 @@ const getBaseUrl = (): string => {
   return 'https://barber-lunge.vercel.app';
 };
 
-// Fonction pour valider le numéro de téléphone sénégalais
 const validatePhoneNumber = (phone: string): boolean => {
   const cleanPhone = phone.replace(/\s/g, '');
   const phoneRegex = /^(77|78|76|70|75)[0-9]{7}$/;
   return phoneRegex.test(cleanPhone);
 };
 
-// Fonction pour formater le numéro de téléphone
 const formatPhoneNumber = (phone: string): string => {
   const clean = phone.replace(/\s/g, '');
   if (clean.length === 9) {
@@ -84,77 +82,90 @@ const formatPhoneNumber = (phone: string): string => {
 };
 
 export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
-  const [mode, setMode]                               = useState<Mode>('login');
-  const [fullName, setFullName]                       = useState('');
-  const [phone, setPhone]                             = useState('');
-  const [email, setEmail]                             = useState('');
-  const [password, setPassword]                       = useState('');
-  const [confirmPassword, setConfirmPassword]         = useState('');
-  const [showPassword, setShowPassword]               = useState(false);
+  const [mode, setMode] = useState<Mode>('login');
+  const [fullName, setFullName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
-  const [error, setError]                             = useState('');
-  const [loading, setLoading]                         = useState(false);
-  const [success, setSuccess]                         = useState('');
-  const [showVerification, setShowVerification]       = useState(false);
-  const [verifEmail, setVerifEmail]                   = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState('');
+  const [showVerification, setShowVerification] = useState(false);
+  const [verifEmail, setVerifEmail] = useState('');
   const [isProcessingCallback, setIsProcessingCallback] = useState(false);
 
-  // ✅ Gestion du callback OAuth (Google)
+  // ✅ Gestion du callback OAuth (Google) - Version améliorée
   useEffect(() => {
-    const handleCallback = async () => {
-      const hash = window.location.hash;
+    const handleOAuthCallback = async () => {
       const params = new URLSearchParams(window.location.search);
       const code = params.get('code');
-      const type = params.get('type');
-      const accessToken = params.get('access_token');
-      const refreshToken = params.get('refresh_token');
+      const error = params.get('error');
+      const errorDescription = params.get('error_description');
+      
+      console.log('🔐 Callback OAuth détecté:', { 
+        hasCode: !!code, 
+        error, 
+        errorDescription,
+        fullUrl: window.location.href 
+      });
 
-      console.log('🔐 Traitement du callback...', { hash, hasCode: !!code, hasAccessToken: !!accessToken });
-
-      // Si on a un access_token dans l'URL (cas Google OAuth)
-      if (accessToken && refreshToken) {
-        console.log('🔄 Token trouvé dans l\'URL, restauration...');
-        try {
-          const { data, error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken
-          });
-          
-          if (error) {
-            console.error('❌ Erreur restauration session:', error);
-            setError(translateError(error.message));
-          } else if (data.session) {
-            console.log('✅ Session restaurée avec succès');
-            // Nettoyer l'URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-            if (onAuthSuccess) onAuthSuccess();
-            return;
-          }
-        } catch (err) {
-          console.error('❌ Erreur:', err);
-        }
+      // Si erreur OAuth
+      if (error) {
+        console.error('❌ Erreur OAuth:', error, errorDescription);
+        setError(`Erreur de connexion: ${errorDescription || error}`);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        setLoading(false);
+        setIsProcessingCallback(false);
+        return;
       }
 
-      // Vérifier si on a une session existante
-      if (hash || code || type === 'recovery') {
+      // Si code présent, récupérer la session
+      if (code) {
         setIsProcessingCallback(true);
-        console.log('🔐 Traitement du callback...');
+        console.log('🔐 Code OAuth trouvé, récupération de la session...');
 
         try {
-          const { data: { session }, error } = await supabase.auth.getSession();
+          // Récupérer la session
+          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-          if (error) {
-            console.error('❌ Erreur callback:', error);
-            setError(translateError(error.message));
+          if (sessionError) {
+            console.error('❌ Erreur récupération session:', sessionError);
+            setError(translateError(sessionError.message));
             setIsProcessingCallback(false);
-          } else if (session) {
-            console.log('✅ Session récupérée avec succès');
+            // Nettoyer l'URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+            return;
+          }
+
+          if (session) {
+            console.log('✅ Session récupérée avec succès ! Utilisateur:', session.user?.email);
+            
+            // Créer le profil si nécessaire
+            if (session.user) {
+              const name = session.user.user_metadata?.full_name || 
+                           session.user.user_metadata?.name || 
+                           session.user.email?.split('@')[0] || '';
+              const phoneNum = session.user.user_metadata?.phone || '';
+              await ensureProfile(session.user.id, name, phoneNum, session.user.email || '');
+            }
+
+            // Nettoyer l'URL
             window.history.replaceState({}, document.title, window.location.pathname);
             setIsProcessingCallback(false);
-            if (onAuthSuccess) onAuthSuccess();
+            setLoading(false);
+            
+            // Rediriger vers l'app
+            if (onAuthSuccess) {
+              console.log('✅ Redirection vers l\'app...');
+              onAuthSuccess();
+            }
           } else {
             console.log('⏳ Aucune session trouvée, attente...');
-            // Attendre un peu pour le callback OAuth
+            
+            // Attendre un peu et réessayer
             setTimeout(async () => {
               const { data: { session: retrySession } } = await supabase.auth.getSession();
               if (retrySession) {
@@ -163,26 +174,32 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                 setIsProcessingCallback(false);
                 if (onAuthSuccess) onAuthSuccess();
               } else {
+                console.log('❌ Aucune session après attente');
                 setIsProcessingCallback(false);
+                setError('Impossible de récupérer la session. Réessayez.');
               }
-            }, 2000);
+            }, 3000);
           }
         } catch (err) {
           console.error('❌ Erreur:', err);
+          setError('Erreur lors de la connexion');
           setIsProcessingCallback(false);
+          window.history.replaceState({}, document.title, window.location.pathname);
         }
       }
     };
 
-    handleCallback();
+    handleOAuthCallback();
   }, [onAuthSuccess]);
 
   // ✅ Vérification de la session au chargement
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
+      console.log('🔍 Vérification session au chargement:', session ? '✅ Présente' : '❌ Absente');
+      
       if (session && onAuthSuccess) {
-        console.log('✅ Session existante trouvée');
+        console.log('✅ Session existante trouvée, redirection...');
         onAuthSuccess();
       }
     };
@@ -193,8 +210,8 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
       console.log('🔐 Auth state change:', event);
 
       if (event === 'SIGNED_IN' && session) {
-        console.log('✅ Utilisateur connecté, redirection automatique...');
-        // Créer le profil si nécessaire
+        console.log('✅ Utilisateur connecté (SIGNED_IN), redirection...', session.user?.email);
+        
         if (session.user) {
           const name = session.user.user_metadata?.full_name || 
                        session.user.user_metadata?.name || 
@@ -202,6 +219,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
           const phoneNum = session.user.user_metadata?.phone || '';
           await ensureProfile(session.user.id, name, phoneNum, session.user.email || '');
         }
+        
         if (onAuthSuccess) onAuthSuccess();
       }
 
@@ -244,10 +262,10 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
       if (!existing) {
         const { error: insertErr } = await supabase.from(PROFILE_TABLE).insert({
-          id:         userId,
-          full_name:  name,
-          phone:      phoneNum,
-          email:      emailAddr,
+          id: userId,
+          full_name: name,
+          phone: phoneNum,
+          email: emailAddr,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         });
@@ -259,10 +277,11 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     }
   };
 
-  // ✅ Connexion Google - Version améliorée
+  // ✅ Connexion Google - Version corrigée
   const handleGoogleLogin = async () => {
     setError('');
     setLoading(true);
+    
     try {
       // Nettoyer l'URL des anciens paramètres
       if (window.location.hash || window.location.search.includes('code')) {
@@ -276,13 +295,14 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
         provider: 'google',
         options: {
           redirectTo: redirectUrl,
-          queryParams: { 
-            access_type: 'offline', 
-            prompt: 'consent' 
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
           },
+          scopes: 'email profile'
         },
       });
-      
+
       if (e) {
         console.error('❌ Erreur Google:', e);
         setError(translateError(e.message));
@@ -291,27 +311,24 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
       }
 
       console.log('✅ Google OAuth initié avec succès');
-      // La redirection sera automatique
+      // La redirection est automatique
       
     } catch (e: any) {
       console.error('❌ Exception Google:', e);
       setError(translateError(e?.message ?? ''));
       setLoading(false);
     }
-    // Ne pas désactiver loading ici car la redirection est automatique
   };
 
   const handleReset = async () => {
     setError(''); setSuccess('');
     const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail)               return setError('Email requis');
+    if (!cleanEmail) return setError('Email requis');
     if (!cleanEmail.includes('@')) return setError('Email invalide');
 
     setLoading(true);
     try {
       const redirectUrl = `${getBaseUrl()}/auth/callback`;
-      console.log('🔗 Lien de réinitialisation vers:', redirectUrl);
-
       const { error: e } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
         redirectTo: redirectUrl,
       });
@@ -335,28 +352,23 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
   const handleRegister = async () => {
     const cleanEmail = email.trim().toLowerCase();
-    const cleanName  = fullName.trim();
+    const cleanName = fullName.trim();
     const cleanPhone = phone.trim();
 
-    if (!cleanName)                   return setError('Nom du salon requis');
-    if (!cleanEmail)                  return setError('Email requis');
-    if (!cleanEmail.includes('@'))    return setError('Email invalide');
-    
-    // Validation du téléphone - OBLIGATOIRE
-    if (!cleanPhone)                  return setError('Numéro de téléphone requis');
+    if (!cleanName) return setError('Nom du salon requis');
+    if (!cleanEmail) return setError('Email requis');
+    if (!cleanEmail.includes('@')) return setError('Email invalide');
+    if (!cleanPhone) return setError('Numéro de téléphone requis');
     if (!validatePhoneNumber(cleanPhone)) {
       return setError('Numéro de téléphone invalide. Format attendu: 77 123 45 67 ou 771234567');
     }
-    
-    if (!password)                    return setError('Mot de passe requis');
-    if (password.length < 6)          return setError('Mot de passe trop court (6 caractères minimum)');
+    if (!password) return setError('Mot de passe requis');
+    if (password.length < 6) return setError('Mot de passe trop court (6 caractères minimum)');
     if (password !== confirmPassword) return setError('Les mots de passe ne correspondent pas');
 
     setLoading(true);
     try {
       const redirectUrl = `${getBaseUrl()}/auth/callback`;
-      console.log('🔗 URL de redirection pour inscription:', redirectUrl);
-
       const { data, error: e } = await supabase.auth.signUp({
         email: cleanEmail,
         password,
@@ -368,7 +380,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
       if (e) {
         console.error('Erreur inscription:', e);
-        if (e.message.includes('User already registered') || e.message.includes('already registered')) {
+        if (e.message.includes('User already registered')) {
           setError('Cet email existe déjà. Veuillez vous connecter.');
           setMode('login');
         } else {
@@ -378,13 +390,10 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
         return;
       }
 
-      console.log('Réponse inscription:', data);
-
       if (data.user && data.session) {
         console.log('✅ Inscription avec session immédiate');
         await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail);
       } else if (data.user) {
-        console.log('📧 Email de confirmation envoyé');
         await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail);
         setVerifEmail(cleanEmail);
         setShowVerification(true);
@@ -402,9 +411,9 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
   const handleLogin = async () => {
     const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail)               return setError('Email requis');
+    if (!cleanEmail) return setError('Email requis');
     if (!cleanEmail.includes('@')) return setError('Email invalide');
-    if (!password)                 return setError('Mot de passe requis');
+    if (!password) return setError('Mot de passe requis');
 
     setLoading(true);
     setError('');
@@ -435,6 +444,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
           data.user.user_metadata?.phone ?? '',
           cleanEmail
         );
+        if (onAuthSuccess) onAuthSuccess();
       }
     } catch (e: any) {
       setError(translateError(e?.message ?? ''));
@@ -445,7 +455,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
 
   const handleSubmit = () => {
     setError(''); setSuccess('');
-    if (mode === 'reset')    return handleReset();
+    if (mode === 'reset') return handleReset();
     if (mode === 'register') return handleRegister();
     return handleLogin();
   };
@@ -495,7 +505,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
   return (
     <div className="min-h-screen bg-black flex items-center justify-center px-4">
       <div className="w-full max-w-md">
-
         {onBack && (
           <button onClick={onBack}
             className="flex items-center gap-2 text-zinc-500 hover:text-white transition text-sm mb-8">
@@ -512,7 +521,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
         </div>
 
         <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-8">
-
           {!showVerification && mode !== 'reset' && (
             <div className="flex mb-6 bg-zinc-800 rounded-xl p-1">
               {(['login', 'register'] as Mode[]).map((m) => (
@@ -531,12 +539,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
               <h2 className="text-white text-xl font-bold mb-1">Mot de passe oublié</h2>
               <p className="text-zinc-400 text-sm">
                 Entrez votre email — vous recevrez un lien pour définir un nouveau mot de passe.
-              </p>
-              <p className="text-zinc-500 text-xs mt-2">
-                📱 Le lien fonctionne sur tous les appareils (mobile, tablette, ordinateur)
-              </p>
-              <p className="text-zinc-500 text-xs mt-1">
-                💡 Après avoir cliqué sur le lien, vous pourrez définir votre nouveau mot de passe.
               </p>
             </div>
           )}
@@ -589,7 +591,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
               )}
 
               <div className="space-y-4">
-
                 {mode === 'register' && (
                   <>
                     <div>
@@ -696,12 +697,6 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                 {error && (
                   <div className="bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl px-4 py-3">
                     {error}
-                    {mode === 'login' && error.includes('incorrect') && (
-                      <button onClick={handleGoogleLogin} disabled={loading}
-                        className="block mt-2 text-red-400 hover:text-white underline text-xs transition">
-                        Continuer avec Google →
-                      </button>
-                    )}
                   </div>
                 )}
 

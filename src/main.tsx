@@ -6,58 +6,34 @@ import { BookingPage } from './components/BookingPage';
 import { ClientApp } from './components/Clientapp';
 import './index.css';
 
-// Composant wrapper pour BookingPage avec paramètre
 function BookingPageWrapper() {
   const { slug } = useParams<{ slug: string }>();
   return <BookingPage slug={slug || ''} />;
 }
 
-// Composant pour la route /auth/callback
+// ✅ CallbackRoute amélioré
 function CallbackRoute() {
-  // Récupérer le hash complet
-  const hash = window.location.hash;
-  console.log('📍 CallbackRoute - Hash complet:', hash);
+  console.log('📍 CallbackRoute - URL:', window.location.href);
+  console.log('📍 CallbackRoute - Search:', window.location.search);
   
-  // Extraire les paramètres du hash
-  const hashWithoutHash = hash.startsWith('#') ? hash.substring(1) : hash;
-  const params = new URLSearchParams(hashWithoutHash.split('?')[1] || '');
-  const token = params.get('token');
-  const subscriptionId = params.get('subscription_id');
-  const type = hashWithoutHash.includes('payment_success') ? 'success' : 
-               hashWithoutHash.includes('payment_cancelled') ? 'cancelled' : 'unknown';
+  // Récupérer le code OAuth
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const error = params.get('error');
   
-  console.log('📍 CallbackRoute - Type:', type);
-  console.log('📍 CallbackRoute - Token:', token ? '✅ Présent' : '❌ MANQUANT');
-  console.log('📍 CallbackRoute - Subscription ID:', subscriptionId);
-  
-  // Stocker le token et les informations dans sessionStorage
-  if (token) {
-    sessionStorage.setItem('payment_token', token);
-    sessionStorage.setItem('payment_subscription_id', subscriptionId || '');
-    sessionStorage.setItem('payment_status', type);
-    console.log('✅ Token stocké dans sessionStorage');
-  } else {
-    console.warn('⚠️ Aucun token trouvé dans l\'URL');
-    // Essayer de récupérer depuis sessionStorage
-    const storedToken = sessionStorage.getItem('payment_token');
-    if (storedToken) {
-      console.log('✅ Token trouvé dans sessionStorage');
-    }
+  if (error) {
+    console.error('❌ Erreur OAuth:', error);
+    // Rediriger vers la page de connexion avec erreur
+    window.location.href = '/?auth_error=true';
+    return null;
   }
-  
-  // Rediriger vers l'accueil avec le statut
-  let redirectUrl = '/';
-  if (type === 'success') {
-    redirectUrl = '/?payment_success=true';
-  } else if (type === 'cancelled') {
-    redirectUrl = '/?payment_cancelled=true';
+
+  if (code) {
+    console.log('✅ Code OAuth trouvé, redirection vers ClientApp');
   }
-  
-  console.log('📍 Redirection vers:', redirectUrl);
-  
-  // Forcer le rechargement pour restaurer la session
-  window.location.href = redirectUrl;
-  return null;
+
+  // Rediriger vers ClientApp qui gère l'auth
+  return <ClientApp />;
 }
 
 createRoot(document.getElementById('root')!).render(
