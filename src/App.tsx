@@ -1,8 +1,9 @@
 // src/App.tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X,
-  Share2, Check, Shield, CalendarCheck, CheckCircle2, Loader, AlertTriangle
+  Share2, Check, Shield, CalendarCheck, CheckCircle2, Loader, AlertTriangle,
+  Home, KeyRound
 } from 'lucide-react';
 import { ServiceSelector } from './components/ServiceSelector';
 import TransactionHistory from './components/TransactionHistory';
@@ -11,21 +12,27 @@ import ExpensesPage from './components/ExpensesPage';
 import AdminPanel from './components/AdminPanel';
 import { PromoBanner } from './components/PromoBanner';
 import { BookingSettingsPage } from './components/BookingSettingsPage';
+import { BookingPage } from './components/BookingPage';
 import { ReferralProgram } from './components/ReferralProgram';
 import RequirePhoneNumber from './components/Requirephonenumber';
 import { SubscribePage } from './components/Subscribepage';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { useSubscriptionStatus } from './hooks/useSubscriptionStatus';
 import { supabase } from './lib/supabase';
 import type { AuthUser } from './components/Clientapp';
+import PublicHomePage from './components/PublicHomePage';
+import SalonProfile from './components/SalonProfile';
 
-type Page = 'home' | 'revenue' | 'expenses' | 'bookings' | 'admin';
+type Page = 'home' | 'revenue' | 'expenses' | 'bookings' | 'admin' | 'booking';
 
 interface AppProps {
-  authUser: AuthUser;
+  authUser: AuthUser | null;
   onLogout: () => void;
+  isAuthenticated: boolean;
+  onNavigateToAuth: (page: 'login' | 'register') => void;
 }
 
-// Composant Page de Succès de Paiement
+// ── Composant Page de Succès de Paiement ──
 function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(3);
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
@@ -140,7 +147,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-// Composant Page d'Annulation
+// ── Composant Page d'Annulation ──
 function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(5);
   const wasOpenedAsPopup = !!window.opener;
@@ -195,7 +202,7 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-function App({ authUser, onLogout }: AppProps) {
+function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps) {
   const [currentPage, setCurrentPage] = useState<Page>('home');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -209,8 +216,26 @@ function App({ authUser, onLogout }: AppProps) {
   const [hasActiveBanner, setHasActiveBanner] = useState(false);
   const [checkingBanner, setCheckingBanner] = useState(true);
   const [showRenewPage, setShowRenewPage] = useState(false);
+  const [redirectToPage, setRedirectToPage] = useState<Page | null>(null);
 
-  const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser.id);
+  const [showPublicHome, setShowPublicHome] = useState(true);
+  const [bookingSlug, setBookingSlug] = useState<string | null>(null);
+
+  // ✅ Nouveau state pour le modal de changement de mot de passe
+  const [showChangePassword, setShowChangePassword] = useState(false);
+
+  const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser?.id || '');
+
+  // ✅ Vérification CORRECTE de l'abonnement actif
+  // Un abonnement est actif si le statut est 'active' ou 'actif' ET que la date d'expiration n'est pas dépassée
+  const hasActiveSubscription = useMemo(() => {
+    if (!authUser?.subscription) return false;
+    const status = authUser.subscription.status?.toLowerCase() || '';
+    const isActive = status === 'active' || status === 'actif';
+    const expiresAt = authUser.subscription.expires_at;
+    const isNotExpired = !expiresAt || new Date(expiresAt) > new Date();
+    return isActive && isNotExpired;
+  }, [authUser]);
 
   // ✅ Gestion du retour de paiement depuis l'URL
   useEffect(() => {
@@ -219,17 +244,10 @@ function App({ authUser, onLogout }: AppProps) {
       const isSuccess = params.get('payment_success') === 'true';
       const isCancelled = params.get('payment_cancelled') === 'true';
       
-      console.log('🔔 App - Vérification retour paiement:', {
-        isSuccess,
-        isCancelled
-      });
-      
       if (isSuccess) {
-        console.log('✅ Paiement réussi');
         setShowPaymentSuccess(true);
         window.history.replaceState({}, document.title, '/');
       } else if (isCancelled) {
-        console.log('❌ Paiement annulé');
         setShowPaymentCancel(true);
         window.history.replaceState({}, document.title, '/');
       }
@@ -267,6 +285,7 @@ function App({ authUser, onLogout }: AppProps) {
   };
 
   useEffect(() => {
+    if (!authUser) return;
     const checkAdminRole = async () => {
       try {
         const { data, error } = await supabase
@@ -282,14 +301,100 @@ function App({ authUser, onLogout }: AppProps) {
       }
     };
     checkAdminRole();
-  }, [authUser.id]);
+  }, [authUser]);
+
+  // ✅ Si l'utilisateur se connecte, aller directement à la page Services
+  useEffect(() => {
+    if (isAuthenticated && authUser) {
+      setShowPublicHome(false);
+      setCurrentPage('home');
+      setShowRenewPage(false);
+    }
+  }, [isAuthenticated, authUser]);
 
   const handleServiceConfirm = async () => setRefreshTrigger(prev => prev + 1);
   const handleExpenseAdded = () => setRefreshTrigger(prev => prev + 1);
 
-  const navigate = (page: Page) => {
-    setCurrentPage(page);
+  // 📌 NAVIGATION VERS LA PAGE DE RÉSERVATION
+  const navigateToBooking = (slug: string) => {
+    console.log('📅 Navigation vers la réservation du salon:', slug);
+    setBookingSlug(slug);
+    setShowPublicHome(false);
+    setCurrentPage('booking');
     setMobileMenuOpen(false);
+    setShowRenewPage(false);
+  };
+
+  // 📌 NAVIGATION UNIFIÉE - CORRIGÉE
+  const navigateToPage = (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings') => {
+    console.log(`📱 navigateToPage appelée avec: ${page}`);
+    console.log(`📊 hasActiveSubscription: ${hasActiveSubscription}`);
+    
+    // ✅ Accueil public - toujours accessible
+    if (page === 'publicHome') {
+      console.log('🏠 Redirection vers Accueil public');
+      setShowPublicHome(true);
+      setBookingSlug(null);
+      setCurrentPage('home');
+      setMobileMenuOpen(false);
+      setShowRenewPage(false);
+      return;
+    }
+
+    // ✅ Services (home) - accessible sans abonnement mais nécessite connexion
+    if (page === 'home') {
+      if (!isAuthenticated || !authUser) {
+        console.log('🔒 Non connecté, redirection vers login');
+        onNavigateToAuth('login');
+        return;
+      }
+      console.log('✂️ Redirection vers Services');
+      setShowPublicHome(false);
+      setBookingSlug(null);
+      setCurrentPage('home');
+      setMobileMenuOpen(false);
+      setShowRenewPage(false);
+      return;
+    }
+
+    // ✅ Pages payantes (revenue, expenses, bookings) - nécessitent connexion ET abonnement actif
+    if (!isAuthenticated || !authUser) {
+      console.log('🔒 Non connecté, redirection vers login');
+      onNavigateToAuth('login');
+      return;
+    }
+
+    const isPaidPage = page === 'revenue' || page === 'expenses' || page === 'bookings';
+    
+    if (isPaidPage && !hasActiveSubscription) {
+      console.log('💳 Pas d\'abonnement actif, redirection vers paiement');
+      const pageMap: Record<string, Page> = {
+        revenue: 'revenue',
+        expenses: 'expenses',
+        bookings: 'bookings'
+      };
+      setRedirectToPage(pageMap[page] || null);
+      setShowRenewPage(true);
+      setMobileMenuOpen(false);
+      return;
+    }
+
+    console.log(`✅ Navigation vers ${page} autorisée`);
+    setShowPublicHome(false);
+    setBookingSlug(null);
+    setShowRenewPage(false);
+    if (page === 'revenue') setCurrentPage('revenue');
+    else if (page === 'expenses') setCurrentPage('expenses');
+    else if (page === 'bookings') setCurrentPage('bookings');
+    setMobileMenuOpen(false);
+  };
+
+  const handleNavigateToLogin = () => {
+    onNavigateToAuth('login');
+  };
+
+  const handleNavigateToRegister = () => {
+    onNavigateToAuth('register');
   };
 
   const handleShare = async () => {
@@ -305,22 +410,34 @@ function App({ authUser, onLogout }: AppProps) {
     } catch {}
   };
 
-  const userPages: { id: Page; label: string; Icon: any }[] = [
+  // 📌 PAGES DE L'APPLICATION
+  const appPages: { id: Page; label: string; Icon: any }[] = [
     { id: 'home', label: 'Services', Icon: Scissors },
+    { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
     { id: 'revenue', label: 'Revenus', Icon: TrendingUp },
     { id: 'expenses', label: 'Dépenses', Icon: DollarSign },
-    { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
   ];
 
   const pages = isAdmin
-    ? [...userPages, { id: 'admin' as Page, label: 'Admin', Icon: Shield }]
-    : userPages;
+    ? [...appPages, { id: 'admin' as Page, label: 'Admin', Icon: Shield }]
+    : appPages;
 
-  const expiryDate = new Date(authUser.subscription.expires_at).toLocaleDateString('fr-FR', {
-    day: '2-digit', month: 'short', year: 'numeric'
-  });
+  const expiryDate = authUser?.subscription?.expires_at 
+    ? new Date(authUser.subscription.expires_at).toLocaleDateString('fr-FR', {
+        day: '2-digit', month: 'short', year: 'numeric'
+      })
+    : 'N/A';
 
-  // Affichage des pages de paiement
+  // ── PAGE DE RÉSERVATION ──
+  if (currentPage === 'booking' && bookingSlug) {
+    return (
+      <div className="min-h-screen bg-zinc-950">
+        <BookingPage slug={bookingSlug} />
+      </div>
+    );
+  }
+
+  // ── Affichage des pages de paiement ──
   if (showPaymentSuccess) {
     return <PaymentSuccessPage onComplete={handlePaymentComplete} />;
   }
@@ -329,22 +446,48 @@ function App({ authUser, onLogout }: AppProps) {
     return <PaymentCancelPage onComplete={handlePaymentComplete} />;
   }
 
-  // Flux de renouvellement
-  if (showRenewPage) {
+  // ── Flux de renouvellement ──
+  if (showRenewPage && authUser) {
     return (
       <SubscribePage
         userId={authUser.id}
         userEmail={authUser.email}
         userFullName={authUser.fullName || ''}
         onSubscribed={() => {
+          console.log('✅ Abonnement souscrit, rechargement...');
           setShowRenewPage(false);
+          // Après souscription, rediriger vers la page demandée ou Services
+          if (redirectToPage) {
+            setCurrentPage(redirectToPage);
+            setRedirectToPage(null);
+          } else {
+            setCurrentPage('home');
+          }
           window.location.reload();
         }}
+        onNavigateToPage={navigateToPage}
+        isAuthenticated={isAuthenticated}
+        onNavigateToLogin={handleNavigateToLogin}
       />
     );
   }
 
-  if (checkingAdmin) {
+  // ── PAGE D'ACCUEIL PUBLIQUE ──
+  if (showPublicHome) {
+    return (
+      <PublicHomePage
+        onNavigateToBooking={navigateToBooking}
+        onNavigateToLogin={handleNavigateToLogin}
+        onNavigateToRegister={handleNavigateToRegister}
+        isAuthenticated={isAuthenticated}
+        currentUserId={authUser?.id || null}
+        onNavigateToPage={navigateToPage}
+      />
+    );
+  }
+
+  // ── AUTHENTIFICATION EN COURS ──
+  if (checkingAdmin || !authUser) {
     return (
       <div className="min-h-[100dvh] bg-zinc-950 flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
@@ -352,8 +495,14 @@ function App({ authUser, onLogout }: AppProps) {
     );
   }
 
+  // ── APPLICATION PRINCIPALE (Connecté) ──
   return (
     <RequirePhoneNumber userId={authUser.id}>
+      {/* ✅ Modal de changement de mot de passe */}
+      {showChangePassword && (
+        <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
+      )}
+
       <div className="min-h-[100dvh] bg-zinc-950 overflow-x-hidden">
         {/* HEADER DESKTOP */}
         <header className="hidden md:block bg-black border-b border-zinc-800 sticky top-0 z-40">
@@ -366,19 +515,42 @@ function App({ authUser, onLogout }: AppProps) {
                 <span className="text-white font-bold tracking-widest text-sm uppercase">LE COUPE</span>
               </div>
               <nav className="flex items-center gap-1">
-                {pages.map(({ id, label, Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => navigate(id)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                      currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />{label}
-                  </button>
-                ))}
+                {pages.map(({ id, label, Icon }) => {
+                  const pageKey = id === 'admin' ? 'home' : id;
+                  const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
+                  const isLocked = isPaidPage && !hasActiveSubscription;
+                  const isHome = id === 'home';
+                  
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => {
+                        if (id === 'booking') return;
+                        if (isLocked) {
+                          setRedirectToPage(id as Page);
+                          setShowRenewPage(true);
+                          return;
+                        }
+                        navigateToPage(pageKey as 'home' | 'revenue' | 'expenses' | 'bookings');
+                      }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                        currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                      } ${isLocked && !isHome ? 'opacity-50' : ''}`}
+                    >
+                      <Icon className="w-4 h-4" />{label}
+                      {isLocked && !isHome && <Crown className="w-3 h-3 text-yellow-400" />}
+                    </button>
+                  );
+                })}
               </nav>
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => navigateToPage('publicHome')}
+                  className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700"
+                >
+                  <Home className="w-3.5 h-3.5" />
+                  <span className="text-xs">Accueil</span>
+                </button>
                 <button
                   onClick={handleShare}
                   className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700"
@@ -388,17 +560,19 @@ function App({ authUser, onLogout }: AppProps) {
                 </button>
                 <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-1.5">
                   <Crown className="w-3 h-3 text-yellow-400" />
-                  <span className="text-white text-xs font-semibold">{authUser.subscription.plan_name}</span>
+                  <span className="text-white text-xs font-semibold">{authUser.subscription?.plan_name || 'Gratuit'}</span>
                   <span className="text-zinc-500 text-xs">· {expiryDate}</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-zinc-800 border border-zinc-700 rounded-full flex items-center justify-center">
-                    <span className="text-white text-xs font-bold">
-                      {(authUser.fullName || authUser.email)[0].toUpperCase()}
-                    </span>
-                  </div>
-                  <span className="text-zinc-400 text-sm truncate max-w-[120px]">{authUser.fullName || authUser.email}</span>
-                </div>
+
+                {/* ✅ Bouton Modifier le mot de passe */}
+                <button
+                  onClick={() => setShowChangePassword(true)}
+                  className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800"
+                  title="Modifier le mot de passe"
+                >
+                  <KeyRound className="w-4 h-4" />
+                </button>
+                
                 <button onClick={onLogout} className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800">
                   <LogOut className="w-4 h-4" />
                 </button>
@@ -419,7 +593,7 @@ function App({ authUser, onLogout }: AppProps) {
             <div className="flex items-center gap-2 shrink-0">
               <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
                 <Crown className="w-3 h-3 text-yellow-400" />
-                <span className="text-white text-xs font-semibold">{authUser.subscription.plan_name}</span>
+                <span className="text-white text-xs font-semibold">{authUser.subscription?.plan_name || 'Gratuit'}</span>
               </div>
               <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-zinc-400 hover:text-white p-1.5">
                 {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -428,17 +602,40 @@ function App({ authUser, onLogout }: AppProps) {
           </div>
           {mobileMenuOpen && (
             <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full">
-              {pages.map(({ id, label, Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => navigate(id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                    currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                  }`}
-                >
-                  <Icon className="w-4 h-4" />{label}
-                </button>
-              ))}
+              <button
+                onClick={() => navigateToPage('publicHome')}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition text-zinc-400 hover:text-white hover:bg-zinc-800"
+              >
+                <Home className="w-4 h-4" /> Accueil
+              </button>
+              {pages.map(({ id, label, Icon }) => {
+                const pageKey = id === 'admin' ? 'home' : id;
+                const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
+                const isLocked = isPaidPage && !hasActiveSubscription;
+                const isHome = id === 'home';
+                
+                return (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      if (id === 'booking') return;
+                      if (isLocked) {
+                        setRedirectToPage(id as Page);
+                        setShowRenewPage(true);
+                        setMobileMenuOpen(false);
+                        return;
+                      }
+                      navigateToPage(pageKey as 'home' | 'revenue' | 'expenses' | 'bookings');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                    } ${isLocked && !isHome ? 'opacity-50' : ''}`}
+                  >
+                    <Icon className="w-4 h-4" />{label}
+                    {isLocked && !isHome && <Crown className="w-3 h-3 text-yellow-400" />}
+                  </button>
+                );
+              })}
               <div className="pt-2 border-t border-zinc-800 mt-2 space-y-2">
                 <button
                   onClick={handleShare}
@@ -446,6 +643,14 @@ function App({ authUser, onLogout }: AppProps) {
                 >
                   {copied ? <Check className="w-4 h-4 text-green-400" /> : <Share2 className="w-4 h-4" />}
                   {copied ? 'Lien copié !' : "Partager l'application"}
+                </button>
+                {/* ✅ Bouton Modifier le mot de passe (mobile) */}
+                <button
+                  onClick={() => { setShowChangePassword(true); setMobileMenuOpen(false); }}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  Modifier le mot de passe
                 </button>
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="min-w-0 mr-2">
@@ -463,14 +668,14 @@ function App({ authUser, onLogout }: AppProps) {
 
         {/* MAIN */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
-          {/* Bannière de rappel de renouvellement */}
-          {needsRenewal && daysLeft !== null && (
+          {/* ✅ BANNIÈRE DE RAPPEL DE RENOUVELLEMENT - UNIQUEMENT POUR REVENUS, DÉPENSES ET RÉSERVATIONS */}
+          {needsRenewal && daysLeft !== null && currentPage !== 'home' && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 {daysLeft <= 0
-                  ? 'Votre abonnement a expiré. Renouvelez-le pour continuer à utiliser LE COUPE.'
-                  : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}. Pensez à renouveler.`}
+                  ? 'Votre abonnement a expiré. Renouvelez-le pour accéder à vos revenus, dépenses et réservations.'
+                  : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}. Pensez à renouveler pour accéder à vos revenus, dépenses et réservations.`}
               </span>
               <button
                 onClick={() => setShowRenewPage(true)}
@@ -481,8 +686,10 @@ function App({ authUser, onLogout }: AppProps) {
             </div>
           )}
 
+          {/* ── CONTENU DES PAGES ── */}
           {currentPage === 'home' && (
             <div className="space-y-8">
+              <SalonProfile userId={authUser.id} />
               <PromoBanner />
               {!checkingBanner && !hasActiveBanner && (
                 <ReferralProgram
@@ -496,26 +703,78 @@ function App({ authUser, onLogout }: AppProps) {
                 authUser={authUser}
                 onConfirm={handleServiceConfirm}
               />
-              <TransactionHistory userId={authUser.id} refreshTrigger={refreshTrigger} />
+              <TransactionHistory 
+                userId={authUser.id} 
+                refreshTrigger={refreshTrigger}
+              />
             </div>
           )}
-          {currentPage === 'revenue' && <RevenuePage userId={authUser.id} refreshTrigger={refreshTrigger} />}
-          {currentPage === 'expenses' && <ExpensesPage userId={authUser.id} onExpenseAdded={handleExpenseAdded} />}
-          {currentPage === 'bookings' && <BookingSettingsPage userId={authUser.id} />}
+          {currentPage === 'bookings' && (
+            <BookingSettingsPage 
+              userId={authUser.id}
+            />
+          )}
+          {currentPage === 'revenue' && (
+            <RevenuePage 
+              userId={authUser.id} 
+              refreshTrigger={refreshTrigger}
+            />
+          )}
+          {currentPage === 'expenses' && (
+            <ExpensesPage 
+              userId={authUser.id} 
+              onExpenseAdded={handleExpenseAdded}
+            />
+          )}
           {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
         {/* BOTTOM NAV MOBILE */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2">
-            {pages.map(({ id, label, Icon }) => (
-              <button key={id} onClick={() => navigate(id)} className="flex flex-col items-center gap-1 px-3 py-1">
-                <div className={`p-1.5 rounded-xl transition-all ${currentPage === id ? 'bg-white' : ''}`}>
-                  <Icon className={`w-5 h-5 ${currentPage === id ? 'text-black' : 'text-zinc-600'}`} />
-                </div>
-                <span className={`text-[10px] font-medium ${currentPage === id ? 'text-white' : 'text-zinc-600'}`}>{label}</span>
-              </button>
-            ))}
+            <button 
+              onClick={() => navigateToPage('publicHome')} 
+              className="flex flex-col items-center gap-1 px-3 py-1"
+            >
+              <div className="p-1.5 rounded-xl transition-all flex items-center justify-center">
+                <Home className="w-5 h-5 text-zinc-600" />
+              </div>
+              <span className="text-[10px] font-medium text-zinc-600">Accueil</span>
+            </button>
+            
+            {pages.map(({ id, label, Icon }) => {
+              const pageKey = id === 'admin' ? 'home' : id;
+              const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
+              const isLocked = isPaidPage && !hasActiveSubscription;
+              const isHome = id === 'home';
+              
+              return (
+                <button 
+                  key={id} 
+                  onClick={() => {
+                    if (id === 'booking') return;
+                    if (isLocked) {
+                      setRedirectToPage(id as Page);
+                      setShowRenewPage(true);
+                      return;
+                    }
+                    navigateToPage(pageKey as 'home' | 'revenue' | 'expenses' | 'bookings');
+                  }} 
+                  className="flex flex-col items-center gap-1 px-3 py-1"
+                >
+                  <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
+                    currentPage === id ? 'bg-white' : ''
+                  } ${isLocked && !isHome ? 'opacity-50' : ''}`}>
+                    <Icon className={`w-5 h-5 ${currentPage === id ? 'text-black' : 'text-zinc-600'}`} />
+                  </div>
+                  <span className={`text-[10px] font-medium ${
+                    currentPage === id ? 'text-white' : 'text-zinc-600'
+                  }`}>
+                    {label}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </nav>
       </div>

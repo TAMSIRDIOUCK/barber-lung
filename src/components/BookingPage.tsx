@@ -1,35 +1,32 @@
 // src/components/BookingPage.tsx
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  Scissors, Clock, Phone, User, Calendar, MessageSquare,
-  Check, AlertCircle, Star, Sparkles, QrCode, RefreshCw, XCircle, WifiOff, Wifi
+  Scissors, Clock, Phone, User, Calendar, Check, AlertCircle,
+  QrCode, RefreshCw, XCircle, Download, Loader, Sparkles
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import QRCode from 'qrcode';
 
-// Types
-interface Service { id: number; name: string; base_price: number; category: string; duration: number; }
 interface OpeningHour { open: string; close: string; closed: boolean; }
-interface EventService { id: string; name: string; price: number; description: string; duration?: number; }
+interface EventService { id: string; name: string; price: number; description?: string; }
 interface Barber { id: string; name: string; photo: string; user_id: string; }
 interface SalonSettings {
   id: string; slug: string; salon_name: string; welcome_message: string;
   logo_url: string | null; primary_color: string;
   opening_hours: Record<string, OpeningHour>; user_id: string;
   booking_interval_minutes: number; advance_booking_days: number;
-  require_payment: boolean; event_services?: EventService[];
-  booking_type: 'normal' | 'event' | null; wave_payment_link: string;
+  event_services?: EventService[];
 }
 interface BookingForm {
-  client_name: string; client_phone: string; service: Service | null;
-  eventService: EventService | null; barberId: string | null;
-  barberName: string; date: string; time: string; note: string;
+  client_name: string; client_phone: string; eventService: EventService | null;
+  barberId: string | null; barberName: string; date: string; time: string; note: string;
+  paymentMethod: 'wave' | 'orange_money' | null;
 }
 interface BookingPageProps { slug: string; }
 
 function normalizeTime(time: string): string { return time.slice(0, 5); }
 
-function generateTimeSlots(open: string, close: string, intervalMinutes: number, serviceDuration = 30): string[] {
+function generateTimeSlots(open: string, close: string, intervalMinutes: number, serviceDuration = 60): string[] {
   const slots: string[] = [];
   const toMin = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
   const openMin = toMin(open);
@@ -44,36 +41,38 @@ function generateTimeSlots(open: string, close: string, intervalMinutes: number,
   return slots;
 }
 
-function openWhatsApp(phone: string, message: string) {
-  if (!phone) return;
-  window.open(`https://wa.me/${phone.replace(/[\s\-\(\)]/g, '')}?text=${encodeURIComponent(message)}`, '_blank');
-}
-
 const POLL_MS = 15000;
+const PAYMENT_POLL_MS = 4000;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const paydunyaMasterKey = import.meta.env.VITE_PAYDUNYA_MASTER_KEY as string | undefined;
+const paydunyaPrivateKey = import.meta.env.VITE_PAYDUNYA_PRIVATE_KEY as string | undefined;
+const paydunyaToken = import.meta.env.VITE_PAYDUNYA_TOKEN as string | undefined;
+const baseUrl = import.meta.env.VITE_APP_URL || window.location.origin;
+
+const FUNCTION_URL = `${supabaseUrl}/functions/v1/initiate-booking-payment`;
 
 export function BookingPage({ slug }: BookingPageProps) {
   const [settings, setSettings] = useState<SalonSettings | null>(null);
-  const [normalServices, setNormalServices] = useState<Service[]>([]);
   const [barbers, setBarbers] = useState<Barber[]>([]);
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
-  const [bookingData, setBookingData] = useState<any>(null);
   const [errors, setErrors] = useState<Partial<Record<keyof BookingForm, string>>>({});
   const [availableSlots, setAvailableSlots] = useState<string[]>([]);
   const [bookedSlots, setBookedSlots] = useState<string[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
-  const [salonPhone, setSalonPhone] = useState('');
   const [qrCodeUrl, setQrCodeUrl] = useState('');
-  const [messageSent, setMessageSent] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [submitError, setSubmitError] = useState('');
-  const [realtimeOk, setRealtimeOk] = useState(false);
+
+  const [step, setStep] = useState<'form' | 'pay' | 'waiting' | 'success'>('form');
+  const [bookingData, setBookingData] = useState<any>(null);
+  const [requestId, setRequestId] = useState<string | null>(null);
+  const isSubmittingRef = useRef(false);
+  const paymentWindowRef = useRef<Window | null>(null);
 
   const [form, setForm] = useState<BookingForm>({
-    client_name: '', client_phone: '', service: null, eventService: null,
-    barberId: null, barberName: '', date: '', time: '', note: '',
+    client_name: '', client_phone: '', eventService: null,
+    barberId: null, barberName: '', date: '', time: '', note: '', paymentMethod: null,
   });
 
   useEffect(() => {
@@ -87,19 +86,10 @@ export function BookingPage({ slug }: BookingPageProps) {
         if (error || !data) { setNotFound(true); return; }
         setSettings(data);
 
-        const { data: prof } = await supabase
-          .from('profiles_v3').select('phone').eq('id', data.user_id).single();
-        if (prof?.phone) setSalonPhone(prof.phone);
-
         if (data.user_id) {
           const { data: bb } = await supabase
             .from('barbers').select('id, name, photo, user_id').eq('user_id', data.user_id);
           if (bb?.length) setBarbers(bb);
-        }
-        if (data.booking_type === 'normal') {
-          const { data: ss } = await supabase
-            .from('catalogue_services').select('*').eq('user_id', data.user_id).order('id');
-          if (ss?.length) setNormalServices(ss.map((s: any) => ({ ...s, duration: s.duration || 30 })));
         }
       } catch (err) {
         console.error(err);
@@ -111,6 +101,14 @@ export function BookingPage({ slug }: BookingPageProps) {
     load();
   }, [slug]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const resumeReq = params.get('request_id');
+    if (!resumeReq) return;
+    setRequestId(resumeReq);
+    setStep('waiting');
+  }, []);
+
   const refreshSlots = useCallback(async (silent = false) => {
     if (!form.date || !settings) return;
     if (!silent) setLoadingSlots(true);
@@ -119,13 +117,9 @@ export function BookingPage({ slug }: BookingPageProps) {
       const dayNames = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'];
       const hours = settings.opening_hours[dayNames[day]];
       if (!hours || hours.closed) {
-        setAvailableSlots([]); setBookedSlots([]); setLastRefresh(new Date()); return;
+        setAvailableSlots([]); setBookedSlots([]); return;
       }
-      let dur = 30;
-      if (settings.booking_type === 'normal' && form.service) dur = form.service.duration || 30;
-      else if (settings.booking_type === 'event' && form.eventService) dur = form.eventService.duration || 60;
-
-      const allSlots = generateTimeSlots(hours.open, hours.close, settings.booking_interval_minutes || 90, dur);
+      const allSlots = generateTimeSlots(hours.open, hours.close, settings.booking_interval_minutes || 90, 60);
 
       const { data: bkgs } = await supabase
         .from('bookings').select('booking_time')
@@ -136,13 +130,12 @@ export function BookingPage({ slug }: BookingPageProps) {
       const taken = (bkgs || []).map(b => normalizeTime(b.booking_time));
       setBookedSlots(taken);
       setAvailableSlots(allSlots.filter(s => !taken.includes(s)));
-      setLastRefresh(new Date());
       if (form.time && taken.includes(form.time)) {
         setForm(prev => ({ ...prev, time: '' }));
       }
     } catch (err) { console.error(err); }
     finally { if (!silent) setLoadingSlots(false); }
-  }, [form.date, form.service, form.eventService, settings, form.time]);
+  }, [form.date, settings, form.time]);
 
   useEffect(() => { refreshSlots(); }, [refreshSlots]);
 
@@ -152,6 +145,24 @@ export function BookingPage({ slug }: BookingPageProps) {
     }, POLL_MS);
     return () => clearInterval(id);
   }, [form.date, settings, loadingSlots, refreshSlots]);
+
+  useEffect(() => {
+    if (step !== 'waiting' || !requestId) return;
+    let attempts = 0;
+    const interval = setInterval(async () => {
+      attempts++;
+      const { data } = await supabase
+        .from('bookings').select('*').eq('request_id', requestId).maybeSingle();
+      if (data) {
+        clearInterval(interval);
+        await showSuccessFor(data);
+      } else if (attempts > 45) {
+        clearInterval(interval);
+        setSubmitError('Le paiement prend plus de temps que prévu. Contactez le salon si le montant a bien été débité.');
+      }
+    }, PAYMENT_POLL_MS);
+    return () => clearInterval(interval);
+  }, [step, requestId]);
 
   const todayISO = new Date().toISOString().split('T')[0];
   const maxDateISO = (() => {
@@ -164,8 +175,7 @@ export function BookingPage({ slug }: BookingPageProps) {
     const e: Partial<Record<keyof BookingForm, string>> = {};
     if (!form.client_name?.trim()) e.client_name = 'Requis';
     if (!form.client_phone?.trim()) e.client_phone = 'Requis';
-    if (settings?.booking_type === 'normal' && !form.service) e.service = 'Choisissez un service';
-    if (settings?.booking_type === 'event' && !form.eventService) e.eventService = 'Choisissez un service';
+    if (!form.eventService) e.eventService = 'Choisissez un service';
     if (!form.barberId && barbers.length > 0) e.barberId = 'Choisissez un coiffeur';
     if (!form.date) e.date = 'Requis';
     if (!form.time) e.time = 'Requis';
@@ -175,69 +185,71 @@ export function BookingPage({ slug }: BookingPageProps) {
 
   const makeQR = async (text: string): Promise<string> => {
     try {
-      const cleanText = text.slice(0, 200);
-      return await QRCode.toDataURL(cleanText, {
-        width: 250,
-        margin: 2,
-        errorCorrectionLevel: 'M',
+      return await QRCode.toDataURL(text.slice(0, 200), {
+        width: 280, margin: 2, errorCorrectionLevel: 'M',
         color: { dark: '#000000', light: '#FFFFFF' }
       });
-    } catch (err) {
-      console.error('Erreur QR:', err);
-      return '';
-    }
+    } catch (err) { console.error('Erreur QR:', err); return ''; }
   };
 
-  const getSalonMsg = (b: any) => {
-    const dt = new Date(b.booking_date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-    const validationLink = `${window.location.origin}/booking/validate/${b.id}/confirm-payment`;
-    return `🆕 *NOUVELLE RESERVATION* 🆕
-
-📋 *Ticket:* ${b.ticket_number}
-👤 *Client:* ${b.client_name}
-📞 *Tel:* ${b.client_phone}
-✂️ *Service:* ${b.service_name} - ${b.service_price.toLocaleString()} CFA
-💈 *Coiffeur:* ${b.barber_name || 'Non spécifié'}
-📅 *Date:* ${dt}
-⏰ *Heure:* ${b.booking_time.slice(0, 5)}
-${b.note ? `📝 *Note:* ${b.note}` : ''}
-
-🔗 *Valider le paiement:* ${validationLink}
-
-⏳ *Le client a 2h pour payer*
-
----
-📱 Cliquez sur le lien pour valider la réservation`;
+  const showSuccessFor = async (booking: any) => {
+    const qrData = JSON.stringify({
+      booking_id: booking.id, ticket_number: booking.ticket_number,
+      service: booking.service_name, date: booking.booking_date,
+      time: booking.booking_time, client: booking.client_name, price: booking.service_price,
+    });
+    const qr = await makeQR(qrData);
+    setQrCodeUrl(qr);
+    setBookingData({ ...booking, salon_name: settings?.salon_name });
+    setStep('success');
+    window.history.replaceState({}, '', window.location.pathname);
   };
 
-  const handleSubmit = async () => {
-    setSubmitError('');
+  const goToPayment = () => {
     if (!validate() || !settings) return;
+    setStep('pay');
+  };
 
-    let price = 0, name = '';
-    if (settings.booking_type === 'normal' && form.service) { price = form.service.base_price; name = form.service.name; }
-    else if (settings.booking_type === 'event' && form.eventService) { price = form.eventService.price; name = form.eventService.name; }
-    else return;
+  const handlePay = async () => {
+    if (isSubmittingRef.current) return;
+    if (!form.paymentMethod) { setSubmitError('Choisissez un moyen de paiement'); return; }
+    if (!settings || !form.eventService) return;
 
+    const price = form.eventService.price;
+    const name = form.eventService.name;
+
+    if (!supabaseUrl || !paydunyaMasterKey || !paydunyaPrivateKey || !paydunyaToken) {
+      setSubmitError('Configuration de paiement manquante côté application.');
+      return;
+    }
+
+    const paymentWindow = window.open('', '_blank');
+    paymentWindowRef.current = paymentWindow;
+
+    isSubmittingRef.current = true;
+    setSubmitError('');
     setSubmitting(true);
-    
+
     try {
       const { data: conflict } = await supabase
         .from('bookings').select('id')
         .eq('salon_user_id', settings.user_id)
-        .eq('booking_date', form.date).eq('booking_time', form.time)
-        .not('status', 'eq', 'cancelled').maybeSingle();
+        .eq('booking_date', form.date)
+        .eq('booking_time', form.time)
+        .not('status', 'eq', 'cancelled')
+        .maybeSingle();
 
       if (conflict) {
+        if (paymentWindow) paymentWindow.close();
         await refreshSlots(false);
         setSubmitError(`⚠️ Le créneau ${form.time} vient d'être pris.`);
         setForm(prev => ({ ...prev, time: '' }));
-        setSubmitting(false);
+        setStep('form');
         return;
       }
 
-      const { data, error } = await supabase
-        .from('bookings')
+      const { data: reqRow, error } = await supabase
+        .from('booking_requests')
         .insert({
           salon_user_id: settings.user_id,
           client_name: form.client_name.trim(),
@@ -248,69 +260,88 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
           booking_date: form.date,
           booking_time: form.time,
           note: form.note.trim() || null,
-          status: 'pending',
+          request_status: 'pending',
           payment_status: 'pending',
-          payment_expires_at: new Date(Date.now() + 7200000).toISOString(),
         })
-        .select();
+        .select()
+        .single();
 
-      if (error) {
-        console.error('Erreur insertion:', error);
-        setSubmitError(`❌ Erreur: ${error.message}`);
-        setSubmitting(false);
-        return;
+      if (error || !reqRow) {
+        console.error('Erreur création demande:', error);
+        throw new Error(error?.message || 'Erreur création de la demande');
       }
 
-      if (!data || data.length === 0) {
-        setSubmitError('❌ Réservation non créée.');
-        setSubmitting(false);
-        return;
-      }
+      console.log('✅ Demande de réservation créée:', reqRow.id);
+      setRequestId(reqRow.id);
 
-      const newBooking = data[0];
-      await refreshSlots(false);
-
-      const qrData = JSON.stringify({
-        booking_id: newBooking.id,
-        ticket_number: newBooking.ticket_number,
-        service: newBooking.service_name,
-        date: newBooking.booking_date,
-        time: newBooking.booking_time,
-        client: newBooking.client_name,
-        price: newBooking.service_price
+      const res = await fetch(FUNCTION_URL, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({
+          request_id: reqRow.id,
+          phone: form.client_phone.replace(/\s/g, '').replace(/^\+221/, ''),
+          method: form.paymentMethod,
+          customer_name: form.client_name,
+          customer_email: '',
+          description: `Réservation ${name}`,
+          return_url: `${baseUrl}/booking/${slug}?request_id=${reqRow.id}`,
+          cancel_url: `${baseUrl}/booking/${slug}`,
+        }),
       });
-      
-      const qrCode = await makeQR(qrData);
-      await supabase.from('bookings').update({ qr_code: qrData }).eq('id', newBooking.id);
 
-      setQrCodeUrl(qrCode);
-      setBookingData({ ...newBooking, salon_name: settings.salon_name });
-      setShowSuccess(true);
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error('❌ Erreur fonction Edge:', errorText);
+        throw new Error(`Erreur serveur: ${res.status} - ${errorText}`);
+      }
 
-    } catch (err: any) {
-      console.error('Erreur:', err);
-      setSubmitError(`❌ Erreur: ${err?.message || 'Veuillez réessayer'}`);
+      const data = await res.json();
+
+      if (data.success && data.invoice_url) {
+        if (paymentWindow) {
+          paymentWindow.location.href = data.invoice_url;
+        } else {
+          window.location.href = data.invoice_url;
+          return;
+        }
+        setStep('waiting');
+        return;
+      }
+
+      throw new Error(data.error || "Erreur lors de l'initiation du paiement");
+    } catch (e: any) {
+      console.error('❌ Erreur handlePay:', e);
+      setSubmitError(e.message ?? 'Erreur lors du paiement');
+      if (paymentWindow) paymentWindow.close();
+      setStep('form');
     } finally {
       setSubmitting(false);
+      isSubmittingRef.current = false;
     }
+  };
+
+  const downloadQR = () => {
+    if (!qrCodeUrl || !bookingData) return;
+    const link = document.createElement('a');
+    link.href = qrCodeUrl;
+    link.download = `reservation-${bookingData.ticket_number}.png`;
+    link.click();
   };
 
   const resetForm = () => {
-    setForm({ client_name: '', client_phone: '', service: null, eventService: null, barberId: null, barberName: '', date: '', time: '', note: '' });
-    setBookingData(null); setShowSuccess(false); setQrCodeUrl('');
-    setMessageSent(false); setSubmitError(''); setErrors({});
-  };
-
-  const handleSendConfirmation = () => {
-    if (bookingData && salonPhone) {
-      openWhatsApp(salonPhone, getSalonMsg(bookingData));
-      setMessageSent(true);
-    }
+    setForm({ client_name: '', client_phone: '', eventService: null, barberId: null, barberName: '', date: '', time: '', note: '', paymentMethod: null });
+    setBookingData(null); setStep('form'); setQrCodeUrl(''); setRequestId(null);
+    setSubmitError(''); setErrors({});
   };
 
   const allSlots = [...new Set([...availableSlots, ...bookedSlots])].sort();
   const noSlots = !!(form.date && availableSlots.length === 0 && !loadingSlots);
   const isDisabled = submitting || (form.date && noSlots) || (!form.barberId && barbers.length > 0) || !form.time;
+
+  const formatCFA = (v: number) => v.toLocaleString('fr-FR') + ' CFA';
 
   if (loadingSettings) {
     return (
@@ -335,9 +366,30 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
     );
   }
 
-  if (showSuccess && bookingData) {
+  if (step === 'waiting') {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
+        <div className="text-center max-w-sm">
+          <Loader className="w-12 h-12 text-white mx-auto mb-6 animate-spin" />
+          <h2 className="text-white text-2xl font-bold mb-3">Paiement en attente</h2>
+          <p className="text-zinc-400 text-sm leading-relaxed">
+            Confirmez le paiement dans l'onglet ouvert.<br />
+            Cette page se met à jour automatiquement une fois le paiement validé.
+          </p>
+          {submitError && (
+            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mt-6 text-red-300 text-sm">
+              {submitError}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 'success' && bookingData) {
     const dateFmt = new Date(bookingData.booking_date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    
+    const netAmount = bookingData.net_amount ?? Math.round(bookingData.service_price * 0.985);
+
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
         <div className="max-w-sm w-full">
@@ -350,45 +402,51 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
               </div>
             </div>
             <div className="px-6 py-5 space-y-4">
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-center">
-                <p className="text-red-700 text-lg font-semibold mb-1">⚠️ ACTION OBLIGATOIRE</p>
-                <p className="text-red-600 text-sm font-medium">📸 Capturer le QR code ci-dessous</p>
-                <p className="text-red-600 text-sm font-medium mt-1">💰 Payer avec le lien Wave et envoyer le message</p>
+              <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
+                <p className="text-green-700 text-lg font-semibold mb-1">✅ Paiement confirmé</p>
+                <p className="text-green-600 text-sm">Votre réservation est validée automatiquement</p>
               </div>
-              
+
               {qrCodeUrl && (
                 <div className="bg-white rounded-xl p-4 text-center border-2 border-blue-300 shadow-lg">
                   <div className="flex items-center justify-center gap-2 mb-2">
                     <QrCode className="w-5 h-5 text-blue-600" />
                     <p className="text-xs font-semibold text-blue-600">QR Code à présenter au salon</p>
                   </div>
-                  <img 
-                    src={qrCodeUrl} 
-                    alt="QR Code" 
-                    className="w-48 h-48 mx-auto border-2 border-blue-300 rounded-lg"
-                  />
-                  <p className="text-xs font-semibold text-blue-700 mt-3">📸 Capturez ce QR code</p>
-                  <p className="text-[10px] text-zinc-500 mt-1">Présentez-le au salon le jour de votre rendez-vous</p>
+                  <img src={qrCodeUrl} alt="QR Code" className="w-48 h-48 mx-auto border-2 border-blue-300 rounded-lg" />
+
+                  <div className="mt-3 bg-zinc-50 border border-zinc-200 rounded-lg py-2">
+                    <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Montant reçu par le salon</p>
+                    <p className="text-black font-black text-xl">{formatCFA(netAmount)}</p>
+                    <p className="text-zinc-400 text-[10px]">(après 1,5% de frais de service)</p>
+                  </div>
+
+                  <button
+                    onClick={downloadQR}
+                    className="w-full mt-3 flex items-center justify-center gap-2 bg-blue-600 text-white font-bold py-2.5 rounded-xl text-sm hover:bg-blue-700 transition"
+                  >
+                    <Download className="w-4 h-4" /> Télécharger le QR code
+                  </button>
                 </div>
               )}
-              
+
               <hr className="border-dashed border-zinc-300" />
-              
+
               <div>
                 <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Service</p>
                 <p className="font-black text-base mt-0.5">{bookingData.service_name}</p>
                 <p className="text-zinc-500 text-sm">{bookingData.service_price.toLocaleString()} CFA</p>
               </div>
-              
+
               {bookingData.barber_name && (
                 <div>
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Coiffeur</p>
                   <p className="font-bold text-sm mt-0.5">{bookingData.barber_name}</p>
                 </div>
               )}
-              
+
               <hr className="border-dashed border-zinc-300" />
-              
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Date</p>
@@ -399,63 +457,73 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
                   <p className="font-black text-xl mt-0.5">{bookingData.booking_time.slice(0, 5)}</p>
                 </div>
               </div>
-              
-              {bookingData.note && (
-                <>
-                  <hr className="border-dashed border-zinc-300" />
-                  <div>
-                    <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Note</p>
-                    <p className="text-sm mt-0.5 italic">{bookingData.note}</p>
-                  </div>
-                </>
-              )}
-
-              {settings.wave_payment_link && (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
-                  <p className="text-[10px] tracking-widest text-blue-600 uppercase text-center">Paiement Wave</p>
-                  <a 
-                    href={settings.wave_payment_link} 
-                    target="_blank" 
-                    rel="noopener noreferrer" 
-                    className="text-blue-600 text-sm font-semibold text-center block break-all hover:underline"
-                  >
-                    {settings.wave_payment_link}
-                  </a>
-                </div>
-              )}
             </div>
-            
-            <div className="bg-zinc-100 p-4 space-y-2 border-t-2 border-dashed border-zinc-300">
-              <button 
-                type="button" 
-                onClick={handleSendConfirmation} 
-                className="w-full bg-red-500 text-white font-bold py-3 rounded-xl text-sm hover:bg-red-600 transition flex items-center justify-center gap-2"
-              >
-                <MessageSquare className="w-4 h-4" />
-                📤 ENVOYER LE MESSAGE DE CONFIRMATION
-              </button>
-              
-              {messageSent && (
-                <p className="text-green-600 text-xs text-center font-semibold">
-                  ✅ Message envoyé ! Votre réservation est enregistrée.
-                </p>
-              )}
-              
-              <button 
-                type="button" 
-                onClick={resetForm} 
+
+            <div className="bg-zinc-100 p-4 border-t-2 border-dashed border-zinc-300">
+              <button
+                onClick={resetForm}
                 className="w-full bg-black text-white font-bold py-3 rounded-xl text-sm hover:bg-zinc-800 transition"
               >
                 Nouvelle réservation
               </button>
             </div>
           </div>
-          <p className="text-center text-zinc-500 text-[10px] mt-4">⚠️ Le salon doit valider votre réservation après paiement</p>
         </div>
       </div>
     );
   }
 
+  if (step === 'pay' && settings && form.eventService) {
+    const price = form.eventService.price;
+
+    return (
+      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
+        <div className="max-w-sm w-full">
+          <button onClick={() => setStep('form')} className="text-zinc-400 mb-6 text-sm">← Retour</button>
+          <h2 className="text-2xl font-bold mb-2">Paiement</h2>
+          <p className="text-zinc-400 text-sm mb-6">Réservation {form.eventService.name} — {formatCFA(price)}</p>
+
+          <div className="grid grid-cols-2 gap-3 mb-6">
+            {[
+              { id: 'wave', label: 'Wave' },
+              { id: 'orange_money', label: 'Orange Money' },
+            ].map((m) => (
+              <button
+                key={m.id}
+                onClick={() => setForm(prev => ({ ...prev, paymentMethod: m.id as any }))}
+                className={`border-2 rounded-xl p-4 font-bold transition ${
+                  form.paymentMethod === m.id ? 'border-white text-white' : 'border-zinc-700 text-zinc-400'
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+
+          {submitError && (
+            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mb-4 text-red-300 text-sm">{submitError}</div>
+          )}
+
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 mb-6 flex justify-between items-center">
+            <span className="text-zinc-400 text-sm">Total à payer</span>
+            <span className="text-white text-xl font-bold">{formatCFA(price)}</span>
+          </div>
+
+          <button
+            onClick={handlePay}
+            disabled={submitting || !form.paymentMethod}
+            className="w-full bg-white text-black py-4 rounded-xl font-bold hover:bg-zinc-200 transition disabled:opacity-50"
+          >
+            {submitting ? (
+              <span className="flex items-center justify-center gap-2"><Loader className="w-4 h-4 animate-spin" /> Traitement...</span>
+            ) : `Payer ${formatCFA(price)}`}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Formulaire avec services et coiffeurs en format rond ──
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <div className="bg-black border-b border-zinc-800 px-4 py-4 sticky top-0 z-10">
@@ -475,13 +543,6 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
       </div>
 
       <div className="px-4 py-6 space-y-5 max-w-lg mx-auto">
-        {!settings.booking_type && (
-          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-6 text-center">
-            <AlertCircle className="w-12 h-12 text-yellow-400 mx-auto mb-3" />
-            <p className="text-yellow-400 font-semibold text-sm">Aucune réservation disponible</p>
-          </div>
-        )}
-
         {submitError && (
           <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 flex items-start gap-3">
             <XCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
@@ -489,139 +550,87 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
           </div>
         )}
 
-        {settings.booking_type === 'normal' && normalServices.length > 0 && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 mb-2">
-              <Scissors className="w-5 h-5 text-green-400" />
-              <h2 className="text-white font-bold text-base">Réservation normale</h2>
-            </div>
-            <label className="block text-sm font-semibold text-zinc-300 mb-2">Service <span className="text-red-400">*</span></label>
-            <div className="space-y-2">
-              {normalServices.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => {
-                    setForm(prev => ({ ...prev, service: prev.service?.id === s.id ? null : s, time: '' }));
-                    setErrors(prev => ({ ...prev, service: undefined }));
-                  }}
-                  className={`w-full text-left px-4 py-3 rounded-xl border transition ${
-                    form.service?.id === s.id 
-                      ? 'border-green-500 bg-green-500/20' 
-                      : errors.service 
-                        ? 'border-red-500 bg-red-500/10' 
-                        : 'border-zinc-700 hover:border-zinc-500'
-                  }`}
-                >
-                  <p className={`font-semibold text-sm ${form.service?.id === s.id ? 'text-green-400' : 'text-white'}`}>{s.name}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className={`text-xs font-bold ${form.service?.id === s.id ? 'text-green-400' : 'text-white'}`}>
-                      {s.base_price.toLocaleString()} CFA
-                    </span>
-                    <span className="text-zinc-400 text-xs flex items-center gap-1">
-                      <Clock className="w-3 h-3" /> {s.duration || 30} min
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-            {errors.service && <p className="text-red-400 text-xs mt-1">{errors.service}</p>}
+        {!settings.event_services?.length ? (
+          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-6 text-center">
+            <AlertCircle className="w-12 h-12 text-yellow-400 mx-auto mb-3" />
+            <p className="text-yellow-400 font-semibold text-sm">Aucun service disponible pour le moment</p>
           </div>
-        )}
-
-        {settings.booking_type === 'event' && !!settings.event_services?.length && (
-          <div className="space-y-2">
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-5 h-5 text-purple-400" />
-              <h2 className="text-white font-bold text-base">Réservation événementielle</h2>
-            </div>
-            <label className="block text-sm font-semibold text-zinc-300 mb-2">Service <span className="text-red-400">*</span></label>
-            <div className="space-y-2">
-              {settings.event_services.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => {
-                    setForm(prev => ({ ...prev, eventService: prev.eventService?.id === s.id ? null : s, time: '' }));
-                    setErrors(prev => ({ ...prev, eventService: undefined }));
-                  }}
-                  className={`w-full text-left px-4 py-3 rounded-xl border transition ${
-                    form.eventService?.id === s.id 
-                      ? 'border-green-500 bg-green-500/20' 
-                      : errors.eventService 
-                        ? 'border-red-500 bg-red-500/10' 
-                        : 'border-zinc-700 hover:border-zinc-500'
-                  }`}
-                >
-                  <p className={`font-semibold text-sm ${form.eventService?.id === s.id ? 'text-green-400' : 'text-white'}`}>{s.name}</p>
-                  <p className="text-zinc-400 text-xs">{s.description}</p>
-                  <span className={`text-xs font-bold mt-1 block ${form.eventService?.id === s.id ? 'text-green-400' : 'text-white'}`}>
-                    {s.price.toLocaleString()} CFA
-                  </span>
-                </button>
-              ))}
-            </div>
-            {errors.eventService && <p className="text-red-400 text-xs mt-1">{errors.eventService}</p>}
-          </div>
-        )}
-
-        {settings.booking_type && (
+        ) : (
           <div className="space-y-4">
+            {/* ── Services en format rond ── */}
+            <div>
+              <label className="block text-sm font-semibold text-zinc-300 mb-3">Service <span className="text-red-400">*</span></label>
+              <div className="flex flex-wrap gap-3 justify-center">
+                {settings.event_services.map((s) => {
+                  const isSelected = form.eventService?.id === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => {
+                        setForm(prev => ({ ...prev, eventService: prev.eventService?.id === s.id ? null : s, time: '' }));
+                        setErrors(prev => ({ ...prev, eventService: undefined }));
+                      }}
+                      className={`flex flex-col items-center gap-1 p-3 rounded-full w-24 h-24 border-2 transition ${
+                        isSelected ? 'border-green-500 bg-green-500/20' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                      }`}
+                    >
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isSelected ? 'bg-green-500/30' : 'bg-zinc-800'}`}>
+                        <Sparkles className={`w-5 h-5 ${isSelected ? 'text-green-400' : 'text-zinc-400'}`} />
+                      </div>
+                      <p className={`text-[10px] font-semibold text-center leading-tight ${isSelected ? 'text-green-400' : 'text-white'}`}>{s.name}</p>
+                      <p className={`text-[9px] font-bold ${isSelected ? 'text-green-400' : 'text-zinc-400'}`}>{s.price.toLocaleString()} CFA</p>
+                      {isSelected && <Check className="w-3 h-3 text-green-400 absolute -top-1 -right-1" />}
+                    </button>
+                  );
+                })}
+              </div>
+              {errors.eventService && <p className="text-red-400 text-xs mt-2 text-center">{errors.eventService}</p>}
+            </div>
+
+            {/* ── Coiffeurs en format rond ── */}
             {barbers.length > 0 && (
               <div>
                 <label className="block text-sm font-semibold text-zinc-300 mb-3">Coiffeur <span className="text-red-400">*</span></label>
-                <div className="space-y-2">
-                  {barbers.map((b) => (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => {
-                        if (form.barberId === b.id) {
-                          setForm(prev => ({ ...prev, barberId: null, barberName: '' }));
-                        } else {
-                          setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name }));
-                        }
-                        setErrors(prev => ({ ...prev, barberId: undefined }));
-                      }}
-                      className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition ${
-                        form.barberId === b.id 
-                          ? 'border-green-500 bg-green-500/20' 
-                          : errors.barberId 
-                            ? 'border-red-500 bg-red-500/10' 
-                            : 'border-zinc-700 bg-zinc-800 hover:border-zinc-500'
-                      }`}
-                    >
-                      <div className="w-12 h-12 rounded-full overflow-hidden bg-zinc-700 shrink-0">
-                        {b.photo?.trim() ? (
-                          <img src={b.photo} alt={b.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-2xl">💈</div>
-                        )}
-                      </div>
-                      <p className={`flex-1 text-left font-semibold ${form.barberId === b.id ? 'text-green-400' : 'text-white'}`}>
-                        {b.name}
-                      </p>
-                      {form.barberId === b.id && <Check className="w-5 h-5 text-green-400 shrink-0" />}
-                    </button>
-                  ))}
+                <div className="flex flex-wrap gap-3 justify-center">
+                  {barbers.map((b) => {
+                    const isSelected = form.barberId === b.id;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) setForm(prev => ({ ...prev, barberId: null, barberName: '' }));
+                          else setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name }));
+                          setErrors(prev => ({ ...prev, barberId: undefined }));
+                        }}
+                        className={`flex flex-col items-center gap-1 p-2 rounded-full w-20 h-20 border-2 transition ${
+                          isSelected ? 'border-green-500 bg-green-500/20' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                        } relative`}
+                      >
+                        <div className="w-14 h-14 rounded-full overflow-hidden bg-zinc-700 border-2 border-zinc-600">
+                          {b.photo?.trim() ? (
+                            <img src={b.photo} alt={b.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-2xl">💈</div>
+                          )}
+                        </div>
+                        <p className={`text-[10px] font-semibold text-center ${isSelected ? 'text-green-400' : 'text-white'}`}>{b.name}</p>
+                        {isSelected && <Check className="w-3 h-3 text-green-400 absolute -top-1 -right-1" />}
+                      </button>
+                    );
+                  })}
                 </div>
-                {errors.barberId && <p className="text-red-400 text-xs mt-2">{errors.barberId}</p>}
+                {errors.barberId && <p className="text-red-400 text-xs mt-2 text-center">{errors.barberId}</p>}
               </div>
             )}
 
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Nom complet <span className="text-red-400">*</span></label>
               <input
-                type="text"
-                placeholder="Votre nom"
-                value={form.client_name}
-                onChange={e => {
-                  setForm(prev => ({ ...prev, client_name: e.target.value }));
-                  setErrors(prev => ({ ...prev, client_name: undefined }));
-                }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${
-                  errors.client_name ? 'border-red-500' : 'border-zinc-700 focus:border-white'
-                }`}
+                type="text" placeholder="Votre nom" value={form.client_name}
+                onChange={e => { setForm(prev => ({ ...prev, client_name: e.target.value })); setErrors(prev => ({ ...prev, client_name: undefined })); }}
+                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${errors.client_name ? 'border-red-500' : 'border-zinc-700 focus:border-white'}`}
               />
               {errors.client_name && <p className="text-red-400 text-xs mt-1">{errors.client_name}</p>}
             </div>
@@ -629,120 +638,62 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Téléphone <span className="text-red-400">*</span></label>
               <input
-                type="tel"
-                placeholder="77 000 00 00"
-                value={form.client_phone}
-                onChange={e => {
-                  setForm(prev => ({ ...prev, client_phone: e.target.value }));
-                  setErrors(prev => ({ ...prev, client_phone: undefined }));
-                }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${
-                  errors.client_phone ? 'border-red-500' : 'border-zinc-700 focus:border-white'
-                }`}
+                type="tel" placeholder="77 000 00 00" value={form.client_phone}
+                onChange={e => { setForm(prev => ({ ...prev, client_phone: e.target.value })); setErrors(prev => ({ ...prev, client_phone: undefined })); }}
+                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${errors.client_phone ? 'border-red-500' : 'border-zinc-700 focus:border-white'}`}
               />
               {errors.client_phone && <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>}
             </div>
 
-            {/* SECTION DATE - CORRIGÉE NE DÉBORDE PAS */}
             <div className="w-full">
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Date <span className="text-red-400">*</span></label>
-              <div className="w-full">
-                <input
-                  type="date"
-                  min={todayISO}
-                  max={maxDateISO}
-                  value={form.date}
-                  onChange={e => {
-                    setForm(prev => ({ ...prev, date: e.target.value, time: '' }));
-                    setErrors(prev => ({ ...prev, date: undefined }));
-                  }}
-                  className="w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base [color-scheme:dark] border-zinc-700 focus:border-white"
-                  style={{
-                    display: 'block',
-                    width: '100%',
-                    boxSizing: 'border-box'
-                  }}
-                />
-              </div>
+              <input
+                type="date" min={todayISO} max={maxDateISO} value={form.date}
+                onChange={e => { setForm(prev => ({ ...prev, date: e.target.value, time: '' })); setErrors(prev => ({ ...prev, date: undefined })); }}
+                className="w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base [color-scheme:dark] border-zinc-700 focus:border-white"
+              />
               {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
             </div>
 
-            {/* SECTION CRÉNEAUX RESPONSIVE */}
             {form.date && (
               <div className="w-full">
                 <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                   <label className="text-sm font-semibold text-zinc-300">Heure <span className="text-red-400">*</span></label>
-                  <button
-                    type="button"
-                    onClick={() => refreshSlots(false)}
-                    disabled={loadingSlots}
-                    className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition px-2 py-1 rounded-lg bg-zinc-800/50"
-                  >
+                  <button type="button" onClick={() => refreshSlots(false)} disabled={loadingSlots} className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition px-2 py-1 rounded-lg bg-zinc-800/50">
                     <RefreshCw className={`w-3 h-3 ${loadingSlots ? 'animate-spin' : ''}`} /> Actualiser
                   </button>
-                </div>
-
-                <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-zinc-900 rounded-xl border border-zinc-800">
-                  <div className="flex items-center gap-1">
-                    <WifiOff className="w-3 h-3 text-amber-400" />
-                    <span className="text-amber-400 text-[10px]">Sync auto</span>
-                  </div>
-                  {lastRefresh && (
-                    <span className="text-zinc-600 text-[10px] ml-auto">
-                      {lastRefresh.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  )}
                 </div>
 
                 {loadingSlots ? (
                   <div className="text-center py-8">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
-                    <p className="text-zinc-500 text-xs mt-2">Chargement des créneaux...</p>
                   </div>
                 ) : allSlots.length === 0 ? (
                   <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
                     <p className="text-yellow-400 text-sm">Aucun créneau disponible ce jour</p>
                   </div>
                 ) : (
-                  <>
-                    <div className="grid grid-cols-2 gap-2">
-                      {allSlots.map((slot) => {
-                        const isBooked = bookedSlots.includes(slot);
-                        const isSelected = form.time === slot;
-                        return (
-                          <button
-                            key={slot}
-                            type="button"
-                            onClick={() => {
-                              if (!isBooked) {
-                                setForm(prev => ({ ...prev, time: slot }));
-                                setErrors(prev => ({ ...prev, time: undefined }));
-                              }
-                            }}
-                            disabled={isBooked}
-                            className={`
-                              w-full py-3 px-2 rounded-xl text-sm font-medium transition-all duration-150
-                              ${isSelected
-                                ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
-                                : isBooked
-                                ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
-                                : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
-                              }
-                            `}
-                          >
-                            <span className="block">{slot}</span>
-                            {isBooked && <span className="block text-[10px] mt-0.5">indisponible</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    
-                    <div className="mt-3 text-center">
-                      <p className="text-green-400 text-xs">
-                        ✅ {availableSlots.length} créneau{availableSlots.length > 1 ? 'x' : ''} disponible{availableSlots.length > 1 ? 's' : ''}
-                      </p>
-                    </div>
-                  </>
+                  <div className="grid grid-cols-2 gap-2">
+                    {allSlots.map((slot) => {
+                      const isBooked = bookedSlots.includes(slot);
+                      const isSelected = form.time === slot;
+                      return (
+                        <button
+                          key={slot} type="button"
+                          onClick={() => { if (!isBooked) { setForm(prev => ({ ...prev, time: slot })); setErrors(prev => ({ ...prev, time: undefined })); } }}
+                          disabled={isBooked}
+                          className={`w-full py-3 px-2 rounded-xl text-sm font-medium transition-all duration-150 ${
+                            isSelected ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
+                            : isBooked ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
+                            : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
+                          }`}
+                        >
+                          <span className="block">{slot}</span>
+                          {isBooked && <span className="block text-[10px] mt-0.5">indisponible</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
                 {errors.time && <p className="text-red-400 text-xs mt-2">{errors.time}</p>}
               </div>
@@ -750,67 +701,35 @@ ${b.note ? `📝 *Note:* ${b.note}` : ''}
 
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">Note (optionnelle)</label>
-              <textarea
-                rows={3}
-                placeholder="Précisions sur votre réservation..."
-                value={form.note}
+              <textarea rows={3} placeholder="Précisions..." value={form.note}
                 onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))}
-                className="w-full px-4 py-3 bg-zinc-900 border border-zinc-700 focus:border-white rounded-xl text-white focus:outline-none transition resize-none text-base"
-              />
+                className="w-full px-4 py-3 bg-zinc-900 border border-zinc-700 focus:border-white rounded-xl text-white focus:outline-none transition resize-none text-base" />
             </div>
 
-            {(() => {
-              const svc = settings.booking_type === 'normal' ? form.service : form.eventService;
-              if (!svc || !form.date || !form.time || (barbers.length > 0 && !form.barberName)) return null;
-              const price = settings.booking_type === 'normal' ? (svc as Service).base_price : (svc as EventService).price;
-              return (
-                <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 rounded-2xl p-4 mt-2">
-                  <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">Résumé de votre réservation</p>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between items-center">
-                      <span className="text-zinc-400">Service</span>
-                      <span className="text-white font-semibold">{svc.name}</span>
-                    </div>
-                    {form.barberName && (
-                      <div className="flex justify-between items-center">
-                        <span className="text-zinc-400">Coiffeur</span>
-                        <span className="text-white">{form.barberName}</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between items-center">
-                      <span className="text-zinc-400">Date</span>
-                      <span className="text-white">{new Date(form.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-zinc-400">Heure</span>
-                      <span className="text-green-400 font-bold">{form.time}</span>
-                    </div>
-                    <div className="border-t border-zinc-700 my-2"></div>
-                    <div className="flex justify-between items-center text-base">
-                      <span className="text-zinc-300 font-semibold">Total à payer</span>
-                      <span className="text-white font-black text-lg">{price.toLocaleString()} CFA</span>
-                    </div>
-                  </div>
+            {form.eventService && form.date && form.time && (barbers.length === 0 || form.barberName) && (
+              <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 rounded-2xl p-4 mt-2">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">Résumé</p>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-zinc-400">Service</span><span className="text-white font-semibold">{form.eventService.name}</span></div>
+                  {form.barberName && <div className="flex justify-between"><span className="text-zinc-400">Coiffeur</span><span className="text-white">{form.barberName}</span></div>}
+                  <div className="flex justify-between"><span className="text-zinc-400">Date</span><span className="text-white">{new Date(form.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</span></div>
+                  <div className="flex justify-between"><span className="text-zinc-400">Heure</span><span className="text-green-400 font-bold">{form.time}</span></div>
+                  <div className="border-t border-zinc-700 my-2"></div>
+                  <div className="flex justify-between text-base"><span className="text-zinc-300 font-semibold">Total à payer</span><span className="text-white font-black text-lg">{form.eventService.price.toLocaleString()} CFA</span></div>
                 </div>
-              );
-            })()}
+              </div>
+            )}
 
             <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!!isDisabled}
+              type="button" onClick={goToPayment} disabled={!!isDisabled}
               className="w-full bg-white text-black font-bold py-4 rounded-2xl text-base hover:bg-zinc-200 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-4"
             >
-              {submitting ? (
-                <><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-black" /> Réservation en cours...</>
-              ) : (
-                <>Confirmer la réservation <Check className="w-5 h-5" /></>
-              )}
+              Continuer vers le paiement <Check className="w-5 h-5" />
             </button>
-            
+
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
               <p className="text-blue-400 text-xs text-center">
-                ⚠️ Important : Après avoir confirmé votre réservation, vous devrez envoyer le message de confirmation qui apparaîtra à l'écran.
+                ⚠️ Votre réservation sera confirmée automatiquement dès le paiement validé.
               </p>
             </div>
           </div>

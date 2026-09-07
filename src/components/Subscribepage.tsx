@@ -1,6 +1,9 @@
 // src/components/SubscribePage.tsx
 import { useState, useEffect, useRef } from 'react';
-import { Scissors, Check, LogOut, Loader, AlertCircle } from 'lucide-react';
+import { 
+  Scissors, Check, LogOut, Loader, AlertCircle, 
+  Home, TrendingUp, DollarSign, CalendarCheck 
+} from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface Plan {
@@ -16,6 +19,9 @@ interface SubscribePageProps {
   userEmail: string;
   userFullName: string;
   onSubscribed: () => void;
+  onNavigateToPage?: (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings') => void;
+  isAuthenticated?: boolean;
+  onNavigateToLogin?: () => void;
 }
 
 export function SubscribePage({
@@ -23,6 +29,9 @@ export function SubscribePage({
   userEmail,
   userFullName,
   onSubscribed,
+  onNavigateToPage,
+  isAuthenticated = true,
+  onNavigateToLogin,
 }: SubscribePageProps) {
   const [plans, setPlans] = useState<Plan[]>([]);
   const [plansError, setPlansError] = useState('');
@@ -271,10 +280,30 @@ export function SubscribePage({
 
   const formatCFA = (v: number) => v.toLocaleString('fr-FR') + ' CFA';
 
-  return (
-    <div className="min-h-screen bg-black flex items-center justify-center px-4 py-12">
-      <div className="w-full max-w-lg">
+  // ✅ Fonction de navigation - CORRIGÉE
+  const handleNavigation = (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings') => {
+    console.log(`🔍 Navigation vers: ${page} depuis SubscribePage`);
+    console.log(`📊 onNavigateToPage existe: ${!!onNavigateToPage}`);
+    
+    if (onNavigateToPage) {
+      // Appeler la fonction de navigation du parent
+      onNavigateToPage(page);
+    } else {
+      // Fallback: utiliser window.location
+      console.warn('⚠️ onNavigateToPage non défini, fallback vers window.location');
+      if (page === 'publicHome') {
+        window.location.href = '/';
+      } else if (page === 'home') {
+        window.location.href = '/app';
+      } else {
+        window.location.href = `/${page}`;
+      }
+    }
+  };
 
+  return (
+    <div className="min-h-screen bg-black pb-20">
+      <div className="max-w-lg mx-auto px-4 py-12">
         {/* Header */}
         <div className="flex items-center justify-between mb-10">
           <div className="flex items-center gap-3">
@@ -514,6 +543,45 @@ export function SubscribePage({
           </div>
         )}
       </div>
+
+      {/* ✅ Navigation inférieure - CORRIGÉE */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
+        <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
+          {[
+            { id: 'home', label: 'Accueil', Icon: Home, page: 'publicHome' as const },
+            { id: 'services', label: 'Services', Icon: Scissors, page: 'home' as const },
+            { id: 'bookings', label: 'Réservations', Icon: CalendarCheck, page: 'bookings' as const },
+            { id: 'revenue', label: 'Revenus', Icon: TrendingUp, page: 'revenue' as const },
+            { id: 'expenses', label: 'Dépenses', Icon: DollarSign, page: 'expenses' as const },
+          ].map(({ id, label, Icon, page }) => {
+            const isHome = id === 'home';
+            
+            return (
+              <button
+                key={id}
+                onClick={() => {
+                  console.log(`🔘 Click sur: ${label} (id: ${id}, page: ${page})`);
+                  handleNavigation(page);
+                }}
+                className="flex flex-col items-center gap-1 px-3 py-1 group"
+              >
+                <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
+                  isHome ? 'bg-white' : 'group-hover:bg-white/10'
+                }`}>
+                  <Icon className={`w-5 h-5 ${
+                    isHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'
+                  }`} />
+                </div>
+                <span className={`text-[8px] font-medium ${
+                  isHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'
+                }`}>
+                  {label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }

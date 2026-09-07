@@ -1,9 +1,11 @@
 // src/components/LandingPage.tsx
 import { useState, useEffect } from 'react';
-import { Scissors, TrendingUp, DollarSign, Users, Shield, Printer, Check, ChevronDown, Download, Smartphone, Apple, Chrome, Zap, Share, Plus, X } from 'lucide-react';
+import { Scissors, TrendingUp, DollarSign, Users, Shield, Printer, Check, ChevronDown, Download, Smartphone, Apple, Chrome, Zap, Share, Plus, X, LogIn, UserPlus } from 'lucide-react';
 
 interface LandingPageProps {
   onGetStarted: () => void;
+  onBack?: () => void;
+  initialScreen?: 'login' | 'register' | null;
 }
 
 // Détecte iOS mobile uniquement
@@ -105,7 +107,7 @@ function MacChromeInstallModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function LandingPage({ onGetStarted }: LandingPageProps) {
+export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPageProps) {
   const [faqOpen, setFaqOpen] = useState<number | null>(null);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
@@ -115,12 +117,18 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
   const [showMacModal, setShowMacModal] = useState(false);
   const [deviceIsIOS, setDeviceIsIOS] = useState(false);
   const [deviceIsMac, setDeviceIsMac] = useState(false);
+  const [showAuthButtons, setShowAuthButtons] = useState(false);
 
   useEffect(() => {
     const ios = isIOS();
     const mac = isMacDesktop();
     setDeviceIsIOS(ios);
     setDeviceIsMac(mac);
+
+    // Afficher les boutons Connexion/Inscription si on vient de la page publique
+    if (initialScreen) {
+      setShowAuthButtons(true);
+    }
 
     if (isInStandaloneMode()) {
       setIsInstalled(true);
@@ -141,7 +149,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
       });
       return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     }
-  }, []);
+  }, [initialScreen]);
 
   const handleInstallClick = async () => {
     if (deviceIsIOS) {
@@ -149,19 +157,16 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
       return;
     }
     if (deferredPrompt) {
-      // Android ou Mac Chrome avec PWA valide : prompt natif
       deferredPrompt.prompt();
       const { outcome } = await deferredPrompt.userChoice;
       if (outcome === 'accepted') console.log('Installation acceptée');
       setDeferredPrompt(null);
       setIsInstallable(false);
     } else if (deviceIsMac) {
-      // Mac Chrome sans prompt natif disponible : guide manuel
       setShowMacModal(true);
     }
   };
 
-  // Toujours afficher le bouton télécharger, même si déjà installé
   const showInstallButton = true;
 
   const features = [
@@ -209,19 +214,27 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
             <span className="font-bold tracking-widest text-xs sm:text-sm uppercase">La Coupe</span>
           </div>
           <div className="flex items-center gap-3">
-            
-            {isInstalled && (
-              <div className="flex items-center gap-1.5 bg-green-500/10 border border-green-500/20 px-3 py-1.5 rounded-full">
-                <Check className="w-3.5 h-3.5 text-green-400" />
-                <span className="text-green-400 text-xs font-medium">Installée</span>
-              </div>
+            {/* Bouton Retour (si on vient de la page publique) */}
+            {onBack && (
+              <button
+                onClick={onBack}
+                className="text-zinc-400 hover:text-white text-sm font-medium transition flex items-center gap-1.5"
+              >
+                ← Retour
+              </button>
             )}
-            <button
-              onClick={onGetStarted}
-              className="bg-white text-black font-bold text-xs sm:text-sm px-4 sm:px-6 py-2 sm:py-2.5 rounded-full hover:bg-zinc-200 transition"
-            >
-              Commencer →
-            </button>
+
+            
+
+            {/* Si pas d'authentification affichée, montrer le bouton "Commencer" */}
+            {!showAuthButtons && (
+              <button
+                onClick={onGetStarted}
+                className="bg-white text-black font-bold text-xs sm:text-sm px-4 sm:px-6 py-2 sm:py-2.5 rounded-full hover:bg-zinc-200 transition"
+              >
+                Commencer →
+              </button>
+            )}
           </div>
         </div>
       </nav>
@@ -246,7 +259,7 @@ export function LandingPage({ onGetStarted }: LandingPageProps) {
             Le système de gestion tout-en-un pour les salons de coiffure professionnels.
           </p>
 
-          {/* ── BOUTONS HERO : INSTALLER (vert) + COMMENCER ── */}
+          {/* ── BOUTONS HERO ── */}
           <div className="flex flex-col sm:flex-row gap-3 justify-center items-center">
             {showInstallButton && (
               <button

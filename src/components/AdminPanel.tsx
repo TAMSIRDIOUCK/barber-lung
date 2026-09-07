@@ -6,7 +6,7 @@ import {
   Phone, Calendar, Send, Sparkles, Star, Rocket, AlertTriangle,
   CreditCard, Plus, Edit2, Trash2, Image, Video, Save, Globe,
   EyeOff, Upload, FileImage, FileVideo, CalendarCheck, Gift,
-  Crown
+  Crown, BarChart3
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -31,6 +31,7 @@ interface UserStats {
   total_expenses: number;
   last_transaction_date: string | null;
   completed_bookings_count: number;
+  total_booking_revenue: number;
 }
 
 interface UserSubscription {
@@ -89,6 +90,9 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
   const [showMessageModal, setShowMessageModal] = useState(false);
   const [openWhatsAppMenu, setOpenWhatsAppMenu] = useState<string | null>(null);
 
+  // ── Filtres pour les réservations ──
+  const [bookingFilterPeriod, setBookingFilterPeriod] = useState<'all' | 'today' | 'week' | 'month'>('all');
+
   // Banner
   const [banners, setBanners] = useState<Banner[]>([]);
   const [bannerLoading, setBannerLoading] = useState(false);
@@ -114,7 +118,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
   const [globalStats, setGlobalStats] = useState({
     totalUsers: 0, totalTransactions: 0, totalRevenue: 0, totalExpenses: 0,
     activeUsers: 0, inactiveUsers: 0, expiredSubscriptions: 0, expiringSoon: 0,
-    totalCompletedBookings: 0, totalReferrals: 0, rewardedReferrals: 0,
+    totalCompletedBookings: 0, totalBookingRevenue: 0, totalReferrals: 0, rewardedReferrals: 0,
   });
 
   const APP_URL = 'https://barber-lunge.vercel.app';
@@ -143,6 +147,8 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
       day: '2-digit', month: 'short', year: 'numeric'
     });
   };
+
+  const formatCFA = (v: number) => v.toLocaleString('fr-FR') + ' CFA';
 
   // ── Effects ────────────────────────────────────────────────────────────────
 
@@ -195,7 +201,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     finally { setBannerLoading(false); }
   };
 
-  // ── CORRECTION : Chargement des parrainages sans la relation problématique ──
   const loadReferrals = async () => {
     setReferralsLoading(true);
     try {
@@ -339,9 +344,10 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
 
       setUserSubscriptions(subsMap);
 
-      // 5. Récupérer les statistiques utilisateurs
+      // 5. Récupérer les statistiques utilisateurs (incluant les réservations)
       const statsMap: Record<string, UserStats> = {};
       let totalCompletedBookings = 0;
+      let totalBookingRevenue = 0;
 
       try {
         const { data: allTransactions } = await supabase
@@ -354,15 +360,39 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           .select('user_id, amount')
           .in('user_id', userIds);
 
-        const { data: allBookings } = await supabase
+        // Récupérer TOUTES les réservations terminées
+        let bookingsQuery = supabase
           .from('bookings')
-          .select('salon_user_id')
+          .select('salon_user_id, net_amount, service_price, booking_date')
           .in('salon_user_id', userIds)
           .eq('status', 'done');
 
+        // Appliquer le filtre de période
+        const now = new Date();
+        if (bookingFilterPeriod === 'today') {
+          const todayStr = now.toISOString().split('T')[0];
+          bookingsQuery = bookingsQuery.eq('booking_date', todayStr);
+        } else if (bookingFilterPeriod === 'week') {
+          const weekAgo = new Date(now);
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          const weekAgoStr = weekAgo.toISOString().split('T')[0];
+          bookingsQuery = bookingsQuery.gte('booking_date', weekAgoStr);
+        } else if (bookingFilterPeriod === 'month') {
+          const monthAgo = new Date(now);
+          monthAgo.setMonth(monthAgo.getMonth() - 1);
+          const monthAgoStr = monthAgo.toISOString().split('T')[0];
+          bookingsQuery = bookingsQuery.gte('booking_date', monthAgoStr);
+        }
+
+        const { data: allBookings } = await bookingsQuery;
+
         const bookingCounts: Record<string, number> = {};
+        const bookingRevenues: Record<string, number> = {};
+
         allBookings?.forEach(b => {
           bookingCounts[b.salon_user_id] = (bookingCounts[b.salon_user_id] || 0) + 1;
+          const amount = b.net_amount || b.service_price || 0;
+          bookingRevenues[b.salon_user_id] = (bookingRevenues[b.salon_user_id] || 0) + amount;
         });
 
         userIds.forEach(userId => {
@@ -381,7 +411,10 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
             : null;
 
           const completedBookingsCount = bookingCounts[userId] || 0;
+          const bookingRevenue = bookingRevenues[userId] || 0;
+          
           totalCompletedBookings += completedBookingsCount;
+          totalBookingRevenue += bookingRevenue;
 
           statsMap[userId] = {
             user_id: userId,
@@ -391,6 +424,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
             total_expenses: totalExpenses,
             last_transaction_date: lastTransaction,
             completed_bookings_count: completedBookingsCount,
+            total_booking_revenue: bookingRevenue,
           };
         });
       } catch (err) {
@@ -434,6 +468,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           expiredSubscriptions: expiredCount,
           expiringSoon: expiringCount,
           totalCompletedBookings,
+          totalBookingRevenue,
           totalReferrals: referralCount || 0,
           rewardedReferrals: rewardedCount || 0,
         });
@@ -452,7 +487,8 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     }
   };
 
-  // ── FONCTION CORRIGÉE : Activer/Désactiver un abonnement ──
+  // ── Fonctions de gestion ──────────────────────────────────────────────────
+
   const toggleSubscriptionStatus = async (userId: string, currentStatus: string) => {
     const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
     const action = newStatus === 'active' ? 'activer' : 'désactiver';
@@ -461,9 +497,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
     
     setUpdatingSubscription(userId);
     try {
-      console.log(`🔍 Tentative de ${action} l'abonnement de l'utilisateur:`, userId);
-      console.log(`📊 Statut actuel: ${currentStatus} -> Nouveau statut: ${newStatus}`);
-
       // Méthode 1: Essayer d'utiliser la fonction RPC
       try {
         const { data, error } = await supabase
@@ -473,22 +506,16 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           });
 
         if (!error && data) {
-          console.log('✅ RPC successful:', data);
           showToastMsg(`Abonnement ${action} avec succès`, 'success');
           await loadAllData();
           setUpdatingSubscription(null);
           return;
-        } else {
-          console.log('⚠️ RPC a échoué, fallback vers mise à jour directe:', error);
         }
       } catch (rpcError) {
-        console.log('⚠️ RPC error, fallback vers mise à jour directe:', rpcError);
+        console.log('RPC error, fallback:', rpcError);
       }
 
       // Méthode 2: Fallback - Mise à jour directe
-      console.log('🔄 Utilisation de la méthode fallback...');
-      
-      // Récupérer l'abonnement le plus récent
       const { data: subData, error: findError } = await supabase
         .from('subscriptions')
         .select('id, status')
@@ -498,16 +525,12 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
         .maybeSingle();
 
       if (findError) {
-        console.error('❌ Erreur recherche abonnement:', findError);
         showToastMsg('Erreur lors de la recherche de l\'abonnement', 'error');
         setUpdatingSubscription(null);
         return;
       }
 
       if (!subData) {
-        console.log('ℹ️ Aucun abonnement trouvé, création d\'un nouvel abonnement...');
-        
-        // Créer un nouvel abonnement
         const { data: planData } = await supabase
           .from('subscription_plans')
           .select('id')
@@ -531,16 +554,11 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           });
 
         if (insertError) {
-          console.error('❌ Erreur création abonnement:', insertError);
           showToastMsg('Erreur lors de la création de l\'abonnement', 'error');
         } else {
-          console.log('✅ Nouvel abonnement créé avec succès');
           showToastMsg(`Nouvel abonnement ${action} avec succès`, 'success');
         }
       } else {
-        // Mettre à jour le statut
-        console.log(`📝 Mise à jour de l'abonnement ${subData.id} de ${subData.status} vers ${newStatus}`);
-        
         const { error: updateError } = await supabase
           .from('subscriptions')
           .update({ 
@@ -550,19 +568,16 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           .eq('id', subData.id);
 
         if (updateError) {
-          console.error('❌ Erreur mise à jour abonnement:', updateError);
           showToastMsg('Erreur lors de la mise à jour de l\'abonnement', 'error');
         } else {
-          console.log('✅ Abonnement mis à jour avec succès');
           showToastMsg(`Abonnement ${action} avec succès`, 'success');
         }
       }
       
-      // Recharger les données
       await loadAllData();
       
     } catch (err) {
-      console.error('❌ Erreur modification abonnement:', err);
+      console.error('Erreur modification abonnement:', err);
       showToastMsg('Erreur lors de la modification de l\'abonnement', 'error');
     } finally {
       setUpdatingSubscription(null);
@@ -840,9 +855,25 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           </h2>
           <p className="text-zinc-500 text-sm mt-1">Gestion des comptes utilisateurs</p>
         </div>
-        <button onClick={refreshData} className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition">
-          <RefreshCw className="w-4 h-4" /> Rafraîchir
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {/* Filtre période pour les réservations */}
+          <select
+            value={bookingFilterPeriod}
+            onChange={(e) => {
+              setBookingFilterPeriod(e.target.value as any);
+              loadAllData();
+            }}
+            className="px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-xl text-white text-sm focus:outline-none focus:border-white"
+          >
+            <option value="all">📅 Toutes les réserv.</option>
+            <option value="today">📆 Aujourd'hui</option>
+            <option value="week">📊 Cette semaine</option>
+            <option value="month">📈 Ce mois</option>
+          </select>
+          <button onClick={refreshData} className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-white rounded-xl transition">
+            <RefreshCw className="w-4 h-4" /> Rafraîchir
+          </button>
+        </div>
       </div>
 
       {/* ── Bannières ── */}
@@ -924,9 +955,9 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
           { icon: <UserX className="w-4 h-4" />, color: 'text-red-400', label: 'Inactifs', value: globalStats.inactiveUsers },
           { icon: <AlertTriangle className="w-4 h-4" />, color: 'text-orange-400', label: 'Expire bientôt', value: globalStats.expiringSoon },
           { icon: <CalendarCheck className="w-4 h-4" />, color: 'text-emerald-400', label: 'Réservations', value: globalStats.totalCompletedBookings.toLocaleString(), sub: 'terminées' },
+          { icon: <DollarSign className="w-4 h-4" />, color: 'text-green-400', label: 'Revenus réserv.', value: `${globalStats.totalBookingRevenue.toLocaleString()} CFA`, small: true },
           { icon: <Activity className="w-4 h-4" />, color: 'text-blue-400', label: 'Transactions', value: globalStats.totalTransactions.toLocaleString() },
           { icon: <DollarSign className="w-4 h-4" />, color: 'text-green-400', label: 'Revenus', value: `${globalStats.totalRevenue.toLocaleString()} CFA`, small: true },
-          { icon: <TrendingUp className="w-4 h-4" />, color: 'text-red-400', label: 'Dépenses', value: `${globalStats.totalExpenses.toLocaleString()} CFA`, small: true },
           { icon: <CreditCard className="w-4 h-4" />, color: 'text-purple-400', label: 'Expirés', value: globalStats.expiredSubscriptions },
         ].map(({ icon, color, label, value, sub, small }) => (
           <div key={label} className="bg-zinc-900 border border-zinc-700 rounded-xl p-4">
@@ -989,6 +1020,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                 <th className="pb-3">Expiration</th>
                 <th className="pb-3 text-center">Jours restants</th>
                 <th className="pb-3 text-center">Réservations ✅</th>
+                <th className="pb-3 text-center">Revenu réserv.</th>
                 <th className="pb-3">Statut</th>
                 <th className="pb-3">Gérer Abo</th>
                 <th className="pb-3">Transactions</th>
@@ -1046,11 +1078,6 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                           {isExpiringSoon && <span className="ml-1 text-orange-400">⚠️</span>}
                           {isExpired && <span className="ml-1 text-red-400">❌</span>}
                         </div>
-                        {sub?.start_date && (
-                          <p className="text-zinc-600 text-[10px] mt-0.5">
-                            Début: {new Date(sub.start_date).toLocaleDateString('fr-FR')}
-                          </p>
-                        )}
                       </div>
                     </td>
                     <td className="py-3 text-center">
@@ -1070,7 +1097,9 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                         <CalendarCheck className="w-4 h-4 text-emerald-400" />
                         <span className="text-white font-bold text-lg">{stats?.completed_bookings_count || 0}</span>
                       </div>
-                      <p className="text-zinc-500 text-[10px]">terminées</p>
+                    </td>
+                    <td className="py-3 text-center">
+                      <span className="text-emerald-400 text-sm font-semibold">{formatCFA(stats?.total_booking_revenue || 0)}</span>
                     </td>
                     <td className="py-3">
                       <button onClick={() => toggleUserStatus(user.id, user.is_active)}
@@ -1109,7 +1138,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                       {statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-white">{stats?.transaction_count || 0}</span>}
                     </td>
                     <td className="py-3">
-                      {statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-green-400">{(stats?.total_revenue || 0).toLocaleString()} CFA</span>}
+                      {statsLoading ? <span className="text-zinc-500">...</span> : <span className="text-green-400">{formatCFA(stats?.total_revenue || 0)}</span>}
                     </td>
                     <td className="py-3">
                       <div className="relative">
@@ -1203,7 +1232,8 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
         )}
       </div>
 
-      {/* ── Modal bannière ── */}
+      {/* ── Modals ── */}
+      {/* Modal bannière */}
       {showBannerModal && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6 border border-zinc-700 max-h-[90vh] overflow-y-auto">
@@ -1296,7 +1326,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
         </div>
       )}
 
-      {/* ── Modal détails utilisateur ── */}
+      {/* Modal détails utilisateur */}
       {showDetailsModal && selectedUser && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-y-auto">
@@ -1321,63 +1351,11 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                   </h4>
                   <div className="bg-zinc-800/50 rounded-xl p-4">
                     <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-zinc-500 text-xs">Plan</p>
-                        <p className="text-white font-semibold">{userSubscriptions[selectedUser.id]?.plan_name || 'Aucun'}</p>
-                      </div>
-                      <div>
-                        <p className="text-zinc-500 text-xs">Statut</p>
-                        <p className={`font-semibold ${userSubscriptions[selectedUser.id]?.status === 'active' ? 'text-green-400' : 'text-red-400'}`}>
-                          {userSubscriptions[selectedUser.id]?.status || 'Inactif'}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-zinc-500 text-xs">Date de début</p>
-                        <p className="text-white">
-                          {userSubscriptions[selectedUser.id]?.start_date
-                            ? new Date(userSubscriptions[selectedUser.id].start_date).toLocaleDateString('fr-FR')
-                            : 'N/A'}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-zinc-500 text-xs">Date d'expiration</p>
-                        <p className={`font-semibold ${getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') <= 7 && getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') > 0 ? 'text-orange-400' : getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') === 0 ? 'text-red-400' : 'text-white'}`}>
-                          {formatExpiryDate(userSubscriptions[selectedUser.id]?.expires_at || '')}
-                        </p>
-                      </div>
+                      <div><p className="text-zinc-500 text-xs">Plan</p><p className="text-white font-semibold">{userSubscriptions[selectedUser.id]?.plan_name || 'Aucun'}</p></div>
+                      <div><p className="text-zinc-500 text-xs">Statut</p><p className={`font-semibold ${userSubscriptions[selectedUser.id]?.status === 'active' ? 'text-green-400' : 'text-red-400'}`}>{userSubscriptions[selectedUser.id]?.status || 'Inactif'}</p></div>
+                      <div><p className="text-zinc-500 text-xs">Date de début</p><p className="text-white">{userSubscriptions[selectedUser.id]?.start_date ? new Date(userSubscriptions[selectedUser.id].start_date).toLocaleDateString('fr-FR') : 'N/A'}</p></div>
+                      <div><p className="text-zinc-500 text-xs">Date d'expiration</p><p className={`font-semibold ${getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') <= 7 && getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') > 0 ? 'text-orange-400' : getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') === 0 ? 'text-red-400' : 'text-white'}`}>{formatExpiryDate(userSubscriptions[selectedUser.id]?.expires_at || '')}</p></div>
                     </div>
-                    {userSubscriptions[selectedUser.id]?.status === 'active' && (
-                      <div className="mt-3 pt-3 border-t border-zinc-700 text-center">
-                        <p className="text-zinc-400 text-sm">
-                          ⏰ Jours restants : <span className={`font-bold ${getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '') <= 7 ? 'text-orange-400' : 'text-white'}`}>
-                            {getDaysRemaining(userSubscriptions[selectedUser.id]?.expires_at || '')}
-                          </span> jours
-                        </p>
-                      </div>
-                    )}
-                    {/* Bouton d'action dans la modal */}
-                    {userSubscriptions[selectedUser.id]?.id && userSubscriptions[selectedUser.id]?.id !== '' && (
-                      <div className="mt-4 pt-3 border-t border-zinc-700 flex justify-center">
-                        <button
-                          onClick={() => {
-                            toggleSubscriptionStatus(selectedUser.id, userSubscriptions[selectedUser.id].status);
-                            setShowDetailsModal(false);
-                          }}
-                          disabled={updatingSubscription === selectedUser.id}
-                          className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 ${
-                            userSubscriptions[selectedUser.id].status === 'active'
-                              ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
-                              : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-                          } ${updatingSubscription === selectedUser.id ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        >
-                          {updatingSubscription === selectedUser.id ? (
-                            <RefreshCw className="w-4 h-4 animate-spin" />
-                          ) : (
-                            userSubscriptions[selectedUser.id].status === 'active' ? 'Désactiver l\'abonnement' : 'Activer l\'abonnement'
-                          )}
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
               )}
@@ -1387,6 +1365,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                 <div className="bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-4 text-center">
                   <p className="text-emerald-400 text-4xl font-bold">{userStats[selectedUser.id]?.completed_bookings_count || 0}</p>
                   <p className="text-emerald-500/70 text-xs mt-1">réservations validées</p>
+                  <p className="text-emerald-500/70 text-sm mt-2 font-semibold">{formatCFA(userStats[selectedUser.id]?.total_booking_revenue || 0)}</p>
                 </div>
               </div>
 
@@ -1394,9 +1373,9 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
                 <h4 className="text-white font-bold mb-3">Statistiques financières</h4>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Transactions</p><p className="text-white text-xl font-bold">{userStats[selectedUser.id]?.transaction_count || 0}</p></div>
-                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Revenus</p><p className="text-green-400">{(userStats[selectedUser.id]?.total_revenue || 0).toLocaleString()} CFA</p></div>
-                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Dépenses</p><p className="text-red-400">{(userStats[selectedUser.id]?.total_expenses || 0).toLocaleString()} CFA</p></div>
-                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Net</p><p className="text-white">{((userStats[selectedUser.id]?.total_revenue || 0) - (userStats[selectedUser.id]?.total_expenses || 0)).toLocaleString()} CFA</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Revenus</p><p className="text-green-400">{formatCFA(userStats[selectedUser.id]?.total_revenue || 0)}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Dépenses</p><p className="text-red-400">{formatCFA(userStats[selectedUser.id]?.total_expenses || 0)}</p></div>
+                  <div className="bg-zinc-800 rounded-xl p-3"><p className="text-zinc-500 text-xs">Net</p><p className="text-white">{formatCFA((userStats[selectedUser.id]?.total_revenue || 0) - (userStats[selectedUser.id]?.total_expenses || 0))}</p></div>
                 </div>
               </div>
 
@@ -1439,7 +1418,7 @@ export default function AdminPanel({ currentUserId, isAdmin }: AdminPanelProps) 
         </div>
       )}
 
-      {/* ── Modal message personnalisé ── */}
+      {/* Modal message personnalisé */}
       {showMessageModal && selectedUser && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
           <div className="bg-zinc-900 rounded-2xl max-w-md w-full p-6">

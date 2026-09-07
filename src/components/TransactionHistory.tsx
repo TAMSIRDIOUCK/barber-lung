@@ -1,5 +1,6 @@
+// src/components/TransactionHistory.tsx
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Trash2, ChevronLeft, ChevronRight, CheckCircle, RotateCcw } from 'lucide-react';
+import { Trash2, ChevronLeft, ChevronRight, CheckCircle, RotateCcw, Home, TrendingUp, DollarSign, CalendarCheck, History } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 export interface Transaction {
@@ -19,11 +20,13 @@ export interface Transaction {
 interface TransactionHistoryProps {
   userId: string;
   refreshTrigger: number;
+  onNavigateToPage?: (page: 'home' | 'revenue' | 'expenses' | 'bookings') => void;
+  currentPage?: string;
 }
 
 // Cache pour les photos des coiffeurs
 let barberPhotoCache: Record<string, string> = {};
-let barberNameMapping: Record<string, string> = {}; // Pour gérer les changements de nom
+let barberNameMapping: Record<string, string> = {};
 
 function getDayStart(date: Date): Date {
   const d = new Date(date);
@@ -71,7 +74,7 @@ function toTransactionRow(t: Transaction) {
   };
 }
 
-export default function TransactionHistory({ userId, refreshTrigger }: TransactionHistoryProps) {
+export default function TransactionHistory({ userId, refreshTrigger, onNavigateToPage, currentPage = 'history' }: TransactionHistoryProps) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [deletedTransactions, setDeletedTransactions] = useState<Transaction[]>([]);
   const [dayOffset, setDayOffset] = useState(0);
@@ -93,7 +96,6 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
     return base;
   }, [dayOffset]);
 
-  // Fonction pour récupérer toutes les informations des coiffeurs (nom actuel + photo)
   const fetchBarberInfos = useCallback(async () => {
     try {
       const { data, error } = await supabase
@@ -108,8 +110,6 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
         data.forEach((barber: { id: string; name: string; photo: string }) => {
           newInfos[barber.name] = { name: barber.name, photo: barber.photo };
           newCache[barber.name] = barber.photo;
-          
-          // Stocker aussi par ID pour les recherches
           barberNameMapping[barber.id] = barber.name;
         });
         
@@ -121,31 +121,24 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
     }
   }, [userId]);
 
-  // Fonction pour obtenir le nom actuel d'un coiffeur (après modification)
   const getCurrentBarberName = (oldName: string): string => {
-    // Chercher si le nom existe toujours dans les infos
     if (barberInfos[oldName]) {
       return barberInfos[oldName].name;
     }
-    
-    // Chercher par correspondance (si le coiffeur a été renommé)
     for (const [currentName, info] of Object.entries(barberInfos)) {
       if (info.name === oldName) {
         return currentName;
       }
     }
-    
     return oldName;
   };
 
-  // Fonction pour obtenir la photo d'un coiffeur
   const getBarberPhoto = (barberName: string): string | null => {
     const currentName = getCurrentBarberName(barberName);
     const info = barberInfos[currentName];
     return info?.photo || barberPhotoCache[currentName] || null;
   };
 
-  // Fonction pour obtenir le nom d'affichage du coiffeur
   const getDisplayBarberName = (barberName: string): string => {
     return getCurrentBarberName(barberName);
   };
@@ -194,11 +187,10 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
     loadTransactions(); 
   }, [loadTransactions, refreshTrigger]);
 
-  // Recharger les infos des coiffeurs périodiquement pour les mises à jour
   useEffect(() => {
     const interval = setInterval(() => {
       fetchBarberInfos();
-    }, 30000); // Toutes les 30 secondes
+    }, 30000);
     
     return () => clearInterval(interval);
   }, [fetchBarberInfos]);
@@ -324,8 +316,17 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
     return { name: 'Produit', photo: null, originalName: null };
   };
 
+  // Navigation items
+  const navItems = [
+    { id: 'home', label: 'Accueil', Icon: Home },
+    { id: 'history', label: 'Historique', Icon: History },
+    { id: 'revenue', label: 'Revenus', Icon: TrendingUp },
+    { id: 'expenses', label: 'Dépenses', Icon: DollarSign },
+    { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
+  ];
+
   return (
-    <div className="space-y-5 relative">
+    <div className="space-y-5 relative pb-24">
 
       {showToast && (
         <div className="fixed top-4 right-4 left-4 sm:left-auto sm:right-4 z-50 animate-in fade-in slide-in-from-top-2 duration-300">
@@ -405,7 +406,6 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
         </div>
       ) : (
         <>
-          {/* Desktop */}
           <div className="hidden sm:block overflow-x-auto">
             <table className="min-w-full text-left text-white bg-zinc-900 border border-zinc-700 rounded-xl overflow-hidden">
               <thead>
@@ -479,7 +479,6 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
             </table>
           </div>
 
-          {/* Mobile */}
           <div className="sm:hidden space-y-3">
             {allSorted.map(({ t, deleted }) => {
               const category = getItemCategory(t);
@@ -541,6 +540,38 @@ export default function TransactionHistory({ userId, refreshTrigger }: Transacti
           </div>
         </>
       )}
+
+      {/* ── BARRE DE NAVIGATION EN BAS ── */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
+        <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
+          {navItems.map(({ id, label, Icon }) => {
+            const isActive = currentPage === id;
+            return (
+              <button
+                key={id}
+                onClick={() => {
+                  if (id === 'home' && onNavigateToPage) {
+                    onNavigateToPage('home');
+                  } else if (id === 'revenue' && onNavigateToPage) {
+                    onNavigateToPage('revenue');
+                  } else if (id === 'expenses' && onNavigateToPage) {
+                    onNavigateToPage('expenses');
+                  } else if (id === 'bookings' && onNavigateToPage) {
+                    onNavigateToPage('bookings');
+                  }
+                  // History est la page actuelle, ne rien faire
+                }}
+                className="flex flex-col items-center gap-1 px-3 py-1"
+              >
+                <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${isActive ? 'bg-white' : ''}`}>
+                  <Icon className={`w-5 h-5 ${isActive ? 'text-black' : 'text-zinc-600'}`} />
+                </div>
+                <span className={`text-[8px] font-medium ${isActive ? 'text-white' : 'text-zinc-600'}`}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }

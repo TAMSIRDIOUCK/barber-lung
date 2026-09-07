@@ -1,4 +1,4 @@
-// src/components/Clientapp.tsx - Partie gestion du callback
+// src/components/Clientapp.tsx
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { AuthPage } from './Authpage';
@@ -6,8 +6,9 @@ import { SubscribePage } from './Subscribepage';
 import { LandingPage } from './LandingPage';
 import { Scissors } from 'lucide-react';
 import type { User, Session } from '@supabase/supabase-js';
+import PublicHomePage from './PublicHomePage';
 
-type AppState = 'loading' | 'landing' | 'auth' | 'subscribe' | 'app';
+type AppState = 'loading' | 'publicHome' | 'landing' | 'auth' | 'subscribe' | 'app';
 
 export interface AuthUser {
   id: string;
@@ -63,9 +64,16 @@ export function ClientApp() {
   const [user, setUser] = useState<User | null>(null);
   const [activeSub, setActiveSub] = useState<AuthUser['subscription'] | null>(null);
   const initLock = useRef(false);
-  const [AppComponent, setAppComponent] = useState<React.ComponentType<{ authUser: AuthUser; onLogout: () => void }> | null>(null);
+  const [AppComponent, setAppComponent] = useState<React.ComponentType<{ 
+    authUser: AuthUser; 
+    onLogout: () => void; 
+    isAuthenticated: boolean; 
+    onNavigateToAuth: (page: 'login' | 'register') => void 
+  }> | null>(null);
+  const [authScreen, setAuthScreen] = useState<'login' | 'register' | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  // ✅ Vérifier le retour de paiement - AMÉLIORÉ
+  // ✅ Vérifier le retour de paiement
   useEffect(() => {
     const handlePaymentReturn = async () => {
       const params = new URLSearchParams(window.location.search);
@@ -79,7 +87,6 @@ export function ClientApp() {
         search: window.location.search
       });
       
-      // Vérifier si on a un token dans sessionStorage
       const paymentToken = sessionStorage.getItem('payment_token');
       const subscriptionId = sessionStorage.getItem('payment_subscription_id');
       const paymentStatus = sessionStorage.getItem('payment_status');
@@ -90,7 +97,6 @@ export function ClientApp() {
         paymentStatus
       });
       
-      // Si on a un token de paiement, restaurer la session
       if (paymentToken) {
         console.log('🔑 Token de paiement trouvé, restauration...');
         
@@ -109,18 +115,15 @@ export function ClientApp() {
             console.log('✅ Session restaurée avec succès');
             console.log('👤 Utilisateur:', data.session.user?.email);
             
-            // Nettoyer le token après restauration
             sessionStorage.removeItem('payment_token');
             sessionStorage.removeItem('payment_subscription_id');
             
-            // Si on a un subscriptionId, vérifier le statut
             if (subscriptionId) {
               await checkSubscriptionStatus(subscriptionId);
             } else if (data.session.user) {
               await initUser(data.session.user);
             }
             
-            // Nettoyer l'URL
             window.history.replaceState({}, document.title, '/');
             return;
           }
@@ -132,11 +135,9 @@ export function ClientApp() {
         }
       }
       
-      // Si on a un statut dans sessionStorage mais pas de token (cas où le token a été utilisé)
       if (paymentStatus === 'success' || paymentStatus === 'cancelled') {
         console.log('🔄 Statut de paiement trouvé:', paymentStatus);
         
-        // Vérifier si l'utilisateur est déjà connecté
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
           console.log('👤 Utilisateur déjà connecté:', session.user.email);
@@ -148,7 +149,6 @@ export function ClientApp() {
         return;
       }
       
-      // Si pas de token mais qu'on a un retour de paiement, recharger l'utilisateur
       if (isSuccess || isCancelled) {
         console.log('🔄 Retour de paiement détecté, rechargement...');
         const { data: { session } } = await supabase.auth.getSession();
@@ -220,12 +220,20 @@ export function ClientApp() {
     }
   };
 
+  // ────────────────────────────────────────────────────────────────
+  // ✅ CORRECTION PRINCIPALE : initUser ne force plus la page
+  // d'abonnement quand il n'y a pas d'abonnement actif. On laisse
+  // l'utilisateur entrer dans l'app ('app'), et c'est App.tsx qui
+  // gère le paywall page par page (Services = gratuit, le reste =
+  // payant). Se connecter suffit désormais pour accéder à Services.
+  // ────────────────────────────────────────────────────────────────
   const initUser = useCallback(async (u: User) => {
     if (initLock.current) return;
     initLock.current = true;
 
     console.log('👤 Initialisation utilisateur:', u.id, u.email);
     setUser(u);
+    setIsAuthenticated(true);
 
     try {
       const { data: subs, error } = await retryWithTimeout(
@@ -241,7 +249,8 @@ export function ClientApp() {
 
       if (error) {
         console.error('Erreur chargement abonnement:', error.message);
-        setAppState('subscribe');
+        setActiveSub(null);
+        setAppState('app'); // ✅ pas d'abonnement récupérable ≠ blocage de l'app
         return;
       }
 
@@ -258,7 +267,8 @@ export function ClientApp() {
       if (validSubs.length === 0) {
         console.log('📭 Aucun abonnement actif');
         setActiveSub(null);
-        setAppState('subscribe');
+        setAppState('app'); // ✅ on entre dans l'app ; Services reste accessible,
+                             //    les pages payantes seront verrouillées par App.tsx
         return;
       }
 
@@ -306,7 +316,8 @@ export function ClientApp() {
       console.log('✅ App prête');
     } catch (err) {
       console.error('Erreur initUser:', err);
-      setAppState('subscribe');
+      setActiveSub(null);
+      setAppState('app'); // ✅ en cas d'erreur, on n'empêche pas l'accès à Services
     } finally {
       initLock.current = false;
     }
@@ -325,7 +336,8 @@ export function ClientApp() {
         if (session?.user) {
           await initUser(session.user);
         } else {
-          setAppState('landing');
+          setAppState('publicHome');
+          setIsAuthenticated(false);
         }
       }
 
@@ -341,7 +353,15 @@ export function ClientApp() {
         initLock.current = false;
         setUser(null);
         setActiveSub(null);
-        setAppState('landing');
+        setIsAuthenticated(false);
+        setAppState('publicHome');
+        setAuthScreen(null);
+      }
+
+      if (event === 'TOKEN_REFRESHED') {
+        if (session?.user) {
+          console.log('🔄 Token rafraîchi');
+        }
       }
     });
 
@@ -351,6 +371,7 @@ export function ClientApp() {
   const handleLogout = async () => {
     initLock.current = false;
     setAppState('loading');
+    setIsAuthenticated(false);
     await supabase.auth.signOut();
   };
 
@@ -367,7 +388,54 @@ export function ClientApp() {
     if (session?.user) {
       await initUser(session.user);
     }
+    setAuthScreen(null);
   }, [initUser]);
+
+  // Navigation depuis la page publique vers l'authentification
+  const handleNavigateToAuth = useCallback((page: 'login' | 'register') => {
+    setAuthScreen(page);
+    setAppState('landing');
+  }, []);
+
+  // Navigation vers la réservation d'un salon
+  const handleNavigateToBooking = useCallback((slug: string) => {
+    console.log(`📅 Navigation vers la réservation du salon: ${slug}`);
+    // Rediriger vers la page de réservation
+    window.location.href = `/booking/${slug}`;
+  }, []);
+
+  // ────────────────────────────────────────────────────────────────
+  // ✅ CORRECTION : on ne redirige vers l'abonnement que pour les
+  // pages payantes (revenue, expenses, bookings). "home" (Services)
+  // ne demande qu'une connexion.
+  // ────────────────────────────────────────────────────────────────
+  const handleNavigateToPage = useCallback((page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings') => {
+    console.log(`📱 Navigation vers: ${page}`);
+    
+    if (page === 'publicHome') {
+      setAppState('publicHome');
+      return;
+    }
+    
+    // Il faut être connecté pour toute page de l'application
+    if (!isAuthenticated || !user) {
+      handleNavigateToAuth('login');
+      return;
+    }
+    
+    // Si on est sur la page d'accueil publique et qu'on veut aller vers une page de l'app
+    if (appState === 'publicHome') {
+      const isPaidPage = page === 'revenue' || page === 'expenses' || page === 'bookings';
+
+      if (isPaidPage && !activeSub) {
+        // Uniquement les pages payantes nécessitent un abonnement actif
+        setAppState('subscribe');
+      } else {
+        // "home" (Services) est accessible dès qu'on est connecté
+        setAppState('app');
+      }
+    }
+  }, [isAuthenticated, user, activeSub, appState, handleNavigateToAuth]);
 
   // Importer App dynamiquement
   useEffect(() => {
@@ -378,7 +446,9 @@ export function ClientApp() {
     }
   }, [appState]);
 
-  // UI
+  // ── UI ──
+
+  // Chargement
   if (appState === 'loading') {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -392,17 +462,51 @@ export function ClientApp() {
     );
   }
 
-  if (appState === 'landing')
-    return <LandingPage onGetStarted={() => setAppState('auth')} />;
+  // 👉 PAGE D'ACCUEIL PUBLIQUE
+  if (appState === 'publicHome') {
+    return (
+      <PublicHomePage
+        onNavigateToBooking={handleNavigateToBooking}
+        onNavigateToLogin={() => handleNavigateToAuth('login')}
+        onNavigateToRegister={() => handleNavigateToAuth('register')}
+        isAuthenticated={isAuthenticated}
+        currentUserId={user?.id || null}
+        onNavigateToPage={handleNavigateToPage}
+      />
+    );
+  }
 
-  if (appState === 'auth')
+  // 👉 LANDING PAGE
+  if (appState === 'landing') {
+    return (
+      <LandingPage 
+        onGetStarted={() => {
+          setAuthScreen('login');
+          setAppState('auth');
+        }}
+        onBack={() => {
+          setAppState('publicHome');
+          setAuthScreen(null);
+        }}
+        initialScreen={authScreen}
+      />
+    );
+  }
+
+  // Page d'authentification
+  if (appState === 'auth') {
     return (
       <AuthPage
-        onBack={() => setAppState('landing')}
+        onBack={() => {
+          setAppState('landing');
+          setAuthScreen(null);
+        }}
         onAuthSuccess={handleAuthSuccess}
       />
     );
+  }
 
+  // Page d'abonnement
   if (appState === 'subscribe' && user) {
     return (
       <SubscribePage
@@ -410,20 +514,44 @@ export function ClientApp() {
         userEmail={user.email ?? ''}
         userFullName={user.user_metadata?.full_name ?? ''}
         onSubscribed={handleSubscribed}
+        onNavigateToPage={handleNavigateToPage}
+        isAuthenticated={isAuthenticated}
+        onNavigateToLogin={() => handleNavigateToAuth('login')}
       />
     );
   }
 
-  if (appState === 'app' && user && activeSub && AppComponent) {
+  // ────────────────────────────────────────────────────────────────
+  // ✅ CORRECTION : on n'exige plus `activeSub` pour afficher l'app.
+  // Un utilisateur connecté sans abonnement actif reçoit un
+  // `authUser.subscription` "inactive" par défaut ; c'est App.tsx qui
+  // verrouille les pages payantes (revenue/expenses/bookings) et
+  // laisse Services librement accessible.
+  // ────────────────────────────────────────────────────────────────
+  if (appState === 'app' && user && AppComponent) {
     const authUser: AuthUser = {
       id: user.id,
       email: user.email ?? '',
       fullName: user.user_metadata?.full_name ?? user.email ?? '',
-      subscription: activeSub,
+      subscription: activeSub ?? {
+        id: '',
+        status: 'inactive',
+        expires_at: '',
+        plan_name: 'Gratuit',
+        plan_price: 0,
+      },
     };
-    return <AppComponent authUser={authUser} onLogout={handleLogout} />;
+    return (
+      <AppComponent 
+        authUser={authUser} 
+        onLogout={handleLogout}
+        isAuthenticated={isAuthenticated}
+        onNavigateToAuth={handleNavigateToAuth}
+      />
+    );
   }
 
+  // Fallback
   return (
     <div className="min-h-screen bg-black flex items-center justify-center">
       <div className="text-center space-y-4">
