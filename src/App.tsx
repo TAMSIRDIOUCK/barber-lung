@@ -320,7 +320,9 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
   const navigateToPage = (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings' | 'admin') => {
     console.log(`📱 navigateToPage appelée avec: ${page}`);
     
+    // ✅ ACCUEIL PUBLIC - Page publique (non connecté)
     if (page === 'publicHome') {
+      console.log('🏠 Redirection vers Accueil public');
       setShowPublicHome(true);
       setBookingSlug(null);
       setCurrentPage('home');
@@ -329,11 +331,13 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
+    // ✅ ADMIN - Page admin (connecté + droits admin)
     if (page === 'admin') {
       if (!isAdmin) {
         console.log('⛔ Accès admin non autorisé');
         return;
       }
+      console.log('🔐 Redirection vers Admin');
       setShowPublicHome(false);
       setBookingSlug(null);
       setCurrentPage('admin');
@@ -342,11 +346,14 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
+    // ✅ SERVICES - Page de l'application (connecté)
     if (page === 'home') {
       if (!isAuthenticated || !authUser) {
+        console.log('🔒 Non connecté, redirection vers login');
         onNavigateToAuth('login');
         return;
       }
+      console.log('✂️ Redirection vers Services');
       setShowPublicHome(false);
       setBookingSlug(null);
       setCurrentPage('home');
@@ -355,7 +362,9 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
+    // ✅ PAGES PAYANTES - Revenus, Dépenses, Réservations (connecté + abonnement)
     if (!isAuthenticated || !authUser) {
+      console.log('🔒 Non connecté, redirection vers login');
       onNavigateToAuth('login');
       return;
     }
@@ -363,6 +372,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     const isPaidPage = page === 'revenue' || page === 'expenses' || page === 'bookings';
     
     if (isPaidPage && !hasActiveSubscription) {
+      console.log('💳 Pas d\'abonnement actif, redirection vers paiement');
       const pageMap: Record<string, Page> = {
         revenue: 'revenue',
         expenses: 'expenses',
@@ -374,6 +384,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
+    console.log(`✅ Navigation vers ${page} autorisée`);
     setShowPublicHome(false);
     setBookingSlug(null);
     setShowRenewPage(false);
@@ -404,6 +415,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     } catch {}
   };
 
+  // 📌 PAGES DE L'APPLICATION (connecté)
   const appPages: { id: Page; label: string; Icon: any }[] = [
     { id: 'home', label: 'Services', Icon: Scissors },
     { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
@@ -460,6 +472,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
+  // ✅ PAGE D'ACCUEIL PUBLIQUE (non connecté ou navigation publique)
   if (showPublicHome) {
     return (
       <PublicHomePage
@@ -481,6 +494,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
+  // ── APPLICATION PRINCIPALE (Connecté) ──
   return (
     <RequirePhoneNumber userId={authUser.id}>
       {showChangePassword && (
@@ -537,7 +551,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           {mobileMenuOpen && (
             <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full lg:hidden">
               <button
-                onClick={() => navigateToPage('publicHome')}
+                onClick={() => {
+                  navigateToPage('publicHome');
+                  setMobileMenuOpen(false);
+                }}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition text-zinc-400 hover:text-white hover:bg-zinc-800"
               >
                 <Home className="w-4 h-4" /> Accueil
@@ -555,13 +572,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   <Shield className="w-4 h-4" /> Admin
                 </button>
               )}
-              {pages.map(({ id, label, Icon }) => {
+              {appPages.map(({ id, label, Icon }) => {
                 const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
                 const isLocked = isPaidPage && !hasActiveSubscription;
                 const isHome = id === 'home';
-                const isAdminPage = id === 'admin';
-                
-                if (isAdminPage) return null;
                 
                 return (
                   <button
@@ -676,56 +690,125 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
-        {/* BOTTOM NAV - visible sur tous les écrans */}
+        {/* ✅ BOTTOM NAV - Navigation unifiée et sans doublon */}
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-7xl mx-auto">
+            {/* ✅ ACCUEIL - Page publique */}
             <button 
               onClick={() => navigateToPage('publicHome')} 
-              className="flex flex-col items-center gap-0.5 px-2 py-1"
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
-                <Home className="w-5 h-5 text-zinc-600" />
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
+                showPublicHome ? 'bg-white' : 'group-hover:bg-white/10'
+              }`}>
+                <Home className={`w-5 h-5 ${showPublicHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className="text-[8px] font-medium text-zinc-600">Accueil</span>
+              <span className={`text-[8px] font-medium ${
+                showPublicHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'
+              }`}>
+                Accueil
+              </span>
             </button>
             
-            {pages.map(({ id, label, Icon }) => {
-              const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
-              const isLocked = isPaidPage && !hasActiveSubscription;
-              const isHome = id === 'home';
-              const isAdminPage = id === 'admin';
-              
-              return (
-                <button 
-                  key={id} 
-                  onClick={() => {
-                    if (id === 'booking') return;
-                    if (isLocked) {
-                      setRedirectToPage(id as Page);
-                      setShowRenewPage(true);
-                      return;
-                    }
-                    if (isAdminPage) {
-                      navigateToPage('admin');
-                    } else {
-                      navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
-                    }
-                  }} 
-                  className="flex flex-col items-center gap-0.5 px-2 py-1"
-                >
-                  <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                    currentPage === id ? 'bg-white' : ''
-                  } ${isLocked && !isHome ? 'opacity-50' : ''}`}>
-                    <Icon className={`w-5 h-5 ${currentPage === id ? 'text-black' : 'text-zinc-600'}`} />
-                  </div>
-                  <span className={`text-[8px] font-medium ${
-                    currentPage === id ? 'text-white' : 'text-zinc-600'
-                  }`}>
-                    {label}
-                  </span>
-                </button>
-              );
-            })}
+            {/* ✅ SERVICES - Page de l'application (connecté) */}
+            <button 
+              onClick={() => {
+                if (!isAuthenticated || !authUser) {
+                  onNavigateToAuth('login');
+                  return;
+                }
+                navigateToPage('home');
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
+                currentPage === 'home' && !showPublicHome ? 'bg-white' : 'group-hover:bg-white/10'
+              }`}>
+                <Scissors className={`w-5 h-5 ${
+                  currentPage === 'home' && !showPublicHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'
+                }`} />
+              </div>
+              <span className={`text-[8px] font-medium ${
+                currentPage === 'home' && !showPublicHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'
+              }`}>
+                Services
+              </span>
+            </button>
+
+            {/* ✅ RÉSERVATIONS */}
+            <button 
+              onClick={() => {
+                if (!isAuthenticated || !authUser) {
+                  onNavigateToAuth('login');
+                  return;
+                }
+                navigateToPage('bookings');
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
+                currentPage === 'bookings' ? 'bg-white' : 'group-hover:bg-white/10'
+              }`}>
+                <CalendarCheck className={`w-5 h-5 ${
+                  currentPage === 'bookings' ? 'text-black' : 'text-zinc-600 group-hover:text-white'
+                }`} />
+              </div>
+              <span className={`text-[8px] font-medium ${
+                currentPage === 'bookings' ? 'text-white' : 'text-zinc-600 group-hover:text-white'
+              }`}>
+                Réservations
+              </span>
+            </button>
+
+            {/* ✅ REVENUS */}
+            <button 
+              onClick={() => {
+                if (!isAuthenticated || !authUser) {
+                  onNavigateToAuth('login');
+                  return;
+                }
+                navigateToPage('revenue');
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
+                currentPage === 'revenue' ? 'bg-white' : 'group-hover:bg-white/10'
+              }`}>
+                <TrendingUp className={`w-5 h-5 ${
+                  currentPage === 'revenue' ? 'text-black' : 'text-zinc-600 group-hover:text-white'
+                }`} />
+              </div>
+              <span className={`text-[8px] font-medium ${
+                currentPage === 'revenue' ? 'text-white' : 'text-zinc-600 group-hover:text-white'
+              }`}>
+                Revenus
+              </span>
+            </button>
+
+            {/* ✅ DÉPENSES */}
+            <button 
+              onClick={() => {
+                if (!isAuthenticated || !authUser) {
+                  onNavigateToAuth('login');
+                  return;
+                }
+                navigateToPage('expenses');
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
+                currentPage === 'expenses' ? 'bg-white' : 'group-hover:bg-white/10'
+              }`}>
+                <DollarSign className={`w-5 h-5 ${
+                  currentPage === 'expenses' ? 'text-black' : 'text-zinc-600 group-hover:text-white'
+                }`} />
+              </div>
+              <span className={`text-[8px] font-medium ${
+                currentPage === 'expenses' ? 'text-white' : 'text-zinc-600 group-hover:text-white'
+              }`}>
+                Dépenses
+              </span>
+            </button>
           </div>
         </nav>
       </div>

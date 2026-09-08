@@ -359,8 +359,8 @@ export function BookingPage({ slug }: BookingPageProps) {
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
         <div className="text-center max-w-sm">
           <Scissors className="w-16 h-16 text-zinc-700 mx-auto mb-4" />
-          <h2 className="text-white text-2xl font-bold mb-2">Salon introuvable</h2>
-          <p className="text-zinc-500 text-sm">Ce lien n'existe pas ou est désactivé.</p>
+          <h2 className="text-white text-2xl font-bold mb-2">salon inactif</h2>
+          <p className="text-zinc-500 text-sm">désolé, ce salon n'a pas encore activé son système de réservation.</p>
         </div>
       </div>
     );

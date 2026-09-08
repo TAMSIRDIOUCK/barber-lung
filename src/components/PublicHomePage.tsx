@@ -124,7 +124,7 @@ function formatDuration(minutes: number): string {
   return `${h} h ${m > 0 ? m + ' min' : ''}`.trim();
 }
 
-// ── Composant de story avec like ──
+// ── Composant de story avec like et preload ──
 function StoryViewer({
   stories,
   onClose,
@@ -149,8 +149,23 @@ function StoryViewer({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  const [isImageLoaded, setIsImageLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const hasViewedRef = useRef(false);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+
+  // Précharger l'image suivante
+  useEffect(() => {
+    const nextIndex = currentIndex + 1;
+    if (nextIndex < stories.length) {
+      const nextStory = stories[nextIndex];
+      if (nextStory) {
+        const img = new Image();
+        img.src = nextStory.image_url;
+      }
+    }
+  }, [currentIndex, stories]);
 
   useEffect(() => {
     if (!hasViewedRef.current) {
@@ -161,8 +176,17 @@ function StoryViewer({
     }
   }, [salonId, onStoryViewed]);
 
+  // Réinitialiser l'état de chargement quand l'index change
   useEffect(() => {
-    if (isPaused) return;
+    setIsLoading(true);
+    setIsImageLoaded(false);
+    setProgress(0);
+  }, [currentIndex]);
+
+  // Timer uniquement quand l'image est chargée
+  useEffect(() => {
+    if (isPaused || !isImageLoaded) return;
+    
     timerRef.current = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
@@ -174,14 +198,14 @@ function StoryViewer({
             return 100;
           }
         }
-        return prev + 1;
+        return prev + 1.5; // Progression un peu plus rapide
       });
     }, 50);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [currentIndex, isPaused, stories.length, onClose]);
+  }, [currentIndex, isPaused, isImageLoaded, stories.length, onClose]);
 
   const currentStory = stories[currentIndex];
   if (!currentStory) return null;
@@ -198,6 +222,24 @@ function StoryViewer({
     if (onLikeStory) {
       onLikeStory(currentStory.id, currentStory.profile_id);
     }
+  };
+
+  const handleImageLoad = () => {
+    setIsImageLoaded(true);
+    setIsLoading(false);
+  };
+
+  const handleImageError = () => {
+    // En cas d'erreur, on passe à la suivante après 2 secondes
+    setIsImageLoaded(true);
+    setIsLoading(false);
+    setTimeout(() => {
+      if (currentIndex < stories.length - 1) {
+        setCurrentIndex((p) => p + 1);
+      } else {
+        onClose();
+      }
+    }, 2000);
   };
 
   return (
@@ -247,16 +289,36 @@ function StoryViewer({
         </button>
       </div>
 
-      <div className="flex-1 flex items-center justify-center p-4">
+      <div className="flex-1 flex items-center justify-center p-4 relative">
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
+          </div>
+        )}
+        
         {isVideo ? (
           <video 
             src={currentStory.image_url} 
             className="max-h-full max-w-full object-contain rounded-xl"
             controls
             autoPlay
+            onLoadedData={() => {
+              setIsImageLoaded(true);
+              setIsLoading(false);
+            }}
+            onError={handleImageError}
           />
         ) : (
-          <img src={currentStory.image_url} alt={currentStory.title} className="max-h-full max-w-full object-contain rounded-xl" />
+          <img
+            ref={imageRef}
+            src={currentStory.image_url}
+            alt={currentStory.title}
+            className={`max-h-full max-w-full object-contain rounded-xl transition-opacity duration-300 ${
+              isImageLoaded ? 'opacity-100' : 'opacity-0'
+            }`}
+            onLoad={handleImageLoad}
+            onError={handleImageError}
+          />
         )}
       </div>
 
@@ -1078,7 +1140,6 @@ export default function PublicHomePage({
     if (!navigator.geolocation) {
       setLocationError("La géolocalisation n'est pas supportée par votre navigateur");
       showToast("Veuillez activer votre localisation pour voir les salons");
-      // Position par défaut (Dakar)
       const defaultPos = { lat: 14.7167, lng: -17.4677 };
       setUserLocation(defaultPos);
       return;
@@ -1140,7 +1201,7 @@ export default function PublicHomePage({
 
   const mapSalons = useMemo(() => nearbySalons.filter((s) => !s.is_own_profile), [nearbySalons]);
 
-  // ── Itinéraire façon Yango : trace la route sur la carte au lieu d'ouvrir un onglet ──
+  // ── Itinéraire ──
   const startItinerary = useCallback(async (salon: SalonProfile) => {
     if (!salon.latitude || !salon.longitude) {
       showToast('Position du salon indisponible');
@@ -1596,7 +1657,7 @@ export default function PublicHomePage({
             </div>
           )}
 
-          {/* ── Bandeau chips salons (masqué pendant un itinéraire) ── */}
+          {/* ── Bandeau chips salons ── */}
           {!routeInfo && (
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-8 pb-3 pointer-events-none">
               <div className="flex gap-2 overflow-x-auto px-3 pb-1 snap-x scrollbar-none pointer-events-auto">
@@ -1643,7 +1704,7 @@ export default function PublicHomePage({
             </div>
           )}
 
-          {/* ── Panneau d'itinéraire actif (façon Yango) ── */}
+          {/* ── Panneau d'itinéraire actif ── */}
           {routeInfo && !routeLoading && (
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/95 to-transparent pt-10 pb-4 px-4">
               <div className="bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-2xl p-4 shadow-2xl">
@@ -1700,7 +1761,7 @@ export default function PublicHomePage({
           )}
         </div>
 
-        {/* ── Liste sous la carte (masquée pendant un itinéraire) ── */}
+        {/* ── Liste sous la carte ── */}
         {!routeInfo && (
           <div className={`${mapFullscreen ? '' : 'max-h-[220px]'} overflow-y-auto bg-zinc-950/30 border-t border-zinc-800/60`}>
             {mapSalons.length === 0 ? (
@@ -2201,7 +2262,7 @@ export default function PublicHomePage({
         {/* Section "Mes salons" */}
         {renderFollowedSection()}
 
-        {/* CARTE - avec z-index 10 pour rester sous les stories */}
+        {/* CARTE */}
         {!mapFullscreen && renderMap()}
 
         {/* Tous les salons */}
@@ -2221,64 +2282,88 @@ export default function PublicHomePage({
         </div>
       </div>
 
-      {/* BOTTOM NAV */}
+      {/* BOTTOM NAV - Navigation unifiée */}
       {!mapFullscreen && (
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
-            {[
-              { id: 'home', label: 'Accueil', Icon: Home },
-              { id: 'services', label: 'Services', Icon: Scissors },
-              { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
-              { id: 'revenue', label: 'Revenus', Icon: TrendingUp },
-              { id: 'expenses', label: 'Dépenses', Icon: DollarSign },
-            ].map(({ id, label, Icon }) => {
-              const isHome = id === 'home';
-              const isServices = id === 'services';
-              
-              return (
-                <button
-                  key={id}
-                  onClick={() => {
-                    if (isHome) {
-                      return;
-                    }
-                    if (isServices) {
-                      if (onNavigateToPage) {
-                        onNavigateToPage('home');
-                      }
-                      return;
-                    }
-                    if (onNavigateToPage) {
-                      onNavigateToPage(id as 'bookings' | 'revenue' | 'expenses');
-                    }
-                  }}
-                  className="flex flex-col items-center gap-0.5 px-2 py-1 group"
-                >
-                  <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                    isHome ? 'bg-white' : 'group-hover:bg-white/10'
-                  }`}>
-                    <Icon className={`w-5 h-5 ${
-                      isHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'
-                    }`} />
-                  </div>
-                  <span className={`text-[8px] font-medium ${
-                    isHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'
-                  }`}>
-                    {label}
-                  </span>
-                </button>
-              );
-            })}
+            <button 
+              onClick={() => {
+                // Retour à l'accueil public
+                if (onNavigateToPage) {
+                  onNavigateToPage('publicHome');
+                }
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+                <Home className="w-5 h-5 text-zinc-600 group-hover:text-white" />
+              </div>
+              <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Accueil</span>
+            </button>
+            
+            <button 
+              onClick={() => {
+                // Navigation vers Services (page home de l'app)
+                if (onNavigateToPage) {
+                  onNavigateToPage('home');
+                }
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+                <Scissors className="w-5 h-5 text-zinc-600 group-hover:text-white" />
+              </div>
+              <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Services</span>
+            </button>
+
+            <button 
+              onClick={() => {
+                if (onNavigateToPage) {
+                  onNavigateToPage('bookings');
+                }
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+                <CalendarCheck className="w-5 h-5 text-zinc-600 group-hover:text-white" />
+              </div>
+              <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Réservations</span>
+            </button>
+
+            <button 
+              onClick={() => {
+                if (onNavigateToPage) {
+                  onNavigateToPage('revenue');
+                }
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+                <TrendingUp className="w-5 h-5 text-zinc-600 group-hover:text-white" />
+              </div>
+              <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Revenus</span>
+            </button>
+
+            <button 
+              onClick={() => {
+                if (onNavigateToPage) {
+                  onNavigateToPage('expenses');
+                }
+              }} 
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+                <DollarSign className="w-5 h-5 text-zinc-600 group-hover:text-white" />
+              </div>
+              <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Dépenses</span>
+            </button>
           </div>
         </nav>
       )}
 
-      {/* MODALS ET OVERLAYS - avec z-index élevé (en dehors du conteneur principal) */}
-      
-      {/* Carte en plein écran - z-index 95 */}
+      {/* MODALS ET OVERLAYS */}
       {mapFullscreen && renderMap()}
 
-      {/* Stories - z-index 100 (au-dessus de tout) */}
       {selectedStory && (
         <StoryViewer
           stories={selectedStory.stories}
@@ -2293,10 +2378,8 @@ export default function PublicHomePage({
         />
       )}
 
-      {/* Modal Salon - z-index 90 */}
       {renderSalonModal()}
 
-      {/* Toast - z-index 110 (au-dessus de tout) */}
       {toast && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[110] bg-zinc-800 border border-zinc-700 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-2xl">
           {toast}
