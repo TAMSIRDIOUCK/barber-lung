@@ -1,4 +1,4 @@
-// src/App.tsx (version corrigée complète)
+// src/App.tsx
 import { useState, useEffect, useMemo } from 'react';
 import {
   Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X,
@@ -287,10 +287,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           .select('role')
           .eq('id', authUser.id)
           .single();
-        if (!error && data) {
-          console.log('👑 Rôle admin détecté:', data.role);
-          setIsAdmin(data.role === 'admin');
-        }
+        if (!error && data) setIsAdmin(data.role === 'admin');
       } catch (err) {
         console.error('Erreur vérification rôle admin:', err);
       } finally {
@@ -324,7 +321,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     console.log(`📱 navigateToPage appelée avec: ${page}`);
     
     if (page === 'publicHome') {
-      console.log('🏠 Redirection vers Accueil public');
       setShowPublicHome(true);
       setBookingSlug(null);
       setCurrentPage('home');
@@ -338,7 +334,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
         console.log('⛔ Accès admin non autorisé');
         return;
       }
-      console.log('🔐 Redirection vers Admin');
       setShowPublicHome(false);
       setBookingSlug(null);
       setCurrentPage('admin');
@@ -349,11 +344,9 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
 
     if (page === 'home') {
       if (!isAuthenticated || !authUser) {
-        console.log('🔒 Non connecté, redirection vers login');
         onNavigateToAuth('login');
         return;
       }
-      console.log('✂️ Redirection vers Services');
       setShowPublicHome(false);
       setBookingSlug(null);
       setCurrentPage('home');
@@ -363,7 +356,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     }
 
     if (!isAuthenticated || !authUser) {
-      console.log('🔒 Non connecté, redirection vers login');
       onNavigateToAuth('login');
       return;
     }
@@ -371,7 +363,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     const isPaidPage = page === 'revenue' || page === 'expenses' || page === 'bookings';
     
     if (isPaidPage && !hasActiveSubscription) {
-      console.log('💳 Pas d\'abonnement actif, redirection vers paiement');
       const pageMap: Record<string, Page> = {
         revenue: 'revenue',
         expenses: 'expenses',
@@ -383,7 +374,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    console.log(`✅ Navigation vers ${page} autorisée`);
     setShowPublicHome(false);
     setBookingSlug(null);
     setShowRenewPage(false);
@@ -454,7 +444,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
         userEmail={authUser.email}
         userFullName={authUser.fullName || ''}
         onSubscribed={() => {
-          console.log('✅ Abonnement souscrit, rechargement...');
           setShowRenewPage(false);
           if (redirectToPage) {
             setCurrentPage(redirectToPage);
@@ -499,119 +488,63 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       )}
 
       <div className="min-h-[100dvh] bg-zinc-950 overflow-x-hidden">
-        {/* HEADER DESKTOP */}
-        <header className="hidden md:block bg-black border-b border-zinc-800 sticky top-0 z-40">
-          <div className="max-w-7xl mx-auto px-6 lg:px-8">
-            <div className="flex items-center justify-between h-16">
-              <div className="flex items-center gap-3">
-                <div className="bg-white w-8 h-8 rounded-lg flex items-center justify-center">
-                  <Scissors className="w-4 h-4 text-black" />
+        {/* HEADER - Version compacte pour tous les écrans */}
+        <header className="bg-black border-b border-zinc-800 sticky top-0 z-40">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-14">
+              <div className="flex items-center gap-2">
+                <div className="bg-white w-7 h-7 rounded-lg flex items-center justify-center">
+                  <Scissors className="w-3.5 h-3.5 text-black" />
                 </div>
-                <span className="text-white font-bold tracking-widest text-sm uppercase">LE COUPE</span>
+                <span className="text-white font-bold tracking-widest text-xs uppercase">LE COUPE</span>
               </div>
-              <nav className="flex items-center gap-1">
-                {pages.map(({ id, label, Icon }) => {
-                  const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
-                  const isLocked = isPaidPage && !hasActiveSubscription;
-                  const isHome = id === 'home';
-                  const isAdminPage = id === 'admin';
-                  
-                  return (
-                    <button
-                      key={id}
-                      onClick={() => {
-                        if (id === 'booking') return;
-                        if (isLocked) {
-                          setRedirectToPage(id as Page);
-                          setShowRenewPage(true);
-                          return;
-                        }
-                        if (isAdminPage) {
-                          navigateToPage('admin');
-                        } else {
-                          navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
-                        }
-                      }}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                        currentPage === id ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
-                      } ${isLocked && !isHome ? 'opacity-50' : ''}`}
-                    >
-                      <Icon className="w-4 h-4" />{label}
-                      {isLocked && !isHome && <Crown className="w-3 h-3 text-yellow-400" />}
-                    </button>
-                  );
-                })}
-              </nav>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <button
                   onClick={() => navigateToPage('publicHome')}
-                  className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700"
+                  className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs px-2 py-1 rounded-lg hover:bg-zinc-800 border border-zinc-700"
                 >
                   <Home className="w-3.5 h-3.5" />
-                  <span className="text-xs">Accueil</span>
+                  <span className="hidden sm:inline text-[10px]">Accueil</span>
                 </button>
                 <button
                   onClick={handleShare}
-                  className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm px-3 py-1.5 rounded-lg hover:bg-zinc-800 border border-zinc-700"
+                  className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs px-2 py-1 rounded-lg hover:bg-zinc-800 border border-zinc-700"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5" />}
-                  <span className="text-xs">{copied ? 'Copié !' : 'Partager'}</span>
+                  <span className="hidden sm:inline text-[10px]">{copied ? 'Copié !' : 'Partager'}</span>
                 </button>
-                <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-1.5">
+                <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
                   <Crown className="w-3 h-3 text-yellow-400" />
-                  <span className="text-white text-xs font-semibold">{authUser.subscription?.plan_name || 'Gratuit'}</span>
-                  <span className="text-zinc-500 text-xs">· {expiryDate}</span>
+                  <span className="text-white text-[10px] font-semibold hidden sm:inline">{authUser.subscription?.plan_name || 'Gratuit'}</span>
+                  <span className="text-zinc-500 text-[10px] hidden md:inline">· {expiryDate}</span>
                 </div>
-
                 <button
                   onClick={() => setShowChangePassword(true)}
-                  className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800"
+                  className="text-zinc-500 hover:text-white transition p-1 rounded-lg hover:bg-zinc-800"
                   title="Modifier le mot de passe"
                 >
                   <KeyRound className="w-4 h-4" />
                 </button>
-                
-                <button onClick={onLogout} className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800">
+                <button onClick={onLogout} className="text-zinc-500 hover:text-white transition p-1 rounded-lg hover:bg-zinc-800">
                   <LogOut className="w-4 h-4" />
+                </button>
+                <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-zinc-400 hover:text-white p-1 lg:hidden">
+                  {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
                 </button>
               </div>
             </div>
           </div>
-        </header>
-
-        {/* HEADER MOBILE */}
-        <header className="md:hidden bg-black border-b border-zinc-800 sticky top-0 z-40">
-          <div className="flex items-center justify-between px-4 h-14 w-full max-w-full">
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="bg-white w-7 h-7 rounded-lg flex items-center justify-center shrink-0">
-                <Scissors className="w-3.5 h-3.5 text-black" />
-              </div>
-              <span className="text-white font-bold tracking-widest text-xs uppercase truncate">LE COUPE</span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
-                <Crown className="w-3 h-3 text-yellow-400" />
-                <span className="text-white text-xs font-semibold">{authUser.subscription?.plan_name || 'Gratuit'}</span>
-              </div>
-              <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="text-zinc-400 hover:text-white p-1.5">
-                {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-              </button>
-            </div>
-          </div>
           {mobileMenuOpen && (
-            <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full">
+            <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full lg:hidden">
               <button
                 onClick={() => navigateToPage('publicHome')}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition text-zinc-400 hover:text-white hover:bg-zinc-800"
               >
                 <Home className="w-4 h-4" /> Accueil
               </button>
-              
-              {/* ✅ Bouton Admin en premier si admin */}
               {isAdmin && (
                 <button
                   onClick={() => {
-                    console.log('🛡️ Clic sur Admin depuis menu mobile');
                     navigateToPage('admin');
                     setMobileMenuOpen(false);
                   }}
@@ -622,14 +555,12 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   <Shield className="w-4 h-4" /> Admin
                 </button>
               )}
-              
               {pages.map(({ id, label, Icon }) => {
                 const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
                 const isLocked = isPaidPage && !hasActiveSubscription;
                 const isHome = id === 'home';
                 const isAdminPage = id === 'admin';
                 
-                // Skip admin car déjà affiché
                 if (isAdminPage) return null;
                 
                 return (
@@ -685,7 +616,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
         </header>
 
         {/* MAIN */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] w-full overflow-x-hidden">
           {needsRenewal && daysLeft !== null && currentPage !== 'home' && currentPage !== 'admin' && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span className="flex items-center gap-2">
@@ -745,23 +676,24 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
-        {/* BOTTOM NAV MOBILE - CORRIGÉE */}
-        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
-          <div className="flex items-center justify-around px-2 py-2">
+        {/* BOTTOM NAV - visible sur tous les écrans */}
+        <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
+          <div className="flex items-center justify-around px-2 py-2 max-w-7xl mx-auto">
             <button 
               onClick={() => navigateToPage('publicHome')} 
-              className="flex flex-col items-center gap-1 px-3 py-1"
+              className="flex flex-col items-center gap-0.5 px-2 py-1"
             >
-              <div className="p-1.5 rounded-xl transition-all flex items-center justify-center">
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
                 <Home className="w-5 h-5 text-zinc-600" />
               </div>
-              <span className="text-[10px] font-medium text-zinc-600">Accueil</span>
+              <span className="text-[8px] font-medium text-zinc-600">Accueil</span>
             </button>
             
-            {appPages.map(({ id, label, Icon }) => {
+            {pages.map(({ id, label, Icon }) => {
               const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
               const isLocked = isPaidPage && !hasActiveSubscription;
               const isHome = id === 'home';
+              const isAdminPage = id === 'admin';
               
               return (
                 <button 
@@ -773,16 +705,20 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                       setShowRenewPage(true);
                       return;
                     }
-                    navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
+                    if (isAdminPage) {
+                      navigateToPage('admin');
+                    } else {
+                      navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
+                    }
                   }} 
-                  className="flex flex-col items-center gap-1 px-3 py-1"
+                  className="flex flex-col items-center gap-0.5 px-2 py-1"
                 >
-                  <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
+                  <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
                     currentPage === id ? 'bg-white' : ''
                   } ${isLocked && !isHome ? 'opacity-50' : ''}`}>
                     <Icon className={`w-5 h-5 ${currentPage === id ? 'text-black' : 'text-zinc-600'}`} />
                   </div>
-                  <span className={`text-[10px] font-medium ${
+                  <span className={`text-[8px] font-medium ${
                     currentPage === id ? 'text-white' : 'text-zinc-600'
                   }`}>
                     {label}
@@ -790,28 +726,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                 </button>
               );
             })}
-
-            {/* ✅ Bouton Admin dans la bottom nav */}
-            {isAdmin && (
-              <button 
-                onClick={() => {
-                  console.log('🛡️ Clic sur Admin depuis bottom nav');
-                  navigateToPage('admin');
-                }} 
-                className="flex flex-col items-center gap-1 px-3 py-1"
-              >
-                <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
-                  currentPage === 'admin' ? 'bg-white' : ''
-                }`}>
-                  <Shield className={`w-5 h-5 ${currentPage === 'admin' ? 'text-black' : 'text-zinc-600'}`} />
-                </div>
-                <span className={`text-[10px] font-medium ${
-                  currentPage === 'admin' ? 'text-white' : 'text-zinc-600'
-                }`}>
-                  Admin
-                </span>
-              </button>
-            )}
           </div>
         </nav>
       </div>

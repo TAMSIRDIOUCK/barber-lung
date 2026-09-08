@@ -8,9 +8,10 @@ import {
   Crown, TrendingUp, Instagram, Facebook, Twitter, Youtube,
   Heart, Share2, Home, DollarSign, CalendarCheck,
   ChevronDown, Plus, Minus, Maximize2, User,
-  Eye, UserPlus as UserPlusIcon, UserCheck, Lock
+  Eye, UserPlus as UserPlusIcon, UserCheck, Lock, Clock, Route as RouteIcon, Loader2
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import SalonMapView, { type SalonMapHandle } from './SalonMapView';
 
 interface SalonProfile {
   id: string;
@@ -46,6 +47,13 @@ interface Story {
   view_count: number;
   like_count: number;
   media_type?: 'image' | 'video';
+}
+
+interface RouteInfo {
+  salon: SalonProfile;
+  distanceKm: number;
+  durationMin: number;
+  coords: [number, number][];
 }
 
 interface PublicHomePageProps {
@@ -105,6 +113,15 @@ function getStoryStatus(
   const hasUnviewed = salonStories.some(s => !viewedStories.has(s.id));
   
   return { hasStories, allViewed, hasUnviewed };
+}
+
+// ── Formatage de la durée façon "app de course" ──
+function formatDuration(minutes: number): string {
+  if (minutes < 1) return '< 1 min';
+  if (minutes < 60) return `${Math.round(minutes)} min`;
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return `${h} h ${m > 0 ? m + ' min' : ''}`.trim();
 }
 
 // ── Composant de story avec like ──
@@ -281,7 +298,7 @@ export default function PublicHomePage({
   isAuthenticated = false,
   currentUserId = null,
   onNavigateToPage,
-}: PublicHomePageProps) {
+}: PublicHomePageProps): React.ReactElement {
   const navigate = useNavigate();
   
   const [salons, setSalons] = useState<SalonProfile[]>([]);
@@ -292,7 +309,6 @@ export default function PublicHomePage({
   const [locationError, setLocationError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSalon, setSelectedSalon] = useState<SalonProfile | null>(null);
-  const [showSearch, setShowSearch] = useState(false);
   const [subscriptionSalons, setSubscriptionSalons] = useState<SalonProfile[]>([]);
   const [followingIds, setFollowingIds] = useState<Set<string>>(new Set());
   const [guestFollowingIds, setGuestFollowingIds] = useState<Set<string>>(new Set());
@@ -300,13 +316,18 @@ export default function PublicHomePage({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const mapSectionRef = useRef<HTMLDivElement>(null);
 
-  const [mapZoom, setMapZoom] = useState(12);
-  const [mapCenter, setMapCenter] = useState<{ lat: number; lng: number } | null>(null);
+  const salonMapRef = useRef<SalonMapHandle>(null);
+  const [activeMapSalonId, setActiveMapSalonId] = useState<string | null>(null);
   const [mapFullscreen, setMapFullscreen] = useState(false);
   const [radiusFilter, setRadiusFilter] = useState<number>(15);
   const [sortBy, setSortBy] = useState<SortMode>('distance');
   const [mapFilterMode, setMapFilterMode] = useState<MapFilterMode>('all');
   const [showSortMenu, setShowSortMenu] = useState(false);
+
+  // ── État de l'itinéraire (façon Yango) ──
+  const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeError, setRouteError] = useState<string | null>(null);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -657,7 +678,6 @@ export default function PublicHomePage({
 
   // ── Suivre un salon (fonctionne pour connectés ET invités) ──
   const toggleFollow = useCallback(async (salonId: string) => {
-    // Ne pas pouvoir suivre son propre salon
     if (isAuthenticated && currentUserId === salonId) {
       showToast("Vous ne pouvez pas vous abonner à votre propre compte");
       return;
@@ -670,7 +690,6 @@ export default function PublicHomePage({
       let existingFollow = null;
 
       if (isAuthenticated && currentUserId) {
-        // Utilisateur connecté
         const { data: userProfile, error: profileError } = await supabase
           .from('profiles')
           .select('id')
@@ -709,7 +728,6 @@ export default function PublicHomePage({
           }
         }
 
-        // Vérifier si déjà suivi
         const { data, error } = await supabase
           .from('followers')
           .select('id')
@@ -723,7 +741,6 @@ export default function PublicHomePage({
         }
         existingFollow = data;
       } else {
-        // Invité - utiliser device_id
         const { data, error } = await supabase
           .from('followers')
           .select('id')
@@ -739,7 +756,6 @@ export default function PublicHomePage({
       }
 
       if (existingFollow) {
-        // UNFOLLOW - Supprimer le suivi
         const { error: deleteError } = await supabase
           .from('followers')
           .delete()
@@ -752,7 +768,6 @@ export default function PublicHomePage({
 
         showToast('Vous ne suivez plus ce salon');
         
-        // Mettre à jour l'état local
         setSalons(prev => prev.map(s => 
           s.id === salonId 
             ? { ...s, is_following: false, followers_count: Math.max((s.followers_count || 1) - 1, 0) }
@@ -780,7 +795,6 @@ export default function PublicHomePage({
         setSubscriptionSalons(prev => prev.filter(s => s.id !== salonId));
 
       } else {
-        // FOLLOW - Ajouter le suivi
         const insertData: any = {
           following_id: salonId,
           device_id: deviceId,
@@ -788,7 +802,6 @@ export default function PublicHomePage({
         };
 
         if (isAuthenticated && currentUserId) {
-          // Récupérer le profil de l'utilisateur connecté
           const { data: userProfile, error: profileError } = await supabase
             .from('profiles')
             .select('id')
@@ -828,7 +841,6 @@ export default function PublicHomePage({
           }
 
           insertData.follower_id = profileId;
-          // Ne pas inclure device_id si on a follower_id
           delete insertData.device_id;
         }
 
@@ -843,7 +855,6 @@ export default function PublicHomePage({
 
         showToast('Vous suivez maintenant ce salon');
         
-        // Mettre à jour l'état local
         setSalons(prev => prev.map(s => 
           s.id === salonId 
             ? { ...s, is_following: true, followers_count: (s.followers_count || 0) + 1 }
@@ -914,7 +925,6 @@ export default function PublicHomePage({
         }
       }
 
-      // Récupérer les suivis (pour connectés et invités)
       let userFollowingIds: Set<string> = new Set();
       let guestFollowingIdsSet: Set<string> = new Set();
       const deviceId = getDeviceId();
@@ -939,7 +949,6 @@ export default function PublicHomePage({
           }
         }
       } else {
-        // Invité - charger les suivis via device_id
         const { data: guestFollowing } = await supabase
           .from('followers')
           .select('following_id')
@@ -1055,12 +1064,6 @@ export default function PublicHomePage({
   }, [loadData]);
 
   useEffect(() => {
-    if (showSearch && searchInputRef.current) {
-      setTimeout(() => searchInputRef.current?.focus(), 100);
-    }
-  }, [showSearch]);
-
-  useEffect(() => {
     if (mapFullscreen) {
       document.body.style.overflow = 'hidden';
     } else {
@@ -1080,7 +1083,6 @@ export default function PublicHomePage({
       (pos) => {
         const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         setUserLocation(loc);
-        setMapCenter(loc);
         setLocationError(null);
       },
       (err) => {
@@ -1088,7 +1090,6 @@ export default function PublicHomePage({
         setLocationError('Position introuvable — position par défaut utilisée');
         const defaultPos = { lat: 14.7167, lng: -17.4677 };
         setUserLocation(defaultPos);
-        setMapCenter(defaultPos);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
@@ -1132,31 +1133,86 @@ export default function PublicHomePage({
     });
   }, [filteredSalons, userLocation, radiusFilter, sortBy, mapFilterMode]);
 
-  const openDirections = (salon: SalonProfile) => {
+  const mapSalons = useMemo(() => nearbySalons.filter((s) => !s.is_own_profile), [nearbySalons]);
+
+  // ── Itinéraire façon Yango : trace la route sur la carte au lieu d'ouvrir un onglet ──
+  const startItinerary = useCallback(async (salon: SalonProfile) => {
+    if (!salon.latitude || !salon.longitude) {
+      showToast('Position du salon indisponible');
+      return;
+    }
+    if (!userLocation) {
+      showToast('Activez votre position pour voir l\'itinéraire');
+      return;
+    }
+
+    setSelectedSalon(null);
+    setRouteError(null);
+    setRouteLoading(true);
+    setActiveMapSalonId(salon.id);
+    setMapFullscreen(true);
+    mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${userLocation.lng},${userLocation.lat};${salon.longitude},${salon.latitude}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (data.code !== 'Ok' || !data.routes?.[0]) {
+        throw new Error('Route introuvable');
+      }
+
+      const route = data.routes[0];
+      const coords: [number, number][] = route.geometry.coordinates.map(
+        (c: [number, number]) => [c[1], c[0]] as [number, number]
+      );
+
+      setRouteInfo({
+        salon,
+        distanceKm: route.distance / 1000,
+        durationMin: route.duration / 60,
+        coords,
+      });
+    } catch (err) {
+      console.error('Erreur itinéraire:', err);
+      setRouteError("Itinéraire indisponible pour le moment");
+      showToast('Ouverture dans Google Maps à la place...');
+      window.open(
+        `https://www.google.com/maps/dir/?api=1&destination=${salon.latitude},${salon.longitude}`,
+        '_blank'
+      );
+    } finally {
+      setRouteLoading(false);
+    }
+  }, [userLocation, showToast]);
+
+  const closeItinerary = useCallback(() => {
+    setRouteInfo(null);
+    setRouteError(null);
+  }, []);
+
+  const openInExternalMaps = (salon: SalonProfile) => {
     if (!salon.latitude || !salon.longitude) return;
     window.open(`https://www.google.com/maps/dir/?api=1&destination=${salon.latitude},${salon.longitude}`, '_blank');
   };
 
-  const centerOnSalon = (salon: SalonProfile) => {
+  const centerOnSalon = useCallback((salon: SalonProfile) => {
     if (salon.latitude && salon.longitude) {
-      setMapCenter({ lat: salon.latitude, lng: salon.longitude });
-      setMapZoom(15);
+      salonMapRef.current?.centerOnSalon(salon);
+      setActiveMapSalonId(salon.id);
     }
-  };
+  }, []);
 
   const jumpToSalonOnMap = (salon: SalonProfile) => {
     setSelectedSalon(null);
-    centerOnSalon(salon);
     setMapFilterMode('all');
     mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => centerOnSalon(salon), 350);
   };
 
-  const centerOnUser = () => {
-    if (userLocation) {
-      setMapCenter(userLocation);
-      setMapZoom(12);
-    }
-  };
+  const centerOnUser = useCallback(() => {
+    salonMapRef.current?.centerOnUser();
+  }, []);
 
   // ── Fonction pour gérer la réservation ──
   const handleBooking = (salon: SalonProfile) => {
@@ -1299,7 +1355,7 @@ export default function PublicHomePage({
   };
 
   // ── Rendu de la section "Mes salons" ──
-  const renderFollowedSection = () => {
+  const renderFollowedSection = (): React.ReactElement | null => {
     const allFollowed = [...subscriptionSalons];
 
     if (isAuthenticated && currentUserId) {
@@ -1353,23 +1409,11 @@ export default function PublicHomePage({
   };
 
   // ── Rendu de la carte interactive ──
-  const renderMap = () => {
-    const centerLat = mapCenter?.lat || userLocation?.lat || 14.7167;
-    const centerLng = mapCenter?.lng || userLocation?.lng || -17.4677;
-    const zoom = mapZoom;
-
-    const getMapUrl = () => {
-      const baseUrl = 'https://www.openstreetmap.org/export/embed.html';
-      const bbox = `${centerLng - 0.05 * (15 / zoom)}%2C${centerLat - 0.05 * (15 / zoom)}%2C${centerLng + 0.05 * (15 / zoom)}%2C${centerLat + 0.05 * (15 / zoom)}`;
-      return `${baseUrl}?bbox=${bbox}&layer=mapnik&marker=${centerLat}%2C${centerLng}`;
-    };
-
+  const renderMap = (): React.ReactElement => {
     const sortLabel: Record<SortMode, string> = {
       distance: 'Plus proche',
       rating: 'Mieux notés',
     };
-
-    const mapSalons = nearbySalons.filter(s => !s.is_own_profile);
 
     return (
       <div
@@ -1377,7 +1421,7 @@ export default function PublicHomePage({
         className={
           mapFullscreen
             ? 'fixed inset-0 z-[95] bg-zinc-950 flex flex-col'
-            : 'bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden mx-4 shadow-2xl shadow-black/40'
+            : 'bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden mx-4 shadow-2xl shadow-black/40 relative z-10'
         }
       >
         <div className="border-b border-zinc-800 bg-zinc-950/60 backdrop-blur-sm">
@@ -1387,8 +1431,12 @@ export default function PublicHomePage({
                 <MapPin className="w-4.5 h-4.5 text-emerald-400" />
               </div>
               <div className="min-w-0">
-                <h3 className="text-white font-semibold text-sm leading-tight truncate">Salons à proximité</h3>
-                <p className="text-zinc-500 text-[10px] leading-tight">{mapSalons.length} résultat{mapSalons.length > 1 ? 's' : ''}</p>
+                <h3 className="text-white font-semibold text-sm leading-tight truncate">
+                  {routeInfo ? `Itinéraire vers ${getSalonDisplayName(routeInfo.salon)}` : 'Salons à proximité'}
+                </h3>
+                <p className="text-zinc-500 text-[10px] leading-tight">
+                  {routeInfo ? 'Trajet en voiture' : `${mapSalons.length} résultat${mapSalons.length > 1 ? 's' : ''}`}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -1402,7 +1450,7 @@ export default function PublicHomePage({
               </button>
               <div className="flex items-center bg-zinc-800/80 rounded-lg overflow-hidden">
                 <button
-                  onClick={() => setMapZoom((z) => Math.min(z + 1, 18))}
+                  onClick={() => salonMapRef.current?.zoomIn()}
                   className="p-2 hover:bg-zinc-700 transition text-zinc-400 hover:text-white"
                   title="Zoom avant"
                 >
@@ -1410,7 +1458,7 @@ export default function PublicHomePage({
                 </button>
                 <div className="w-px h-4 bg-zinc-700" />
                 <button
-                  onClick={() => setMapZoom((z) => Math.max(z - 1, 5))}
+                  onClick={() => salonMapRef.current?.zoomOut()}
                   className="p-2 hover:bg-zinc-700 transition text-zinc-400 hover:text-white"
                   title="Zoom arrière"
                 >
@@ -1418,7 +1466,10 @@ export default function PublicHomePage({
                 </button>
               </div>
               <button
-                onClick={() => setMapFullscreen((f) => !f)}
+                onClick={() => {
+                  if (routeInfo) closeItinerary();
+                  setMapFullscreen((f) => !f);
+                }}
                 className="p-2 bg-zinc-800/80 rounded-lg hover:bg-zinc-700 transition text-zinc-400 hover:text-white"
                 title={mapFullscreen ? 'Réduire' : 'Plein écran'}
               >
@@ -1427,227 +1478,326 @@ export default function PublicHomePage({
             </div>
           </div>
 
-          {locationError && (
+          {locationError && !routeInfo && (
             <div className="flex items-center gap-1.5 px-3 pb-2 text-amber-400">
               <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
               <p className="text-[10px]">{locationError}</p>
             </div>
           )}
 
-          <div className="flex items-center gap-2 px-3 pb-3 overflow-x-auto scrollbar-none">
-            <div className="flex items-center gap-1 flex-shrink-0">
-              <Filter className="w-3.5 h-3.5 text-zinc-600" />
+          {!routeInfo && (
+            <div className="flex items-center gap-2 px-3 pb-3 overflow-x-auto scrollbar-none">
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <Filter className="w-3.5 h-3.5 text-zinc-600" />
+              </div>
+              {RADIUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.label}
+                  onClick={() => setRadiusFilter(opt.value)}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[11px] font-medium transition border ${
+                    radiusFilter === opt.value
+                      ? 'bg-white text-black border-white'
+                      : 'bg-transparent text-zinc-400 border-zinc-700 hover:border-zinc-500'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+              <div className="w-px h-4 bg-zinc-800 flex-shrink-0" />
+              {(
+                [
+                  { id: 'all', label: 'Tous' },
+                  { id: 'subscribed', label: '⭐ Abonnés' },
+                ] as { id: MapFilterMode; label: string }[]
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setMapFilterMode(f.id)}
+                  className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[11px] font-medium transition border ${
+                    mapFilterMode === f.id
+                      ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
+                      : 'bg-transparent text-zinc-400 border-zinc-700 hover:border-zinc-500'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+              <div className="w-px h-4 bg-zinc-800 flex-shrink-0" />
+              <div className="relative flex-shrink-0">
+                <button
+                  onClick={() => setShowSortMenu((s) => !s)}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-full text-[11px] font-medium bg-transparent text-zinc-400 border border-zinc-700 hover:border-zinc-500 transition"
+                >
+                  {sortLabel[sortBy]}
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                {showSortMenu && (
+                  <div className="absolute top-full right-0 mt-1.5 bg-zinc-800 border border-zinc-700 rounded-xl overflow-hidden shadow-xl z-10 w-40">
+                    {(
+                      [
+                        { id: 'distance', label: 'Plus proche', Icon: Navigation },
+                        { id: 'rating', label: 'Mieux notés', Icon: Star },
+                      ] as { id: SortMode; label: string; Icon: typeof Navigation }[]
+                    ).map(({ id, label, Icon }) => (
+                      <button
+                        key={id}
+                        onClick={() => {
+                          setSortBy(id);
+                          setShowSortMenu(false);
+                        }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-zinc-700 transition ${
+                          sortBy === id ? 'text-white bg-zinc-700/60' : 'text-zinc-400'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            {RADIUS_OPTIONS.map((opt) => (
-              <button
-                key={opt.label}
-                onClick={() => setRadiusFilter(opt.value)}
-                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[11px] font-medium transition border ${
-                  radiusFilter === opt.value
-                    ? 'bg-white text-black border-white'
-                    : 'bg-transparent text-zinc-400 border-zinc-700 hover:border-zinc-500'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-            <div className="w-px h-4 bg-zinc-800 flex-shrink-0" />
-            {(
-              [
-                { id: 'all', label: 'Tous' },
-                { id: 'subscribed', label: '⭐ Abonnés' },
-              ] as { id: MapFilterMode; label: string }[]
-            ).map((f) => (
-              <button
-                key={f.id}
-                onClick={() => setMapFilterMode(f.id)}
-                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-[11px] font-medium transition border ${
-                  mapFilterMode === f.id
-                    ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
-                    : 'bg-transparent text-zinc-400 border-zinc-700 hover:border-zinc-500'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-            <div className="w-px h-4 bg-zinc-800 flex-shrink-0" />
-            <div className="relative flex-shrink-0">
-              <button
-                onClick={() => setShowSortMenu((s) => !s)}
-                className="flex items-center gap-1 px-3 py-1.5 rounded-full text-[11px] font-medium bg-transparent text-zinc-400 border border-zinc-700 hover:border-zinc-500 transition"
-              >
-                {sortLabel[sortBy]}
-                <ChevronDown className="w-3 h-3" />
-              </button>
-              {showSortMenu && (
-                <div className="absolute top-full right-0 mt-1.5 bg-zinc-800 border border-zinc-700 rounded-xl overflow-hidden shadow-xl z-10 w-40">
-                  {(
-                    [
-                      { id: 'distance', label: 'Plus proche', Icon: Navigation },
-                      { id: 'rating', label: 'Mieux notés', Icon: Star },
-                    ] as { id: SortMode; label: string; Icon: typeof Navigation }[]
-                  ).map(({ id, label, Icon }) => (
+          )}
+        </div>
+
+        <div className={mapFullscreen ? 'relative flex-1' : 'relative'} style={mapFullscreen ? undefined : { height: '420px' }}>
+          <div className="absolute inset-0">
+            <SalonMapView
+              ref={salonMapRef}
+              salons={mapSalons}
+              userLocation={userLocation}
+              radiusFilter={radiusFilter}
+              activeSalonId={activeMapSalonId}
+              onSelectSalon={(salon) => {
+                if (!routeInfo) {
+                  setSelectedSalon(salon);
+                  setActiveMapSalonId(salon.id);
+                }
+              }}
+              getDisplayName={getSalonDisplayName}
+              hasUnviewedStory={(id) => getStoryStatusForSalon(id).hasUnviewed}
+              routeCoords={routeInfo?.coords || null}
+              height={mapFullscreen ? '100%' : '420px'}
+            />
+          </div>
+
+          {/* ── Overlay de chargement de l'itinéraire ── */}
+          {routeLoading && (
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-20">
+              <div className="bg-zinc-900 border border-zinc-700 rounded-2xl px-6 py-5 flex flex-col items-center gap-3 shadow-2xl">
+                <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
+                <p className="text-white text-sm font-medium">Calcul de l'itinéraire...</p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Bandeau chips salons (masqué pendant un itinéraire) ── */}
+          {!routeInfo && (
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-8 pb-3 pointer-events-none">
+              <div className="flex gap-2 overflow-x-auto px-3 pb-1 snap-x scrollbar-none pointer-events-auto">
+                {mapSalons.slice(0, 10).map((salon) => {
+                  const distance = userLocation
+                    ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
+                    : null;
+                  const isActive = activeMapSalonId === salon.id;
+                  const displayName = getSalonDisplayName(salon);
+                  return (
                     <button
-                      key={id}
-                      onClick={() => {
-                        setSortBy(id);
-                        setShowSortMenu(false);
-                      }}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left hover:bg-zinc-700 transition ${
-                        sortBy === id ? 'text-white bg-zinc-700/60' : 'text-zinc-400'
+                      key={salon.id}
+                      onClick={() => centerOnSalon(salon)}
+                      className={`flex-shrink-0 snap-start flex items-center gap-2 backdrop-blur-md rounded-full pl-1.5 pr-3 py-1.5 border transition shadow-lg ${
+                        isActive ? 'bg-white border-white' : 'bg-black/70 border-zinc-600 hover:border-white'
                       }`}
                     >
-                      <Icon className="w-3.5 h-3.5" />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className={mapFullscreen ? 'relative flex-1' : 'relative'} style={mapFullscreen ? undefined : { height: '380px' }}>
-          <iframe src={getMapUrl()} className="w-full h-full border-0" allowFullScreen loading="lazy" title="Carte des salons" />
-
-          <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-8 pb-3">
-            <div className="flex gap-2 overflow-x-auto px-3 pb-1 snap-x scrollbar-none">
-              {mapSalons.slice(0, 10).map((salon) => {
-                const distance = userLocation
-                  ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
-                  : null;
-                const isActive = mapCenter?.lat === salon.latitude && mapCenter?.lng === salon.longitude;
-                const displayName = getSalonDisplayName(salon);
-                return (
-                  <button
-                    key={salon.id}
-                    onClick={() => {
-                      setSelectedSalon(salon);
-                      centerOnSalon(salon);
-                    }}
-                    className={`flex-shrink-0 snap-start flex items-center gap-2 backdrop-blur-md rounded-full pl-1.5 pr-3 py-1.5 border transition shadow-lg ${
-                      isActive ? 'bg-white border-white' : 'bg-black/70 border-zinc-600 hover:border-white'
-                    }`}
-                  >
-                    <div className="w-7 h-7 rounded-full bg-zinc-700 overflow-hidden flex items-center justify-center flex-shrink-0">
-                      {salon.avatar_url ? (
-                        <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <Scissors className={`w-3.5 h-3.5 ${isActive ? 'text-black' : 'text-zinc-400'}`} />
+                      <div className="w-7 h-7 rounded-full bg-zinc-700 overflow-hidden flex items-center justify-center flex-shrink-0">
+                        {salon.avatar_url ? (
+                          <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <Scissors className={`w-3.5 h-3.5 ${isActive ? 'text-black' : 'text-zinc-400'}`} />
+                        )}
+                      </div>
+                      <span className={`text-[11px] truncate max-w-[90px] font-medium ${isActive ? 'text-black' : 'text-white'}`}>
+                        {displayName}
+                      </span>
+                      <div className="flex items-center gap-0.5">
+                        <Star className={`w-3 h-3 ${isActive ? 'text-yellow-600 fill-yellow-600' : 'text-yellow-400 fill-yellow-400'}`} />
+                        <span className={`text-[10px] font-bold ${isActive ? 'text-black' : 'text-white'}`}>
+                          {salon.rating?.toFixed(1) || '0.0'}
+                        </span>
+                      </div>
+                      {distance !== null && (
+                        <span className={`text-[10px] font-bold ${isActive ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                          {distance.toFixed(1)} km
+                        </span>
                       )}
-                    </div>
-                    <span className={`text-[11px] truncate max-w-[90px] font-medium ${isActive ? 'text-black' : 'text-white'}`}>
-                      {displayName}
-                    </span>
-                    <div className="flex items-center gap-0.5">
-                      <Star className={`w-3 h-3 ${isActive ? 'text-yellow-600 fill-yellow-600' : 'text-yellow-400 fill-yellow-400'}`} />
-                      <span className={`text-[10px] font-bold ${isActive ? 'text-black' : 'text-white'}`}>
-                        {salon.rating?.toFixed(1) || '0.0'}
-                      </span>
-                    </div>
-                    {distance !== null && (
-                      <span className={`text-[10px] font-bold ${isActive ? 'text-emerald-700' : 'text-emerald-400'}`}>
-                        {distance.toFixed(1)} km
-                      </span>
-                    )}
-                    {salon.has_active_subscription && <span className="text-[9px]">⭐</span>}
-                  </button>
-                );
-              })}
+                      {salon.has_active_subscription && <span className="text-[9px]">⭐</span>}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        </div>
+          )}
 
-        <div className={`${mapFullscreen ? '' : 'max-h-[220px]'} overflow-y-auto bg-zinc-950/30 border-t border-zinc-800/60`}>
-          {mapSalons.length === 0 ? (
-            <div className="text-center py-8 px-4">
-              <MapPin className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
-              <p className="text-zinc-500 text-xs">Aucun salon dans ce rayon</p>
-              <button onClick={() => setRadiusFilter(Infinity)} className="text-emerald-400 text-xs font-medium mt-1 hover:underline">
-                Voir tous les salons
-              </button>
-            </div>
-          ) : (
-            <div className="p-3 space-y-1.5">
-              {mapSalons.map((salon) => {
-                const distance = userLocation
-                  ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
-                  : null;
-                const isFollowing = followingIds.has(salon.id) || guestFollowingIds.has(salon.id);
-                const isLoading = followLoading[salon.id] || false;
-                const displayName = getSalonDisplayName(salon);
-
-                return (
-                  <div
-                    key={salon.id}
-                    className="w-full flex items-center gap-3 p-2.5 bg-zinc-800/80 rounded-xl border border-zinc-700/50 hover:border-zinc-500 transition cursor-pointer"
-                    onClick={() => setSelectedSalon(salon)}
-                  >
-                    <div className="w-11 h-11 rounded-full bg-zinc-700 overflow-hidden flex-shrink-0 border-2 border-zinc-600">
-                      {salon.avatar_url ? (
-                        <img src={salon.avatar_url} alt={displayName} className="w-full h-full object-cover" />
+          {/* ── Panneau d'itinéraire actif (façon Yango) ── */}
+          {routeInfo && !routeLoading && (
+            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/95 to-transparent pt-10 pb-4 px-4">
+              <div className="bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-2xl p-4 shadow-2xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-12 h-12 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border-2 border-emerald-400">
+                      {routeInfo.salon.avatar_url ? (
+                        <img src={routeInfo.salon.avatar_url} alt="" className="w-full h-full object-cover" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center bg-indigo-600">
                           <Scissors className="w-5 h-5 text-white" />
                         </div>
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-white font-semibold text-sm truncate">
-                          {displayName}
-                        </p>
-                        {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐</span>}
-                      </div>
-                      <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
-                        <span className="flex items-center gap-0.5">
-                          <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
-                          {salon.rating?.toFixed(1) || '0.0'}
+                    <div className="min-w-0">
+                      <p className="text-white font-semibold text-sm truncate">{getSalonDisplayName(routeInfo.salon)}</p>
+                      <div className="flex items-center gap-3 mt-0.5">
+                        <span className="flex items-center gap-1 text-emerald-400 text-xs font-bold">
+                          <RouteIcon className="w-3.5 h-3.5" />
+                          {routeInfo.distanceKm.toFixed(1)} km
                         </span>
-                        <span className="flex items-center gap-0.5">
-                          <User className="w-3 h-3 text-emerald-400" />
-                          {salon.followers_count || 0}
+                        <span className="flex items-center gap-1 text-zinc-300 text-xs font-bold">
+                          <Clock className="w-3.5 h-3.5" />
+                          {formatDuration(routeInfo.durationMin)}
                         </span>
-                        {distance !== null && (
-                          <>
-                            <span>•</span>
-                            <span className="text-emerald-400">{distance.toFixed(1)} km</span>
-                          </>
-                        )}
                       </div>
-                      {salon.address && <p className="text-zinc-500 text-[10px] truncate">{salon.address}</p>}
-                    </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleFollow(salon.id);
-                        }}
-                        disabled={isLoading}
-                        className="p-1.5 rounded-lg hover:bg-zinc-700 transition disabled:opacity-50"
-                        title={isFollowing ? 'Ne plus suivre' : 'Suivre'}
-                      >
-                        {isLoading ? (
-                          <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
-                        ) : isFollowing ? (
-                          <UserCheck className="w-4 h-4 text-emerald-400" />
-                        ) : (
-                          <UserPlusIcon className="w-4 h-4 text-zinc-400" />
-                        )}
-                      </button>
                     </div>
                   </div>
-                );
-              })}
+                  <button
+                    onClick={closeItinerary}
+                    className="p-2 rounded-full bg-zinc-800 hover:bg-zinc-700 transition text-zinc-400 hover:text-white flex-shrink-0"
+                    title="Fermer l'itinéraire"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => openInExternalMaps(routeInfo.salon)}
+                    className="flex-1 flex items-center justify-center gap-2 bg-white text-black font-semibold py-2.5 rounded-xl text-sm hover:bg-zinc-200 transition"
+                  >
+                    <ExternalLink className="w-4 h-4" /> Ouvrir dans Maps
+                  </button>
+                  <button
+                    onClick={() => handleBooking(routeInfo.salon)}
+                    className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                  >
+                    <Calendar className="w-4 h-4" /> Réserver
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
+
+        {/* ── Liste sous la carte (masquée pendant un itinéraire) ── */}
+        {!routeInfo && (
+          <div className={`${mapFullscreen ? '' : 'max-h-[220px]'} overflow-y-auto bg-zinc-950/30 border-t border-zinc-800/60`}>
+            {mapSalons.length === 0 ? (
+              <div className="text-center py-8 px-4">
+                <MapPin className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
+                <p className="text-zinc-500 text-xs">Aucun salon dans ce rayon</p>
+                <button onClick={() => setRadiusFilter(Infinity)} className="text-emerald-400 text-xs font-medium mt-1 hover:underline">
+                  Voir tous les salons
+                </button>
+              </div>
+            ) : (
+              <div className="p-3 space-y-1.5">
+                {mapSalons.map((salon) => {
+                  const distance = userLocation
+                    ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
+                    : null;
+                  const isFollowing = followingIds.has(salon.id) || guestFollowingIds.has(salon.id);
+                  const isLoading = followLoading[salon.id] || false;
+                  const displayName = getSalonDisplayName(salon);
+
+                  return (
+                    <div
+                      key={salon.id}
+                      className="w-full flex items-center gap-3 p-2.5 bg-zinc-800/80 rounded-xl border border-zinc-700/50 hover:border-zinc-500 transition cursor-pointer"
+                      onClick={() => setSelectedSalon(salon)}
+                    >
+                      <div className="w-11 h-11 rounded-full bg-zinc-700 overflow-hidden flex-shrink-0 border-2 border-zinc-600">
+                        {salon.avatar_url ? (
+                          <img src={salon.avatar_url} alt={displayName} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-indigo-600">
+                            <Scissors className="w-5 h-5 text-white" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-white font-semibold text-sm truncate">
+                            {displayName}
+                          </p>
+                          {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐</span>}
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
+                          <span className="flex items-center gap-0.5">
+                            <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+                            {salon.rating?.toFixed(1) || '0.0'}
+                          </span>
+                          <span className="flex items-center gap-0.5">
+                            <User className="w-3 h-3 text-emerald-400" />
+                            {salon.followers_count || 0}
+                          </span>
+                          {distance !== null && (
+                            <>
+                              <span>•</span>
+                              <span className="text-emerald-400">{distance.toFixed(1)} km</span>
+                            </>
+                          )}
+                        </div>
+                        {salon.address && <p className="text-zinc-500 text-[10px] truncate">{salon.address}</p>}
+                      </div>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startItinerary(salon);
+                          }}
+                          className="p-1.5 rounded-lg hover:bg-zinc-700 transition"
+                          title="Itinéraire"
+                        >
+                          <RouteIcon className="w-4 h-4 text-emerald-400" />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFollow(salon.id);
+                          }}
+                          disabled={isLoading}
+                          className="p-1.5 rounded-lg hover:bg-zinc-700 transition disabled:opacity-50"
+                          title={isFollowing ? 'Ne plus suivre' : 'Suivre'}
+                        >
+                          {isLoading ? (
+                            <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+                          ) : isFollowing ? (
+                            <UserCheck className="w-4 h-4 text-emerald-400" />
+                          ) : (
+                            <UserPlusIcon className="w-4 h-4 text-zinc-400" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
 
   // ── Rendu de tous les salons ──
-  const renderAllSalons = () => {
+  const renderAllSalons = (): React.ReactElement => {
     const sortedAll = [...filteredSalons]
       .filter(s => !s.is_own_profile)
       .sort((a, b) => {
@@ -1760,6 +1910,16 @@ export default function PublicHomePage({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
+                        startItinerary(salon);
+                      }}
+                      className="p-1.5 rounded-lg hover:bg-zinc-800 transition"
+                      title="Itinéraire"
+                    >
+                      <RouteIcon className="w-4 h-4 text-emerald-400" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
                         toggleFollow(salon.id);
                       }}
                       disabled={isLoading}
@@ -1773,16 +1933,6 @@ export default function PublicHomePage({
                       ) : (
                         <UserPlusIcon className="w-4 h-4 text-zinc-400" />
                       )}
-                    </button>
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        jumpToSalonOnMap(salon);
-                      }} 
-                      className="p-1.5 rounded-lg hover:bg-zinc-800 transition" 
-                      title="Voir sur la carte"
-                    >
-                      <MapPin className="w-4 h-4 text-zinc-500" />
                     </button>
                     <button 
                       onClick={(e) => {
@@ -1804,7 +1954,7 @@ export default function PublicHomePage({
   };
 
   // ── Modal de détails du salon ──
-  const renderSalonModal = () => {
+  const renderSalonModal = (): React.ReactElement | null => {
     if (!selectedSalon) return null;
 
     const distance = userLocation
@@ -1902,7 +2052,6 @@ export default function PublicHomePage({
             )}
 
             <div className="mt-4 flex flex-col gap-2">
-              {/* Bouton Réserver - TOUJOURS accessible, même pour les invités */}
               <button
                 onClick={() => handleBooking(selectedSalon)}
                 className="w-full flex items-center justify-center gap-2 bg-white text-black font-semibold py-3 rounded-xl text-sm hover:bg-zinc-200 transition"
@@ -1912,10 +2061,10 @@ export default function PublicHomePage({
 
               <div className="flex gap-2">
                 <button
-                  onClick={() => openDirections(selectedSalon)}
+                  onClick={() => startItinerary(selectedSalon)}
                   className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
                 >
-                  <Navigation className="w-4 h-4" /> Itinéraire
+                  <RouteIcon className="w-4 h-4" /> Itinéraire
                 </button>
 
                 {selectedSalon.phone && (
@@ -1952,7 +2101,6 @@ export default function PublicHomePage({
                 )}
               </div>
 
-              {/* Message pour les invités */}
               {!isAuthenticated && (
                 <p className="text-zinc-500 text-[10px] text-center mt-1">
                   Vous pouvez réserver et suivre des salons sans compte • 
@@ -1978,27 +2126,7 @@ export default function PublicHomePage({
     );
   };
 
-  // ── Gestion de la navigation depuis la barre inférieure ──
-  const handleNavClick = (page: 'home' | 'bookings' | 'revenue' | 'expenses') => {
-    if (onNavigateToPage) {
-      // Mapper les pages vers le bon format
-      const pageMap: Record<string, 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings'> = {
-        home: 'home',
-        bookings: 'bookings',
-        revenue: 'revenue',
-        expenses: 'expenses'
-      };
-      onNavigateToPage(pageMap[page]);
-    } else {
-      // Fallback avec navigate
-      if (page === 'home') {
-        navigate('/app');
-      } else {
-        navigate(`/${page}`);
-      }
-    }
-  };
-
+  // ── CHARGEMENT ──
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 pb-20 animate-pulse">
@@ -2021,9 +2149,11 @@ export default function PublicHomePage({
     );
   }
 
+  // ── RENDU PRINCIPAL ──
   return (
     <div className="min-h-screen bg-zinc-950 text-white pb-20">
-      <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 py-3">
+      {/* HEADER - Style Instagram */}
+      <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 py-2">
         <div className="flex items-center justify-between max-w-lg mx-auto">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
@@ -2031,42 +2161,42 @@ export default function PublicHomePage({
             </div>
             <h1 className="text-white font-black text-lg tracking-tight">LE COUPE</h1>
           </div>
-          <div className="flex items-center gap-2" />
+          <div className="flex items-center gap-3">
+            {/* Barre de recherche simplifiée style Instagram */}
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Rechercher..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-36 sm:w-48 md:w-56 bg-zinc-800/80 border border-zinc-700 rounded-full px-4 py-1.5 text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-white transition"
+              />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+            </div>
+            {!isAuthenticated && (
+              <button
+                onClick={onNavigateToLogin}
+                className="text-sm text-blue-400 font-medium hover:text-blue-300 transition"
+              >
+                Connexion
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
+      {/* CONTENU PRINCIPAL */}
       <div className="max-w-lg mx-auto pt-3">
-        <div className="px-4 mb-3">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowSearch(!showSearch)}
-              className="p-2 bg-zinc-900 border border-zinc-700 rounded-xl hover:border-white transition"
-            >
-              <Search className="w-5 h-5 text-zinc-400" />
-            </button>
-            <span className="text-zinc-500 text-xs">Rechercher un salon</span>
-          </div>
-          {showSearch && (
-            <div className="mt-2 animate-in slide-in-from-top-2 duration-200">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  placeholder="Rechercher un salon..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700 rounded-xl pl-9 pr-4 py-3 text-white placeholder-zinc-500 focus:outline-none focus:border-white transition"
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
+        {/* Section "Mes salons" */}
         {renderFollowedSection()}
+
+        {/* CARTE - avec z-index 10 pour rester sous les stories */}
         {!mapFullscreen && renderMap()}
+
+        {/* Tous les salons */}
         {renderAllSalons()}
 
+        {/* Footer */}
         <div className="mt-8 pb-4 text-center">
           <p className="text-zinc-600 text-[10px]">
             {salons.length} salons disponibles • Propulsé par <span className="text-white font-semibold">LE COUPE</span>
@@ -2080,7 +2210,7 @@ export default function PublicHomePage({
         </div>
       </div>
 
-      {/* Barre de navigation inférieure */}
+      {/* BOTTOM NAV */}
       {!mapFullscreen && (
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
@@ -2099,24 +2229,21 @@ export default function PublicHomePage({
                   key={id}
                   onClick={() => {
                     if (isHome) {
-                      // Déjà sur la page d'accueil, ne rien faire
                       return;
                     }
                     if (isServices) {
-                      // Services - rediriger vers la page Services
                       if (onNavigateToPage) {
                         onNavigateToPage('home');
                       }
                       return;
                     }
-                    // Pour les autres pages (bookings, revenue, expenses)
                     if (onNavigateToPage) {
                       onNavigateToPage(id as 'bookings' | 'revenue' | 'expenses');
                     }
                   }}
-                  className="flex flex-col items-center gap-1 px-3 py-1 group"
+                  className="flex flex-col items-center gap-0.5 px-2 py-1 group"
                 >
-                  <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
+                  <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
                     isHome ? 'bg-white' : 'group-hover:bg-white/10'
                   }`}>
                     <Icon className={`w-5 h-5 ${
@@ -2135,8 +2262,12 @@ export default function PublicHomePage({
         </nav>
       )}
 
+      {/* MODALS ET OVERLAYS - avec z-index élevé (en dehors du conteneur principal) */}
+      
+      {/* Carte en plein écran - z-index 95 */}
       {mapFullscreen && renderMap()}
 
+      {/* Stories - z-index 100 (au-dessus de tout) */}
       {selectedStory && (
         <StoryViewer
           stories={selectedStory.stories}
@@ -2151,8 +2282,10 @@ export default function PublicHomePage({
         />
       )}
 
+      {/* Modal Salon - z-index 90 */}
       {renderSalonModal()}
 
+      {/* Toast - z-index 110 (au-dessus de tout) */}
       {toast && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[110] bg-zinc-800 border border-zinc-700 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-2xl">
           {toast}

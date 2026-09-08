@@ -10,6 +10,7 @@ import PublicHomePage from './PublicHomePage';
 
 type AppState = 'loading' | 'publicHome' | 'landing' | 'auth' | 'subscribe' | 'app';
 
+// ✅ EXPORTER le type AuthUser pour qu'il soit accessible depuis App.tsx
 export interface AuthUser {
   id: string;
   email: string;
