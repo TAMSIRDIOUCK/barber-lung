@@ -1077,6 +1077,10 @@ export default function PublicHomePage({
   const getUserLocation = () => {
     if (!navigator.geolocation) {
       setLocationError("La géolocalisation n'est pas supportée par votre navigateur");
+      showToast("Veuillez activer votre localisation pour voir les salons");
+      // Position par défaut (Dakar)
+      const defaultPos = { lat: 14.7167, lng: -17.4677 };
+      setUserLocation(defaultPos);
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -1088,6 +1092,7 @@ export default function PublicHomePage({
       (err) => {
         console.error('Erreur géoloc:', err);
         setLocationError('Position introuvable — position par défaut utilisée');
+        showToast("Position introuvable, utilisation de la position par défaut");
         const defaultPos = { lat: 14.7167, lng: -17.4677 };
         setUserLocation(defaultPos);
       },
@@ -1701,8 +1706,14 @@ export default function PublicHomePage({
             {mapSalons.length === 0 ? (
               <div className="text-center py-8 px-4">
                 <MapPin className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
-                <p className="text-zinc-500 text-xs">Aucun salon dans ce rayon</p>
-                <button onClick={() => setRadiusFilter(Infinity)} className="text-emerald-400 text-xs font-medium mt-1 hover:underline">
+                <p className="text-zinc-500 text-xs">Aucun salon trouvé dans ce rayon</p>
+                <button 
+                  onClick={() => {
+                    setRadiusFilter(Infinity);
+                    showToast("Affichage de tous les salons");
+                  }} 
+                  className="text-emerald-400 text-xs font-medium mt-1 hover:underline"
+                >
                   Voir tous les salons
                 </button>
               </div>
