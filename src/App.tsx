@@ -1,4 +1,4 @@
-// src/App.tsx
+// src/App.tsx (version corrigée complète)
 import { useState, useEffect, useMemo } from 'react';
 import {
   Scissors, TrendingUp, DollarSign, LogOut, Crown, Menu, X,
@@ -220,13 +220,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
 
   const [showPublicHome, setShowPublicHome] = useState(true);
   const [bookingSlug, setBookingSlug] = useState<string | null>(null);
-
-  // ✅ State pour le modal de changement de mot de passe
   const [showChangePassword, setShowChangePassword] = useState(false);
 
   const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser?.id || '');
 
-  // ✅ Vérification CORRECTE de l'abonnement actif
   const hasActiveSubscription = useMemo(() => {
     if (!authUser?.subscription) return false;
     const status = authUser.subscription.status?.toLowerCase() || '';
@@ -236,7 +233,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     return isActive && isNotExpired;
   }, [authUser]);
 
-  // ✅ Gestion du retour de paiement depuis l'URL
   useEffect(() => {
     const handlePaymentReturn = () => {
       const params = new URLSearchParams(window.location.search);
@@ -255,7 +251,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     handlePaymentReturn();
   }, []);
 
-  // Vérifier s'il y a une bannière active
   useEffect(() => {
     const checkActiveBanner = async () => {
       setCheckingBanner(true);
@@ -283,7 +278,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     window.location.href = '/';
   };
 
-  // Vérification des droits admin
   useEffect(() => {
     if (!authUser) return;
     const checkAdminRole = async () => {
@@ -293,7 +287,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           .select('role')
           .eq('id', authUser.id)
           .single();
-        if (!error && data) setIsAdmin(data.role === 'admin');
+        if (!error && data) {
+          console.log('👑 Rôle admin détecté:', data.role);
+          setIsAdmin(data.role === 'admin');
+        }
       } catch (err) {
         console.error('Erreur vérification rôle admin:', err);
       } finally {
@@ -303,7 +300,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     checkAdminRole();
   }, [authUser]);
 
-  // ✅ Si l'utilisateur se connecte, aller directement à la page Services
   useEffect(() => {
     if (isAuthenticated && authUser) {
       setShowPublicHome(false);
@@ -315,7 +311,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
   const handleServiceConfirm = async () => setRefreshTrigger(prev => prev + 1);
   const handleExpenseAdded = () => setRefreshTrigger(prev => prev + 1);
 
-  // 📌 NAVIGATION VERS LA PAGE DE RÉSERVATION
   const navigateToBooking = (slug: string) => {
     console.log('📅 Navigation vers la réservation du salon:', slug);
     setBookingSlug(slug);
@@ -325,12 +320,9 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     setShowRenewPage(false);
   };
 
-  // 📌 NAVIGATION UNIFIÉE - CORRIGÉE
   const navigateToPage = (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings' | 'admin') => {
     console.log(`📱 navigateToPage appelée avec: ${page}`);
-    console.log(`📊 hasActiveSubscription: ${hasActiveSubscription}`);
     
-    // ✅ Accueil public - toujours accessible
     if (page === 'publicHome') {
       console.log('🏠 Redirection vers Accueil public');
       setShowPublicHome(true);
@@ -341,7 +333,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    // ✅ Admin - accessible uniquement aux admins
     if (page === 'admin') {
       if (!isAdmin) {
         console.log('⛔ Accès admin non autorisé');
@@ -356,7 +347,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    // ✅ Services (home) - accessible sans abonnement mais nécessite connexion
     if (page === 'home') {
       if (!isAuthenticated || !authUser) {
         console.log('🔒 Non connecté, redirection vers login');
@@ -372,7 +362,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    // ✅ Pages payantes (revenue, expenses, bookings) - nécessitent connexion ET abonnement actif
     if (!isAuthenticated || !authUser) {
       console.log('🔒 Non connecté, redirection vers login');
       onNavigateToAuth('login');
@@ -425,7 +414,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     } catch {}
   };
 
-  // 📌 PAGES DE L'APPLICATION
   const appPages: { id: Page; label: string; Icon: any }[] = [
     { id: 'home', label: 'Services', Icon: Scissors },
     { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
@@ -443,7 +431,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       })
     : 'N/A';
 
-  // ── PAGE DE RÉSERVATION ──
   if (currentPage === 'booking' && bookingSlug) {
     return (
       <div className="min-h-screen bg-zinc-950">
@@ -452,7 +439,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
-  // ── Affichage des pages de paiement ──
   if (showPaymentSuccess) {
     return <PaymentSuccessPage onComplete={handlePaymentComplete} />;
   }
@@ -461,7 +447,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     return <PaymentCancelPage onComplete={handlePaymentComplete} />;
   }
 
-  // ── Flux de renouvellement ──
   if (showRenewPage && authUser) {
     return (
       <SubscribePage
@@ -486,7 +471,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
-  // ── PAGE D'ACCUEIL PUBLIQUE ──
   if (showPublicHome) {
     return (
       <PublicHomePage
@@ -500,7 +484,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
-  // ── AUTHENTIFICATION EN COURS ──
   if (checkingAdmin || !authUser) {
     return (
       <div className="min-h-[100dvh] bg-zinc-950 flex items-center justify-center">
@@ -509,10 +492,8 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
-  // ── APPLICATION PRINCIPALE (Connecté) ──
   return (
     <RequirePhoneNumber userId={authUser.id}>
-      {/* ✅ Modal de changement de mot de passe */}
       {showChangePassword && (
         <ChangePasswordModal onClose={() => setShowChangePassword(false)} />
       )}
@@ -582,7 +563,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   <span className="text-zinc-500 text-xs">· {expiryDate}</span>
                 </div>
 
-                {/* ✅ Bouton Modifier le mot de passe */}
                 <button
                   onClick={() => setShowChangePassword(true)}
                   className="text-zinc-500 hover:text-white transition p-1.5 rounded-lg hover:bg-zinc-800"
@@ -626,11 +606,31 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
               >
                 <Home className="w-4 h-4" /> Accueil
               </button>
+              
+              {/* ✅ Bouton Admin en premier si admin */}
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    console.log('🛡️ Clic sur Admin depuis menu mobile');
+                    navigateToPage('admin');
+                    setMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                    currentPage === 'admin' ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+                  }`}
+                >
+                  <Shield className="w-4 h-4" /> Admin
+                </button>
+              )}
+              
               {pages.map(({ id, label, Icon }) => {
                 const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
                 const isLocked = isPaidPage && !hasActiveSubscription;
                 const isHome = id === 'home';
                 const isAdminPage = id === 'admin';
+                
+                // Skip admin car déjà affiché
+                if (isAdminPage) return null;
                 
                 return (
                   <button
@@ -643,11 +643,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                         setMobileMenuOpen(false);
                         return;
                       }
-                      if (isAdminPage) {
-                        navigateToPage('admin');
-                      } else {
-                        navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
-                      }
+                      navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
                       setMobileMenuOpen(false);
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
@@ -667,7 +663,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   {copied ? <Check className="w-4 h-4 text-green-400" /> : <Share2 className="w-4 h-4" />}
                   {copied ? 'Lien copié !' : "Partager l'application"}
                 </button>
-                {/* ✅ Bouton Modifier le mot de passe (mobile) */}
                 <button
                   onClick={() => { setShowChangePassword(true); setMobileMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
@@ -691,7 +686,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
 
         {/* MAIN */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-8 w-full overflow-x-hidden">
-          {/* ✅ BANNIÈRE DE RAPPEL DE RENOUVELLEMENT - UNIQUEMENT POUR REVENUS, DÉPENSES ET RÉSERVATIONS */}
           {needsRenewal && daysLeft !== null && currentPage !== 'home' && currentPage !== 'admin' && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span className="flex items-center gap-2">
@@ -709,7 +703,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
             </div>
           )}
 
-          {/* ── CONTENU DES PAGES ── */}
           {currentPage === 'home' && (
             <div className="space-y-8">
               <SalonProfile userId={authUser.id} />
@@ -752,7 +745,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
-        {/* BOTTOM NAV MOBILE */}
+        {/* BOTTOM NAV MOBILE - CORRIGÉE */}
         <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2">
             <button 
@@ -765,11 +758,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
               <span className="text-[10px] font-medium text-zinc-600">Accueil</span>
             </button>
             
-            {pages.map(({ id, label, Icon }) => {
+            {appPages.map(({ id, label, Icon }) => {
               const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
               const isLocked = isPaidPage && !hasActiveSubscription;
               const isHome = id === 'home';
-              const isAdminPage = id === 'admin';
               
               return (
                 <button 
@@ -781,11 +773,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                       setShowRenewPage(true);
                       return;
                     }
-                    if (isAdminPage) {
-                      navigateToPage('admin');
-                    } else {
-                      navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
-                    }
+                    navigateToPage(id as 'home' | 'revenue' | 'expenses' | 'bookings');
                   }} 
                   className="flex flex-col items-center gap-1 px-3 py-1"
                 >
@@ -802,6 +790,28 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                 </button>
               );
             })}
+
+            {/* ✅ Bouton Admin dans la bottom nav */}
+            {isAdmin && (
+              <button 
+                onClick={() => {
+                  console.log('🛡️ Clic sur Admin depuis bottom nav');
+                  navigateToPage('admin');
+                }} 
+                className="flex flex-col items-center gap-1 px-3 py-1"
+              >
+                <div className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
+                  currentPage === 'admin' ? 'bg-white' : ''
+                }`}>
+                  <Shield className={`w-5 h-5 ${currentPage === 'admin' ? 'text-black' : 'text-zinc-600'}`} />
+                </div>
+                <span className={`text-[10px] font-medium ${
+                  currentPage === 'admin' ? 'text-white' : 'text-zinc-600'
+                }`}>
+                  Admin
+                </span>
+              </button>
+            )}
           </div>
         </nav>
       </div>
