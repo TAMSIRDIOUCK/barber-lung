@@ -124,7 +124,7 @@ function formatDuration(minutes: number): string {
   return `${h} h ${m > 0 ? m + ' min' : ''}`.trim();
 }
 
-// ── Composant de story avec like et preload ──
+// ── Composant StoryViewer style Instagram ──
 function StoryViewer({
   stories,
   onClose,
@@ -198,7 +198,7 @@ function StoryViewer({
             return 100;
           }
         }
-        return prev + 1.5; // Progression un peu plus rapide
+        return prev + 1.5;
       });
     }, 50);
 
@@ -230,7 +230,6 @@ function StoryViewer({
   };
 
   const handleImageError = () => {
-    // En cas d'erreur, on passe à la suivante après 2 secondes
     setIsImageLoaded(true);
     setIsLoading(false);
     setTimeout(() => {
@@ -242,6 +241,18 @@ function StoryViewer({
     }, 2000);
   };
 
+  // Calculer le temps restant (48h max)
+  const getTimeRemaining = () => {
+    const created = new Date(currentStory.created_at);
+    const now = new Date();
+    const diff = 48 * 60 * 60 * 1000 - (now.getTime() - created.getTime());
+    if (diff <= 0) return 'Expirée';
+    const hours = Math.floor(diff / (60 * 60 * 1000));
+    const minutes = Math.floor((diff % (60 * 60 * 1000)) / (60 * 1000));
+    if (hours > 0) return `${hours}h`;
+    return `${minutes}min`;
+  };
+
   return (
     <div
       className="fixed inset-0 z-[100] bg-black flex flex-col"
@@ -250,7 +261,8 @@ function StoryViewer({
       onMouseDown={() => setIsPaused(true)}
       onMouseUp={() => setIsPaused(false)}
     >
-      <div className="flex gap-1 p-4 pt-6">
+      {/* Barre de progression */}
+      <div className="flex gap-1 p-3 pt-4">
         {stories.map((_, index) => (
           <div key={index} className="flex-1 h-0.5 bg-zinc-600 rounded-full overflow-hidden">
             <div
@@ -263,12 +275,13 @@ function StoryViewer({
         ))}
       </div>
 
-      <div className="flex items-center justify-between px-4 py-3">
+      {/* Header de la story */}
+      <div className="flex items-center justify-between px-4 py-2">
         <button 
           onClick={handleAvatarClick}
           className="flex items-center gap-3 hover:opacity-80 transition group"
         >
-          <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden border-2 border-white">
+          <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden border-2 border-white flex-shrink-0">
             {salonLogo ? (
               <img src={salonLogo} alt={salonName} className="w-full h-full object-cover" />
             ) : (
@@ -279,17 +292,22 @@ function StoryViewer({
           </div>
           <div className="text-left">
             <p className="text-white font-semibold text-sm group-hover:underline">{salonName}</p>
-            <p className="text-zinc-400 text-xs">
-              {new Date(currentStory.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-            </p>
+            <div className="flex items-center gap-2 text-xs text-zinc-400">
+              <span>{new Date(currentStory.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+              <span className="flex items-center gap-0.5">
+                <Clock className="w-3 h-3" />
+                {getTimeRemaining()}
+              </span>
+            </div>
           </div>
         </button>
-        <button onClick={onClose} className="text-white/70 hover:text-white transition">
+        <button onClick={onClose} className="text-white/70 hover:text-white transition p-1">
           <X className="w-6 h-6" />
         </button>
       </div>
 
-      <div className="flex-1 flex items-center justify-center p-4 relative">
+      {/* Contenu de la story - responsive */}
+      <div className="flex-1 flex items-center justify-center p-2 relative min-h-0">
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
@@ -299,9 +317,10 @@ function StoryViewer({
         {isVideo ? (
           <video 
             src={currentStory.image_url} 
-            className="max-h-full max-w-full object-contain rounded-xl"
+            className="max-h-full max-w-full object-contain rounded-lg"
             controls
             autoPlay
+            muted={isPaused}
             onLoadedData={() => {
               setIsImageLoaded(true);
               setIsLoading(false);
@@ -312,8 +331,8 @@ function StoryViewer({
           <img
             ref={imageRef}
             src={currentStory.image_url}
-            alt={currentStory.title}
-            className={`max-h-full max-w-full object-contain rounded-xl transition-opacity duration-300 ${
+            alt=""
+            className={`max-h-full max-w-full object-contain rounded-lg transition-opacity duration-300 ${
               isImageLoaded ? 'opacity-100' : 'opacity-0'
             }`}
             onLoad={handleImageLoad}
@@ -322,7 +341,8 @@ function StoryViewer({
         )}
       </div>
 
-      <div className="absolute bottom-20 left-0 right-0 flex justify-center px-4">
+      {/* Actions en bas */}
+      <div className="absolute bottom-24 left-0 right-0 flex justify-center px-4">
         <button
           onClick={handleLikeClick}
           className="flex items-center gap-2 text-white/80 hover:text-white transition"
@@ -332,6 +352,7 @@ function StoryViewer({
         </button>
       </div>
 
+      {/* Navigation gauche/droite */}
       <button
         onClick={() => currentIndex > 0 && setCurrentIndex((p) => p - 1)}
         className="absolute left-0 top-1/2 -translate-y-1/2 w-12 h-24 flex items-center justify-start pl-2 text-white/30 hover:text-white/60 transition"
@@ -345,9 +366,7 @@ function StoryViewer({
         <ChevronRight className="w-8 h-8" />
       </button>
 
-      <div className="p-4">
-        <p className="text-white/90 text-sm text-center">{currentStory.title}</p>
-      </div>
+      {/* Pas de titre en bas pour éviter d'afficher le nom du fichier */}
     </div>
   );
 }
@@ -1647,7 +1666,6 @@ export default function PublicHomePage({
             />
           </div>
 
-          {/* ── Overlay de chargement de l'itinéraire ── */}
           {routeLoading && (
             <div className="absolute inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-20">
               <div className="bg-zinc-900 border border-zinc-700 rounded-2xl px-6 py-5 flex flex-col items-center gap-3 shadow-2xl">
@@ -1657,7 +1675,6 @@ export default function PublicHomePage({
             </div>
           )}
 
-          {/* ── Bandeau chips salons ── */}
           {!routeInfo && (
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-8 pb-3 pointer-events-none">
               <div className="flex gap-2 overflow-x-auto px-3 pb-1 snap-x scrollbar-none pointer-events-auto">
@@ -1704,7 +1721,6 @@ export default function PublicHomePage({
             </div>
           )}
 
-          {/* ── Panneau d'itinéraire actif ── */}
           {routeInfo && !routeLoading && (
             <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black via-black/95 to-transparent pt-10 pb-4 px-4">
               <div className="bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-2xl p-4 shadow-2xl">
@@ -1761,7 +1777,6 @@ export default function PublicHomePage({
           )}
         </div>
 
-        {/* ── Liste sous la carte ── */}
         {!routeInfo && (
           <div className={`${mapFullscreen ? '' : 'max-h-[220px]'} overflow-y-auto bg-zinc-950/30 border-t border-zinc-800/60`}>
             {mapSalons.length === 0 ? (
@@ -2288,7 +2303,6 @@ export default function PublicHomePage({
           <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
             <button 
               onClick={() => {
-                // Retour à l'accueil public
                 if (onNavigateToPage) {
                   onNavigateToPage('publicHome');
                 }
@@ -2303,7 +2317,6 @@ export default function PublicHomePage({
             
             <button 
               onClick={() => {
-                // Navigation vers Services (page home de l'app)
                 if (onNavigateToPage) {
                   onNavigateToPage('home');
                 }

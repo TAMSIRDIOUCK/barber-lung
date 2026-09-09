@@ -9,6 +9,7 @@ export interface MapSalon {
   longitude: number;
   avatar_url: string | null;
   has_active_subscription?: boolean;
+  [key: string]: any;
 }
 
 export interface SalonMapHandle {
@@ -19,13 +20,13 @@ export interface SalonMapHandle {
   invalidateSize: () => void;
 }
 
-interface SalonMapViewProps<T extends MapSalon> {
-  salons: T[];
+interface SalonMapViewProps {
+  salons: MapSalon[];
   userLocation: { lat: number; lng: number } | null;
   radiusFilter: number; // km, Infinity = pas de cercle
   activeSalonId?: string | null;
-  onSelectSalon: (salon: T) => void;
-  getDisplayName: (salon: T) => string;
+  onSelectSalon: (salon: MapSalon) => void;
+  getDisplayName: (salon: MapSalon) => string;
   hasUnviewedStory?: (salonId: string) => boolean;
   routeCoords?: [number, number][] | null;
   height?: string;
@@ -75,11 +76,8 @@ function buildUserMarkerHtml() {
   `;
 }
 
-function SalonMapViewInner<T extends MapSalon>(
-  props: SalonMapViewProps<T>,
-  ref: React.Ref<SalonMapHandle>
-) {
-  const {
+const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function SalonMapView(
+  {
     salons,
     userLocation,
     radiusFilter,
@@ -89,8 +87,9 @@ function SalonMapViewInner<T extends MapSalon>(
     hasUnviewedStory,
     routeCoords,
     height,
-  } = props;
-
+  },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Record<string, L.Marker>>({});
@@ -113,7 +112,6 @@ function SalonMapViewInner<T extends MapSalon>(
       attributionControl: true,
     });
 
-    // Fond de carte sombre et moderne (CartoDB Dark Matter)
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
       maxZoom: 19,
@@ -147,7 +145,7 @@ function SalonMapViewInner<T extends MapSalon>(
           mapRef.current.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 0.8 });
         }
       },
-      centerOnSalon: (salon) => {
+      centerOnSalon: (salon: MapSalon) => {
         if (salon.latitude && salon.longitude && mapRef.current) {
           mapRef.current.flyTo([salon.latitude, salon.longitude], 15, { duration: 0.8 });
         }
@@ -312,10 +310,6 @@ function SalonMapViewInner<T extends MapSalon>(
   }, [routeCoords]);
 
   return <div ref={containerRef} style={{ height: height || '100%', width: '100%' }} className="bg-zinc-900" />;
-}
-
-const SalonMapView = forwardRef(SalonMapViewInner) as <T extends MapSalon>(
-  props: SalonMapViewProps<T> & { ref?: React.Ref<SalonMapHandle> }
-) => ReturnType<typeof SalonMapViewInner>;
+});
 
 export default SalonMapView;
