@@ -114,7 +114,7 @@ async function deleteExpiredStories() {
   }
 }
 
-// ── Composant StoryViewer ──
+// ── Composant StoryViewer style Instagram ──
 function StoryViewer({ 
   stories, 
   onClose,
@@ -133,10 +133,13 @@ function StoryViewer({
   const [index, setIndex] = useState(currentIndex);
   const [progress, setProgress] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  const [isImageLoaded, setIsImageLoaded] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const viewCountedRef = useRef<Set<string>>(new Set());
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Calculer le temps restant avant expiration
   const getTimeRemaining = (createdAt: string) => {
@@ -146,9 +149,21 @@ function StoryViewer({
     if (diff <= 0) return 'Expirée';
     const hours = Math.floor(diff / (60 * 60 * 1000));
     const minutes = Math.floor((diff % (60 * 60 * 1000)) / (60 * 1000));
-    if (hours > 0) return `${hours}h ${minutes}min`;
+    if (hours > 0) return `${hours}h`;
     return `${minutes}min`;
   };
+
+  // Précharger l'image suivante
+  useEffect(() => {
+    const nextIndex = index + 1;
+    if (nextIndex < stories.length) {
+      const nextStory = stories[nextIndex];
+      if (nextStory) {
+        const img = new Image();
+        img.src = nextStory.image_url;
+      }
+    }
+  }, [index, stories]);
 
   useEffect(() => {
     const currentStory = stories[index];
@@ -177,8 +192,17 @@ function StoryViewer({
     }
   };
 
+  // Réinitialiser l'état de chargement quand l'index change
   useEffect(() => {
-    if (isPaused) return;
+    setIsLoading(true);
+    setIsImageLoaded(false);
+    setProgress(0);
+  }, [index]);
+
+  // Timer uniquement quand l'image est chargée
+  useEffect(() => {
+    if (isPaused || !isImageLoaded) return;
+    
     timerRef.current = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
@@ -190,14 +214,14 @@ function StoryViewer({
             return 100;
           }
         }
-        return prev + 1;
+        return prev + 1.5;
       });
     }, 50);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [index, isPaused, stories.length, onClose]);
+  }, [index, isPaused, isImageLoaded, stories.length, onClose]);
 
   const currentStory = stories[index];
   if (!currentStory) return null;
@@ -256,6 +280,31 @@ function StoryViewer({
     }
   };
 
+  const handleImageLoad = () => {
+    setIsImageLoaded(true);
+    setIsLoading(false);
+  };
+
+  const handleImageError = () => {
+    setIsImageLoaded(true);
+    setIsLoading(false);
+    setTimeout(() => {
+      if (index < stories.length - 1) {
+        setIndex((p) => p + 1);
+      } else {
+        onClose();
+      }
+    }, 2000);
+  };
+
+  const handleVideoLoad = () => {
+    setIsImageLoaded(true);
+    setIsLoading(false);
+    if (videoRef.current) {
+      videoRef.current.play().catch(() => {});
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-[100] bg-black flex flex-col"
@@ -264,7 +313,8 @@ function StoryViewer({
       onMouseDown={() => setIsPaused(true)}
       onMouseUp={() => setIsPaused(false)}
     >
-      <div className="flex gap-1 p-4 pt-6">
+      {/* Barre de progression */}
+      <div className="flex gap-1 px-3 pt-3 pb-2 flex-shrink-0">
         {stories.map((_, i) => (
           <div key={i} className="flex-1 h-0.5 bg-zinc-600 rounded-full overflow-hidden">
             <div
@@ -277,20 +327,21 @@ function StoryViewer({
         ))}
       </div>
 
-      <div className="flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden border-2 border-white">
+      {/* Header de la story */}
+      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden border-2 border-white flex-shrink-0">
             {currentStory.image_url ? (
               <img src={currentStory.image_url} alt="" className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                <Scissors className="w-5 h-5 text-white" />
+                <Scissors className="w-4 h-4 text-white" />
               </div>
             )}
           </div>
-          <div>
-            <p className="text-white font-semibold text-sm">Story</p>
-            <div className="flex items-center gap-3 text-xs text-zinc-400">
+          <div className="text-left min-w-0">
+            <p className="text-white font-semibold text-sm truncate">Story</p>
+            <div className="flex items-center gap-2 text-xs text-zinc-400">
               <span>{new Date(currentStory.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
               <span className="flex items-center gap-0.5">
                 <Clock className="w-3 h-3" />
@@ -307,7 +358,7 @@ function StoryViewer({
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
             onClick={() => setShowDeleteConfirm(true)}
             disabled={isDeleting}
@@ -321,24 +372,41 @@ function StoryViewer({
         </div>
       </div>
 
-      <div className="flex-1 flex items-center justify-center p-4">
-        {isVideo ? (
-          <video 
-            src={currentStory.image_url} 
-            className="max-h-full max-w-full object-contain rounded-xl"
-            controls
-            autoPlay
-            muted={isPaused}
-          />
-        ) : (
-          <img 
-            src={currentStory.image_url} 
-            alt=""
-            className="max-h-full max-w-full object-contain rounded-xl"
-          />
+      {/* Contenu de la story - responsive */}
+      <div className="flex-1 flex items-center justify-center px-2 py-1 min-h-0 relative">
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
+          </div>
         )}
+        
+        <div className="relative w-full h-full flex items-center justify-center">
+          {isVideo ? (
+            <video
+              ref={videoRef}
+              src={currentStory.image_url}
+              className="w-full h-full object-contain rounded-lg"
+              playsInline
+              muted={isPaused}
+              onLoadedData={handleVideoLoad}
+              onError={handleImageError}
+              style={{ backgroundColor: 'black' }}
+            />
+          ) : (
+            <img
+              src={currentStory.image_url}
+              alt=""
+              className={`w-full h-full object-contain rounded-lg transition-opacity duration-300 ${
+                isImageLoaded ? 'opacity-100' : 'opacity-0'
+              }`}
+              onLoad={handleImageLoad}
+              onError={handleImageError}
+            />
+          )}
+        </div>
       </div>
 
+      {/* Navigation gauche/droite */}
       <button
         onClick={() => index > 0 && setIndex((p) => p - 1)}
         className="absolute left-0 top-1/2 -translate-y-1/2 w-12 h-24 flex items-center justify-start pl-2 text-white/30 hover:text-white/60 transition"
@@ -351,8 +419,6 @@ function StoryViewer({
       >
         <ChevronRight className="w-8 h-8" />
       </button>
-
-      {/* ✅ Pas de titre en bas pour éviter d'afficher le nom du fichier */}
 
       {showDeleteConfirm && (
         <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10">
@@ -703,7 +769,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         return {
           profile_id: profileId,
           image_url: urlData.publicUrl,
-          title: '', // ✅ Titre vide pour ne pas afficher le nom du fichier
+          title: '',
           expires_at: expiresAt.toISOString(),
           media_type: mediaType,
           view_count: 0,
@@ -993,6 +1059,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         </div>
 
         <div className="p-4 space-y-6">
+          {/* ── Avatar avec icône photo visible ── */}
           <div className="flex flex-col items-center">
             <div 
               onClick={handleAvatarClick}
@@ -1020,11 +1087,21 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                   </div>
                 )}
               </div>
-              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/50 rounded-full">
-                <Camera className="w-8 h-8 text-white" />
+              
+              {/* ✅ Icône photo visible en permanence en mode édition */}
+              <div className="absolute bottom-0 right-0 bg-emerald-500 rounded-full p-1.5 border-2 border-zinc-900 shadow-lg">
+                <Camera className="w-4 h-4 text-white" />
+              </div>
+              
+              {/* Overlay au survol */}
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40 rounded-full">
+                <div className="flex flex-col items-center">
+                  <Camera className="w-8 h-8 text-white" />
+                  <span className="text-white text-xs font-medium mt-1">Changer</span>
+                </div>
               </div>
             </div>
-            <p className="text-zinc-500 text-xs mt-2">Cliquez sur la photo pour la changer</p>
+            <p className="text-zinc-400 text-xs mt-2">Cliquez sur la photo pour la changer</p>
             <input
               ref={avatarInputRef}
               type="file"
@@ -1165,18 +1242,21 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       {/* Profil info */}
       <div className="px-4 pb-4 -mt-10 relative">
         <div className="flex items-end gap-4">
-          {/* Avatar */}
+          {/* Avatar avec cercle de story et icône + */}
           <div 
-            className="relative cursor-pointer"
+            className="relative cursor-pointer group"
             onClick={() => {
               if (stories.length > 0) {
                 openStoryViewer(0);
               }
             }}
           >
+            {/* Cercle de story (gradient si des stories existent) */}
             <div className={`w-20 h-20 rounded-full p-0.5 ${
-              stories.length > 0 || isUploadingFromGallery ? 'bg-gradient-to-tr from-yellow-400 to-pink-500' : 'bg-transparent'
-            }`}>
+              stories.length > 0 || isUploadingFromGallery 
+                ? 'bg-gradient-to-tr from-yellow-400 to-pink-500' 
+                : 'bg-transparent'
+            } group-hover:scale-105 transition`}>
               <div className="w-full h-full rounded-full bg-zinc-800 border-4 border-zinc-900 overflow-hidden shadow-lg">
                 {profile.avatar_url ? (
                   <img 
@@ -1195,12 +1275,14 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
               </div>
             </div>
             
+            {/* Indicateur de chargement des stories */}
             {isUploadingFromGallery && (
               <div className="absolute -top-1 -right-1 w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center border-2 border-zinc-900 animate-pulse">
                 <Loader2 className="w-3.5 h-3.5 text-white animate-spin" />
               </div>
             )}
             
+            {/* Bouton + pour ajouter des stories */}
             <div 
               onClick={(e) => {
                 e.stopPropagation();
@@ -1210,6 +1292,13 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             >
               <Plus className="w-3.5 h-3.5 text-white" />
             </div>
+            
+            {/* Overlay au survol pour voir les stories */}
+            {stories.length > 0 && (
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40 rounded-full">
+                <span className="text-white text-xs font-medium">Voir</span>
+              </div>
+            )}
           </div>
 
           {/* Nom et description */}

@@ -153,7 +153,7 @@ function StoryViewer({
   const [isLoading, setIsLoading] = useState(true);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const hasViewedRef = useRef(false);
-  const imageRef = useRef<HTMLImageElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Précharger l'image suivante
   useEffect(() => {
@@ -241,6 +241,14 @@ function StoryViewer({
     }, 2000);
   };
 
+  const handleVideoLoad = () => {
+    setIsImageLoaded(true);
+    setIsLoading(false);
+    if (videoRef.current) {
+      videoRef.current.play().catch(() => {});
+    }
+  };
+
   // Calculer le temps restant (48h max)
   const getTimeRemaining = () => {
     const created = new Date(currentStory.created_at);
@@ -262,7 +270,7 @@ function StoryViewer({
       onMouseUp={() => setIsPaused(false)}
     >
       {/* Barre de progression */}
-      <div className="flex gap-1 p-3 pt-4">
+      <div className="flex gap-1 px-3 pt-3 pb-2 flex-shrink-0">
         {stories.map((_, index) => (
           <div key={index} className="flex-1 h-0.5 bg-zinc-600 rounded-full overflow-hidden">
             <div
@@ -276,22 +284,22 @@ function StoryViewer({
       </div>
 
       {/* Header de la story */}
-      <div className="flex items-center justify-between px-4 py-2">
+      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0">
         <button 
           onClick={handleAvatarClick}
-          className="flex items-center gap-3 hover:opacity-80 transition group"
+          className="flex items-center gap-3 hover:opacity-80 transition group min-w-0"
         >
-          <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden border-2 border-white flex-shrink-0">
+          <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden border-2 border-white flex-shrink-0">
             {salonLogo ? (
               <img src={salonLogo} alt={salonName} className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                <Scissors className="w-5 h-5 text-white" />
+                <Scissors className="w-4 h-4 text-white" />
               </div>
             )}
           </div>
-          <div className="text-left">
-            <p className="text-white font-semibold text-sm group-hover:underline">{salonName}</p>
+          <div className="text-left min-w-0">
+            <p className="text-white font-semibold text-sm truncate">{salonName}</p>
             <div className="flex items-center gap-2 text-xs text-zinc-400">
               <span>{new Date(currentStory.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
               <span className="flex items-center gap-0.5">
@@ -301,48 +309,47 @@ function StoryViewer({
             </div>
           </div>
         </button>
-        <button onClick={onClose} className="text-white/70 hover:text-white transition p-1">
+        <button onClick={onClose} className="text-white/70 hover:text-white transition p-1 flex-shrink-0">
           <X className="w-6 h-6" />
         </button>
       </div>
 
-      {/* Contenu de la story - responsive */}
-      <div className="flex-1 flex items-center justify-center p-2 relative min-h-0">
+      {/* Contenu de la story - responsive avec aspect ratio 9:16 */}
+      <div className="flex-1 flex items-center justify-center px-2 py-1 min-h-0 relative">
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
           </div>
         )}
         
-        {isVideo ? (
-          <video 
-            src={currentStory.image_url} 
-            className="max-h-full max-w-full object-contain rounded-lg"
-            controls
-            autoPlay
-            muted={isPaused}
-            onLoadedData={() => {
-              setIsImageLoaded(true);
-              setIsLoading(false);
-            }}
-            onError={handleImageError}
-          />
-        ) : (
-          <img
-            ref={imageRef}
-            src={currentStory.image_url}
-            alt=""
-            className={`max-h-full max-w-full object-contain rounded-lg transition-opacity duration-300 ${
-              isImageLoaded ? 'opacity-100' : 'opacity-0'
-            }`}
-            onLoad={handleImageLoad}
-            onError={handleImageError}
-          />
-        )}
+        <div className="relative w-full h-full flex items-center justify-center">
+          {isVideo ? (
+            <video
+              ref={videoRef}
+              src={currentStory.image_url}
+              className="w-full h-full object-contain rounded-lg"
+              playsInline
+              muted={isPaused}
+              onLoadedData={handleVideoLoad}
+              onError={handleImageError}
+              style={{ backgroundColor: 'black' }}
+            />
+          ) : (
+            <img
+              src={currentStory.image_url}
+              alt=""
+              className={`w-full h-full object-contain rounded-lg transition-opacity duration-300 ${
+                isImageLoaded ? 'opacity-100' : 'opacity-0'
+              }`}
+              onLoad={handleImageLoad}
+              onError={handleImageError}
+            />
+          )}
+        </div>
       </div>
 
       {/* Actions en bas */}
-      <div className="absolute bottom-24 left-0 right-0 flex justify-center px-4">
+      <div className="absolute bottom-20 left-0 right-0 flex justify-center px-4 flex-shrink-0">
         <button
           onClick={handleLikeClick}
           className="flex items-center gap-2 text-white/80 hover:text-white transition"
@@ -365,8 +372,6 @@ function StoryViewer({
       >
         <ChevronRight className="w-8 h-8" />
       </button>
-
-      {/* Pas de titre en bas pour éviter d'afficher le nom du fichier */}
     </div>
   );
 }
@@ -2249,7 +2254,6 @@ export default function PublicHomePage({
             <h1 className="text-white font-black text-lg tracking-tight">LE COUPE</h1>
           </div>
           <div className="flex items-center gap-3">
-            {/* Barre de recherche simplifiée style Instagram */}
             <div className="relative">
               <input
                 type="text"
@@ -2274,16 +2278,12 @@ export default function PublicHomePage({
 
       {/* CONTENU PRINCIPAL */}
       <div className="max-w-lg mx-auto pt-3">
-        {/* Section "Mes salons" */}
         {renderFollowedSection()}
 
-        {/* CARTE */}
         {!mapFullscreen && renderMap()}
 
-        {/* Tous les salons */}
         {renderAllSalons()}
 
-        {/* Footer */}
         <div className="mt-8 pb-4 text-center">
           <p className="text-zinc-600 text-[10px]">
             {salons.length} salons disponibles • Propulsé par <span className="text-white font-semibold">LE COUPE</span>
@@ -2297,7 +2297,6 @@ export default function PublicHomePage({
         </div>
       </div>
 
-      {/* BOTTOM NAV - Navigation unifiée */}
       {!mapFullscreen && (
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
@@ -2374,7 +2373,6 @@ export default function PublicHomePage({
         </nav>
       )}
 
-      {/* MODALS ET OVERLAYS */}
       {mapFullscreen && renderMap()}
 
       {selectedStory && (

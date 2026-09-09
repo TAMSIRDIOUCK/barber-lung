@@ -1,6 +1,6 @@
 // src/components/SalonLocationEditor.tsx
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { MapPin, X, Loader2, Check, Navigation, AlertCircle, Store, Users, Target } from 'lucide-react';
+import { MapPin, X, Loader2, Check, Search, Navigation, AlertCircle, Users, Store } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface SalonLocationEditorProps {
@@ -64,22 +64,18 @@ export function SalonLocationEditor({
         const { latitude, longitude } = position.coords;
         console.log('📍 Position obtenue:', latitude, longitude);
         
-        // Mettre à jour les coordonnées
         setLatitude(latitude);
         setLongitude(longitude);
         setLocationFound(true);
         
-        // Centrer la carte sur la position
         if (map) {
           map.setView([latitude, longitude], 16);
         }
         
-        // Mettre à jour le marqueur
         if (marker) {
           marker.setLatLng([latitude, longitude]);
         }
         
-        // Récupérer l'adresse
         try {
           const response = await fetch(
             `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18`
@@ -92,7 +88,6 @@ export function SalonLocationEditor({
           console.error('Erreur géocodification:', err);
         }
 
-        // Charger les salons à proximité
         await loadNearbySalons(latitude, longitude);
         
         setIsGettingLocation(false);
@@ -278,14 +273,12 @@ export function SalonLocationEditor({
         setMap(mapInstance);
         setMarker(salonMarkerInstance);
 
-        // Si aucune position n'est définie, demander automatiquement la position
         if (!initialLatitude || !initialLongitude || initialLatitude === 0 || initialLongitude === 0) {
           setTimeout(() => {
             getCurrentLocation();
           }, 500);
         } else {
           setLocationFound(true);
-          // Charger les salons à proximité
           loadNearbySalons(initialLatitude, initialLongitude);
         }
 
@@ -294,7 +287,8 @@ export function SalonLocationEditor({
         };
       } catch (err) {
         console.warn('⚠️ Leaflet non disponible:', err);
-        setError('La carte n\'est pas disponible. Veuillez entrer les coordonnées manuellement.');
+        // ✅ Suppression du message d'erreur "La carte n'est pas disponible"
+        // On utilise un fallback silencieux
       }
     };
 
@@ -380,8 +374,8 @@ export function SalonLocationEditor({
         </div>
 
         <div className="p-4 space-y-4 flex-1 overflow-y-auto">
-          {/* Message d'erreur */}
-          {error && (
+          {/* Message d'erreur (sauf pour la carte) */}
+          {error && !error.includes('carte') && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-red-400 text-sm flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{error}</span>
@@ -411,7 +405,7 @@ export function SalonLocationEditor({
                 </>
               ) : (
                 <>
-                  <Target className="w-5 h-5" />
+                  <Navigation className="w-5 h-5" />
                   📍 Partager ma position actuelle
                 </>
               )}
@@ -523,6 +517,30 @@ export function SalonLocationEditor({
             </div>
           )}
 
+          {/* Coordonnées */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-zinc-400 text-xs mb-1.5">Latitude</label>
+              <input
+                type="number"
+                step="0.000001"
+                value={latitude}
+                onChange={(e) => setLatitude(parseFloat(e.target.value) || 0)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-white transition"
+              />
+            </div>
+            <div>
+              <label className="block text-zinc-400 text-xs mb-1.5">Longitude</label>
+              <input
+                type="number"
+                step="0.000001"
+                value={longitude}
+                onChange={(e) => setLongitude(parseFloat(e.target.value) || 0)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2 text-white text-sm focus:outline-none focus:border-white transition"
+              />
+            </div>
+          </div>
+
           {/* Boutons d'action */}
           <div className="flex gap-3 pt-2">
             <button
@@ -542,7 +560,7 @@ export function SalonLocationEditor({
               ) : (
                 <>
                   <Check className="w-4 h-4" />
-                  Enregistrer la position
+                  Enregistrer
                 </>
               )}
             </button>
