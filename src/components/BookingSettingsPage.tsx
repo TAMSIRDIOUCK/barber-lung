@@ -4,7 +4,8 @@ import {
   Link2, Check, Copy, User, Phone, Calendar,
   Settings, ToggleLeft, ToggleRight, RefreshCw, Scissors,
   ExternalLink, X, ChevronLeft,
-  Plus, Trash2, AlertTriangle, CheckCircle2, Eye, EyeOff
+  Plus, Trash2, AlertTriangle, CheckCircle2, Eye, EyeOff,
+  Wallet, Clock, ArrowDownToLine
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Html5Qrcode } from "html5-qrcode";
@@ -26,6 +27,8 @@ interface BookingSettings {
   advance_booking_days: number;
   logo_url: string | null;
   primary_color: string;
+  default_payout_mode: string | null;
+  default_payout_account: string | null;
 }
 
 interface Booking {
@@ -48,6 +51,22 @@ interface Booking {
   payment_status: 'paid';
 }
 
+type PayoutStatus = 'created' | 'pending' | 'processing' | 'success' | 'failed';
+
+interface PayoutRequest {
+  id: string;
+  user_id: string;
+  amount: number;
+  payout_mode: string;
+  payout_account: string;
+  status: PayoutStatus;
+  transaction_id: string | null;
+  provider_ref: string | null;
+  response_text: string | null;
+  requested_at: string;
+  completed_at: string | null;
+}
+
 interface BookingSettingsPageProps {
   userId: string;
 }
@@ -61,6 +80,33 @@ const STATUS_COLORS: Record<Booking['status'], string> = {
   confirmed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   done: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
 };
+
+const PAYOUT_STATUS_LABELS: Record<PayoutStatus, string> = {
+  created: 'Initié',
+  pending: 'En cours',
+  processing: 'En cours',
+  success: 'Réussi',
+  failed: 'Échoué',
+};
+
+const PAYOUT_STATUS_COLORS: Record<PayoutStatus, string> = {
+  created: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
+  pending: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  processing: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  success: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  failed: 'bg-red-500/15 text-red-400 border-red-500/30',
+};
+
+// Modes de retrait proposés au salon (sous-ensemble pertinent des withdraw_mode PayDunya)
+const PAYOUT_MODES: { value: string; label: string }[] = [
+  { value: 'orange-money-senegal', label: 'Orange Money' },
+  { value: 'wave-senegal', label: 'Wave' },
+  { value: 'free-money-senegal', label: 'Free Money' },
+  { value: 'expresso-senegal', label: 'Expresso E-Money' },
+  { value: 'djamo-sn', label: 'Djamo' },
+];
+
+const MIN_PAYOUT_AMOUNT = 500;
 
 const DAYS = [
   { key: 'lundi', label: 'Lun' },
@@ -80,6 +126,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   const [settings, setSettings] = useState<BookingSettings | null>(null);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [payoutRequests, setPayoutRequests] = useState<PayoutRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -93,6 +140,16 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [balanceVisible, setBalanceVisible] = useState(true);
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [processing, setProcessing] = useState(false);
+
+  // ── Retrait automatique ──
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawMode, setWithdrawMode] = useState(PAYOUT_MODES[0].value);
+  const [withdrawAccount, setWithdrawAccount] = useState('');
+  const [withdrawing, setWithdrawing] = useState(false);
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
+  const [withdrawSuccess, setWithdrawSuccess] = useState<string | null>(null);
+  const [showPayoutHistory, setShowPayoutHistory] = useState(false);
 
   const [eventServices, setEventServices] = useState<EventService[]>([]);
   const [newEventService, setNewEventService] = useState({ name: '', price: '' });
@@ -112,6 +169,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [slugError, setSlugError] = useState('');
   const [bookingInterval, setBookingInterval] = useState(90);
   const [advanceDays, setAdvanceDays] = useState(30);
+  const [defaultPayoutMode, setDefaultPayoutMode] = useState(PAYOUT_MODES[0].value);
+  const [defaultPayoutAccount, setDefaultPayoutAccount] = useState('');
 
   const bookingUrl = `${window.location.origin}/booking/${settings?.slug || ''}`;
 
@@ -119,11 +178,33 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     return bookings.reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
   }, [bookings]);
 
+  // Montant déjà retiré ou en cours de retrait (created / pending / processing / success)
+  const takenOrInFlight = useMemo(() => {
+    return payoutRequests
+      .filter(p => p.status !== 'failed')
+      .reduce((sum, p) => sum + p.amount, 0);
+  }, [payoutRequests]);
+
+  // Solde réellement disponible pour un nouveau retrait
+  const availableBalance = useMemo(() => {
+    return Math.max(0, totalNetRevenue - takenOrInFlight);
+  }, [totalNetRevenue, takenOrInFlight]);
+
+  const hasPendingPayout = useMemo(
+    () => payoutRequests.some(p => p.status === 'created' || p.status === 'pending' || p.status === 'processing'),
+    [payoutRequests]
+  );
+
   const recentBookings = useMemo(() => {
     return [...bookings]
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
       .slice(0, 8);
   }, [bookings]);
+
+  const recentPayouts = useMemo(() => {
+    return [...payoutRequests]
+      .sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime());
+  }, [payoutRequests]);
 
   const loadAll = async () => {
     setLoading(true);
@@ -142,6 +223,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         setAdvanceDays(s.advance_booking_days || 30);
         setEventServices(s.event_services || []);
         if (s.opening_hours) setOpeningHours(s.opening_hours);
+        if (s.default_payout_mode) setDefaultPayoutMode(s.default_payout_mode);
+        if (s.default_payout_account) setDefaultPayoutAccount(s.default_payout_account);
       }
 
       const { data: b } = await supabase
@@ -151,6 +234,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         .order('booking_time', { ascending: false });
 
       setBookings(b || []);
+
+      const { data: p } = await supabase
+        .from('payout_requests').select('*')
+        .eq('user_id', userId)
+        .order('requested_at', { ascending: false });
+
+      setPayoutRequests(p || []);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
@@ -368,6 +458,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         event_services: eventServices,
         opening_hours: openingHours,
         booking_type: 'event',
+        default_payout_mode: defaultPayoutMode,
+        default_payout_account: defaultPayoutAccount.replace(/\D/g, ''),
         updated_at: new Date().toISOString(),
       };
 
@@ -420,6 +512,81 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     await navigator.clipboard.writeText(bookingUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // ── Retrait automatique du solde ──
+  const openWithdrawModal = () => {
+    setWithdrawError(null);
+    setWithdrawSuccess(null);
+    setWithdrawAmount(availableBalance > 0 ? String(availableBalance) : '');
+    setWithdrawMode(defaultPayoutMode || PAYOUT_MODES[0].value);
+    setWithdrawAccount(defaultPayoutAccount || '');
+    setShowWithdrawModal(true);
+  };
+
+  const handleWithdraw = async () => {
+    setWithdrawError(null);
+    setWithdrawSuccess(null);
+
+    const amount = Math.round(Number(withdrawAmount));
+    const account = withdrawAccount.replace(/\D/g, '');
+
+    if (!amount || amount < MIN_PAYOUT_AMOUNT) {
+      setWithdrawError(`Le montant minimum de retrait est ${MIN_PAYOUT_AMOUNT} CFA`);
+      return;
+    }
+    if (amount > availableBalance) {
+      setWithdrawError(`Solde insuffisant. Disponible: ${availableBalance.toLocaleString()} CFA`);
+      return;
+    }
+    if (!/^\d{6,12}$/.test(account)) {
+      setWithdrawError('Numéro de compte invalide (sans indicatif pays)');
+      return;
+    }
+
+    setWithdrawing(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) {
+        setWithdrawError('Session expirée, reconnectez-vous');
+        setWithdrawing(false);
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('request-payout', {
+        body: { amount, payout_mode: withdrawMode, payout_account: account },
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (error) {
+        setWithdrawError(error.message || 'Erreur lors du retrait');
+        setWithdrawing(false);
+        return;
+      }
+      if (data?.error) {
+        setWithdrawError(data.error);
+        setWithdrawing(false);
+        return;
+      }
+
+      if (data?.status === 'success') {
+        setWithdrawSuccess(`✅ ${amount.toLocaleString()} CFA envoyés avec succès !`);
+      } else {
+        setWithdrawSuccess(`⏳ Retrait en cours de traitement, ça peut prendre jusqu'à 24h.`);
+      }
+
+      await loadAll();
+      setTimeout(() => {
+        setShowWithdrawModal(false);
+        setWithdrawSuccess(null);
+      }, 2500);
+    } catch (err) {
+      console.error(err);
+      setWithdrawError('Erreur réseau, réessayez');
+    } finally {
+      setWithdrawing(false);
+    }
   };
 
   const filteredBookings = filter === 'all' ? bookings : bookings.filter(b => b.status === filter);
@@ -631,6 +798,38 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             </div>
           </div>
 
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
+            <h3 className="text-white font-bold flex items-center gap-2">
+              <Wallet className="w-4 h-4 text-emerald-400" />
+              Retrait automatique
+            </h3>
+            <p className="text-zinc-500 text-xs">
+              Renseignez votre mode de retrait par défaut pour retirer votre solde en un clic depuis l'accueil.
+            </p>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Mode de retrait</label>
+              <select
+                value={defaultPayoutMode}
+                onChange={(e) => setDefaultPayoutMode(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+              >
+                {PAYOUT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Numéro (sans indicatif pays)</label>
+              <input
+                type="tel"
+                value={defaultPayoutAccount}
+                onChange={(e) => setDefaultPayoutAccount(e.target.value.replace(/\D/g, ''))}
+                placeholder="771234567"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+              />
+            </div>
+          </div>
+
           <button
             onClick={handleSave}
             disabled={saving}
@@ -663,18 +862,40 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           </button>
         </div>
 
-        <div className="text-center mb-6">
+        <div className="text-center mb-4">
           <div className="flex items-center justify-center gap-2">
             <span className="text-white text-5xl font-black tracking-tight">
-              {balanceVisible ? totalNetRevenue.toLocaleString('fr-FR') : '••••••'}
+              {balanceVisible ? availableBalance.toLocaleString('fr-FR') : '••••••'}
             </span>
             <span className="text-white/70 text-2xl font-bold">F</span>
             <button onClick={() => setBalanceVisible(v => !v)} className="text-white/60 hover:text-white transition ml-1">
               {balanceVisible ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
             </button>
           </div>
-          <p className="text-white/60 text-xs mt-1">Revenu net encaissé (après frais)</p>
+          <p className="text-white/60 text-xs mt-1">Solde disponible pour retrait (après frais)</p>
         </div>
+
+        <div className="flex gap-2 mb-6">
+          <button
+            onClick={openWithdrawModal}
+            disabled={availableBalance < MIN_PAYOUT_AMOUNT}
+            className="flex-1 flex items-center justify-center gap-2 bg-white text-indigo-700 font-bold py-3 rounded-xl active:scale-[0.98] transition disabled:opacity-40 disabled:active:scale-100"
+          >
+            <ArrowDownToLine className="w-4 h-4" />
+            Retirer
+          </button>
+          {payoutRequests.length > 0 && (
+            <button
+              onClick={() => setShowPayoutHistory(true)}
+              className="flex items-center justify-center gap-2 bg-white/15 text-white font-semibold py-3 px-4 rounded-xl active:scale-[0.98] transition"
+            >
+              <Clock className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+        {hasPendingPayout && (
+          <p className="text-white/70 text-xs text-center -mt-4 mb-4">⏳ Un retrait est en cours de traitement</p>
+        )}
 
         {settings && salonQRCode && (
           <div className="bg-sky-400/90 rounded-2xl p-4 flex flex-col items-center gap-2">
@@ -863,6 +1084,131 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           )}
         </div>
       </div>
+
+      {/* MODAL RETRAIT */}
+      {showWithdrawModal && (
+        <div className="fixed inset-0 z-[100] bg-black/70 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full sm:max-w-md bg-zinc-900 border border-zinc-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-white font-bold text-lg flex items-center gap-2">
+                <ArrowDownToLine className="w-5 h-5 text-emerald-400" />
+                Retirer mon solde
+              </h2>
+              <button
+                onClick={() => setShowWithdrawModal(false)}
+                className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+            </div>
+
+            <p className="text-zinc-500 text-xs">
+              Solde disponible : <span className="text-emerald-400 font-semibold">{availableBalance.toLocaleString()} CFA</span>
+            </p>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Montant à retirer (CFA)</label>
+              <input
+                type="number"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value)}
+                max={availableBalance}
+                min={MIN_PAYOUT_AMOUNT}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+                placeholder={`Min. ${MIN_PAYOUT_AMOUNT}`}
+              />
+            </div>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Mode de retrait</label>
+              <select
+                value={withdrawMode}
+                onChange={(e) => setWithdrawMode(e.target.value)}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+              >
+                {PAYOUT_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">Numéro (sans indicatif pays)</label>
+              <input
+                type="tel"
+                value={withdrawAccount}
+                onChange={(e) => setWithdrawAccount(e.target.value.replace(/\D/g, ''))}
+                placeholder="771234567"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+              />
+            </div>
+
+            {withdrawError && (
+              <div className="bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl p-3 flex items-center gap-2 text-sm">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                {withdrawError}
+              </div>
+            )}
+            {withdrawSuccess && (
+              <div className="bg-green-500/20 border border-green-500/40 text-green-300 rounded-xl p-3 flex items-center gap-2 text-sm">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                {withdrawSuccess}
+              </div>
+            )}
+
+            <button
+              onClick={handleWithdraw}
+              disabled={withdrawing}
+              className="w-full bg-white text-black font-bold py-3.5 rounded-xl active:scale-[0.98] transition disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {withdrawing && <div className="animate-spin rounded-full h-4 w-4 border-2 border-black/30 border-t-black" />}
+              {withdrawing ? 'Envoi en cours...' : 'Confirmer le retrait'}
+            </button>
+            <p className="text-zinc-600 text-[11px] text-center">
+              Traitement instantané pour la plupart des wallets, jusqu'à 24h pour certains opérateurs.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL HISTORIQUE DES RETRAITS */}
+      {showPayoutHistory && (
+        <div className="fixed inset-0 z-[100] bg-black/70 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full sm:max-w-md bg-zinc-900 border border-zinc-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between shrink-0">
+              <h2 className="text-white font-bold text-lg">Historique des retraits</h2>
+              <button
+                onClick={() => setShowPayoutHistory(false)}
+                className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+            </div>
+
+            <div className="space-y-2 overflow-y-auto">
+              {recentPayouts.map(p => (
+                <div key={p.id} className="bg-zinc-800 rounded-xl p-3 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-white font-semibold text-sm">
+                      {p.amount.toLocaleString()} CFA
+                      <span className="text-zinc-500 font-normal">
+                        {' '}· {PAYOUT_MODES.find(m => m.value === p.payout_mode)?.label || p.payout_mode}
+                      </span>
+                    </p>
+                    <p className="text-zinc-500 text-xs">
+                      {new Date(p.requested_at).toLocaleDateString('fr-FR')} à {new Date(p.requested_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                    {p.status === 'failed' && p.response_text && (
+                      <p className="text-red-400 text-xs mt-0.5">{p.response_text}</p>
+                    )}
+                  </div>
+                  <span className={`shrink-0 text-[10px] px-2 py-1 rounded-full border font-semibold ${PAYOUT_STATUS_COLORS[p.status]}`}>
+                    {PAYOUT_STATUS_LABELS[p.status]}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL SCANNER */}
       {scanning && (
