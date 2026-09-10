@@ -29,7 +29,8 @@ interface SalonProfile {
   is_active: boolean;
   created_at: string;
   rating?: number;
-  slug?: string;
+  // ✅ FIX: le slug peut être null si le salon n'a pas activé ses réservations.
+  slug: string | null;
   has_active_subscription?: boolean;
   is_following?: boolean;
   followers_count?: number;
@@ -86,6 +87,13 @@ function getSalonDisplayName(salon: Partial<SalonProfile>): string {
   return 'Salon';
 }
 
+// ── Affichage d'adresse raccourci ──
+function shortAddress(address?: string | null, maxLen = 28): string {
+  if (!address || !address.trim()) return '';
+  const first = address.split(',')[0].trim();
+  return first.length > maxLen ? first.slice(0, maxLen).trim() + '…' : first;
+}
+
 // ── Générer un device_id unique ──
 function getDeviceId(): string {
   let deviceId = localStorage.getItem('device_id');
@@ -96,26 +104,26 @@ function getDeviceId(): string {
   return deviceId;
 }
 
-// ── Fonction pour obtenir le statut des stories d'un salon ──
+// ── Statut des stories d'un salon ──
 function getStoryStatus(
-  salonId: string, 
-  stories: Story[], 
+  salonId: string,
+  stories: Story[],
   viewedStories: Set<string>
 ): { hasStories: boolean; allViewed: boolean; hasUnviewed: boolean } {
   const salonStories = stories.filter(s => s.profile_id === salonId);
   const hasStories = salonStories.length > 0;
-  
+
   if (!hasStories) {
     return { hasStories: false, allViewed: false, hasUnviewed: false };
   }
-  
+
   const allViewed = salonStories.every(s => viewedStories.has(s.id));
   const hasUnviewed = salonStories.some(s => !viewedStories.has(s.id));
-  
+
   return { hasStories, allViewed, hasUnviewed };
 }
 
-// ── Formatage de la durée façon "app de course" ──
+// ── Formatage de la durée ──
 function formatDuration(minutes: number): string {
   if (minutes < 1) return '< 1 min';
   if (minutes < 60) return `${Math.round(minutes)} min`;
@@ -124,7 +132,7 @@ function formatDuration(minutes: number): string {
   return `${h} h ${m > 0 ? m + ' min' : ''}`.trim();
 }
 
-// ── Composant StoryViewer style Instagram ──
+// ── Composant StoryViewer ──
 function StoryViewer({
   stories,
   onClose,
@@ -155,7 +163,6 @@ function StoryViewer({
   const hasViewedRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Précharger l'image suivante
   useEffect(() => {
     const nextIndex = currentIndex + 1;
     if (nextIndex < stories.length) {
@@ -176,17 +183,15 @@ function StoryViewer({
     }
   }, [salonId, onStoryViewed]);
 
-  // Réinitialiser l'état de chargement quand l'index change
   useEffect(() => {
     setIsLoading(true);
     setIsImageLoaded(false);
     setProgress(0);
   }, [currentIndex]);
 
-  // Timer uniquement quand l'image est chargée
   useEffect(() => {
     if (isPaused || !isImageLoaded) return;
-    
+
     timerRef.current = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
@@ -249,7 +254,6 @@ function StoryViewer({
     }
   };
 
-  // Calculer le temps restant (48h max)
   const getTimeRemaining = () => {
     const created = new Date(currentStory.created_at);
     const now = new Date();
@@ -269,7 +273,6 @@ function StoryViewer({
       onMouseDown={() => setIsPaused(true)}
       onMouseUp={() => setIsPaused(false)}
     >
-      {/* Barre de progression */}
       <div className="flex gap-1 px-3 pt-3 pb-2 flex-shrink-0">
         {stories.map((_, index) => (
           <div key={index} className="flex-1 h-0.5 bg-zinc-600 rounded-full overflow-hidden">
@@ -283,9 +286,8 @@ function StoryViewer({
         ))}
       </div>
 
-      {/* Header de la story */}
       <div className="flex items-center justify-between px-4 py-2 flex-shrink-0">
-        <button 
+        <button
           onClick={handleAvatarClick}
           className="flex items-center gap-3 hover:opacity-80 transition group min-w-0"
         >
@@ -314,14 +316,13 @@ function StoryViewer({
         </button>
       </div>
 
-      {/* Contenu de la story - responsive avec aspect ratio 9:16 */}
       <div className="flex-1 flex items-center justify-center px-2 py-1 min-h-0 relative">
         {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
           </div>
         )}
-        
+
         <div className="relative w-full h-full flex items-center justify-center">
           {isVideo ? (
             <video
@@ -348,7 +349,6 @@ function StoryViewer({
         </div>
       </div>
 
-      {/* Actions en bas */}
       <div className="absolute bottom-20 left-0 right-0 flex justify-center px-4 flex-shrink-0">
         <button
           onClick={handleLikeClick}
@@ -359,7 +359,6 @@ function StoryViewer({
         </button>
       </div>
 
-      {/* Navigation gauche/droite */}
       <button
         onClick={() => currentIndex > 0 && setCurrentIndex((p) => p - 1)}
         className="absolute left-0 top-1/2 -translate-y-1/2 w-12 h-24 flex items-center justify-start pl-2 text-white/30 hover:text-white/60 transition"
@@ -386,7 +385,7 @@ export default function PublicHomePage({
   onNavigateToPage,
 }: PublicHomePageProps): React.ReactElement {
   const navigate = useNavigate();
-  
+
   const [salons, setSalons] = useState<SalonProfile[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
@@ -410,7 +409,6 @@ export default function PublicHomePage({
   const [mapFilterMode, setMapFilterMode] = useState<MapFilterMode>('all');
   const [showSortMenu, setShowSortMenu] = useState(false);
 
-  // ── État de l'itinéraire (façon Yango) ──
   const [routeInfo, setRouteInfo] = useState<RouteInfo | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -439,7 +437,7 @@ export default function PublicHomePage({
 
   const markStoryAsViewed = useCallback((salonId: string) => {
     const salonStories = stories.filter(s => s.profile_id === salonId);
-    
+
     setViewedStories(prev => {
       const newSet = new Set(prev);
       salonStories.forEach(s => newSet.add(s.id));
@@ -463,7 +461,6 @@ export default function PublicHomePage({
     }
   }, [salons]);
 
-  // ── Like une story ──
   const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
     try {
       const deviceId = getDeviceId();
@@ -493,13 +490,13 @@ export default function PublicHomePage({
       if (existing) {
         await supabase.from('likes').delete().eq('id', existing.id);
         showToast('Like retiré');
-        
+
         setUserLikes(prev => {
           const newSet = new Set(prev);
           newSet.delete(storyId);
           return newSet;
         });
-        setStories(prev => prev.map(s => 
+        setStories(prev => prev.map(s =>
           s.id === storyId ? { ...s, like_count: (s.like_count || 0) - 1 } : s
         ));
       } else {
@@ -515,9 +512,9 @@ export default function PublicHomePage({
 
         await supabase.from('likes').insert(insertData);
         showToast('Like ajouté ❤️');
-        
+
         setUserLikes(prev => new Set(prev).add(storyId));
-        setStories(prev => prev.map(s => 
+        setStories(prev => prev.map(s =>
           s.id === storyId ? { ...s, like_count: (s.like_count || 0) + 1 } : s
         ));
       }
@@ -568,7 +565,6 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId]);
 
-  // ── Noter un salon ──
   const rateSalon = useCallback(async (salonId: string, rating: number) => {
     const deviceId = getDeviceId();
 
@@ -637,9 +633,9 @@ export default function PublicHomePage({
       if (existingReview) {
         const { error: updateError } = await supabase
           .from('reviews')
-          .update({ 
-            rating, 
-            updated_at: new Date().toISOString() 
+          .update({
+            rating,
+            updated_at: new Date().toISOString()
           })
           .eq('id', existingReview.id);
 
@@ -685,8 +681,8 @@ export default function PublicHomePage({
       const count = allReviews?.length || 0;
       const newAvg = count > 0 ? total / count : 0;
 
-      setSalons(prev => prev.map(s => 
-        s.id === salonId 
+      setSalons(prev => prev.map(s =>
+        s.id === salonId
           ? { ...s, rating: newAvg, user_rating: rating }
           : s
       ));
@@ -762,7 +758,6 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId]);
 
-  // ── Suivre un salon (fonctionne pour connectés ET invités) ──
   const toggleFollow = useCallback(async (salonId: string) => {
     if (isAuthenticated && currentUserId === salonId) {
       showToast("Vous ne pouvez pas vous abonner à votre propre compte");
@@ -800,12 +795,12 @@ export default function PublicHomePage({
             })
             .select()
             .single();
-          
+
           if (createError) {
             console.error('Erreur création profil:', createError);
             throw createError;
           }
-          
+
           if (newProfile) {
             profileId = newProfile.id;
           } else {
@@ -853,13 +848,13 @@ export default function PublicHomePage({
         }
 
         showToast('Vous ne suivez plus ce salon');
-        
-        setSalons(prev => prev.map(s => 
-          s.id === salonId 
+
+        setSalons(prev => prev.map(s =>
+          s.id === salonId
             ? { ...s, is_following: false, followers_count: Math.max((s.followers_count || 1) - 1, 0) }
             : s
         ));
-        
+
         if (isAuthenticated && currentUserId) {
           setFollowingIds(prev => {
             const newSet = new Set(prev);
@@ -912,12 +907,12 @@ export default function PublicHomePage({
               })
               .select()
               .single();
-            
+
             if (createError) {
               console.error('Erreur création profil:', createError);
               throw createError;
             }
-            
+
             if (newProfile) {
               profileId = newProfile.id;
             } else {
@@ -940,13 +935,13 @@ export default function PublicHomePage({
         }
 
         showToast('Vous suivez maintenant ce salon');
-        
-        setSalons(prev => prev.map(s => 
-          s.id === salonId 
+
+        setSalons(prev => prev.map(s =>
+          s.id === salonId
             ? { ...s, is_following: true, followers_count: (s.followers_count || 0) + 1 }
             : s
         ));
-        
+
         if (isAuthenticated && currentUserId) {
           setFollowingIds(prev => new Set(prev).add(salonId));
         } else {
@@ -980,7 +975,7 @@ export default function PublicHomePage({
     setLoading(true);
     try {
       console.log('🔄 Chargement des profils...');
-      
+
       const { data: profiles, error: profilesError } = await supabase
         .from('profiles')
         .select('*')
@@ -994,14 +989,19 @@ export default function PublicHomePage({
 
       console.log('📊 Profils récupérés:', profiles?.length || 0);
 
-      const userIds = profiles?.map((p) => p.id) || [];
+      // ⚠️ IMPORTANT : on distingue deux identifiants différents
+      // - profiles.id      → utilisé par followers/reviews/stories (FK vers profiles)
+      // - profiles.user_id → utilisé par subscriptions/booking_settings (FK vers auth.users)
+      const profileIds = profiles?.map((p) => p.id) || [];
+      const authUserIds = (profiles?.map((p) => p.user_id).filter(Boolean) as string[]) || [];
 
+      // ── Subscriptions (utilise auth.users.id) ──
       let subscriptionMap: Record<string, boolean> = {};
-      if (userIds.length > 0) {
+      if (authUserIds.length > 0) {
         const { data: subscriptions } = await supabase
           .from('subscriptions')
           .select('user_id, status')
-          .in('user_id', userIds)
+          .in('user_id', authUserIds)
           .eq('status', 'active');
 
         if (subscriptions) {
@@ -1011,6 +1011,29 @@ export default function PublicHomePage({
         }
       }
 
+      // ── Slug de réservation (utilise auth.users.id) ──
+      // ✅ FIX : on interroge booking_settings avec les authUserIds (et non profileIds).
+      // Avant, on passait profiles.id → booking_settings.user_id, ce qui ne matchait jamais.
+      let slugMap: Record<string, string> = {};
+      if (authUserIds.length > 0) {
+        const { data: bookingSettingsRows, error: bsError } = await supabase
+          .from('booking_settings')
+          .select('user_id, slug')
+          .in('user_id', authUserIds)
+          .eq('is_active', true);
+
+        if (bsError) {
+          console.error('Erreur chargement booking_settings:', bsError);
+        }
+
+        if (bookingSettingsRows) {
+          bookingSettingsRows.forEach((row: any) => {
+            if (row.user_id && row.slug) slugMap[row.user_id] = row.slug;
+          });
+        }
+      }
+
+      // ── Following (utilise profiles.id) ──
       let userFollowingIds: Set<string> = new Set();
       let guestFollowingIdsSet: Set<string> = new Set();
       const deviceId = getDeviceId();
@@ -1047,12 +1070,13 @@ export default function PublicHomePage({
         }
       }
 
+      // ── Followers count (utilise profiles.id) ──
       let followersMap: Record<string, number> = {};
-      if (userIds.length > 0) {
+      if (profileIds.length > 0) {
         const { data: followers } = await supabase
           .from('followers')
           .select('following_id')
-          .in('following_id', userIds)
+          .in('following_id', profileIds)
           .eq('status', 'active');
 
         if (followers) {
@@ -1062,12 +1086,13 @@ export default function PublicHomePage({
         }
       }
 
+      // ── Reviews (utilise profiles.id) ──
       let reviewsMap: Record<string, { count: number; avg: number }> = {};
-      if (userIds.length > 0) {
+      if (profileIds.length > 0) {
         const { data: reviews } = await supabase
           .from('reviews')
           .select('profile_id, rating')
-          .in('profile_id', userIds);
+          .in('profile_id', profileIds);
 
         if (reviews) {
           reviews.forEach((r) => {
@@ -1084,6 +1109,7 @@ export default function PublicHomePage({
         });
       }
 
+      // ── Stories ──
       const { data: storiesData, error: storiesError } = await supabase
         .from('stories')
         .select('*')
@@ -1092,14 +1118,17 @@ export default function PublicHomePage({
 
       if (storiesError) console.error('Erreur stories:', storiesError);
 
+      // ── Construction de la liste ──
       const salonsWithStats = (profiles || []).map((p) => {
         const isFollowed = userFollowingIds.has(p.id) || guestFollowingIdsSet.has(p.id);
         const isOwnProfile = isAuthenticated && currentUserId === p.user_id;
         const reviewData = reviewsMap[p.id];
         const displayName = getSalonDisplayName(p);
-        const slug = displayName !== 'Salon'
-          ? displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
-          : p.id;
+
+        // ✅ FIX : slug = slugMap[p.user_id] (jamais p.id en fallback).
+        // Si le salon n'a pas de booking_settings actif, slug = null → le bouton
+        // Réserver sera désactivé et le client ne sera pas envoyé vers une 404.
+        const slug = slugMap[p.user_id] || null;
 
         return {
           id: p.id,
@@ -1118,7 +1147,7 @@ export default function PublicHomePage({
           created_at: p.created_at || new Date().toISOString(),
           rating: reviewData?.avg || 0,
           slug,
-          has_active_subscription: subscriptionMap[p.id] || false,
+          has_active_subscription: subscriptionMap[p.user_id] || false,
           is_following: isFollowed && !isOwnProfile,
           followers_count: followersMap[p.id] || 0,
           is_own_profile: isOwnProfile,
@@ -1131,12 +1160,12 @@ export default function PublicHomePage({
       setSalons(salonsWithStats);
       setSubscriptionSalons(followedSalons);
       setStories(storiesData || []);
-      
+
       await loadUserLikes();
       await loadUserRatings();
-      
+
       console.log('📊 Salons chargés:', salonsWithStats.length);
-      
+
     } catch (err) {
       console.error('Erreur chargement:', err);
     } finally {
@@ -1225,7 +1254,6 @@ export default function PublicHomePage({
 
   const mapSalons = useMemo(() => nearbySalons.filter((s) => !s.is_own_profile), [nearbySalons]);
 
-  // ── Itinéraire ──
   const startItinerary = useCallback(async (salon: SalonProfile) => {
     if (!salon.latitude || !salon.longitude) {
       showToast('Position du salon indisponible');
@@ -1304,23 +1332,25 @@ export default function PublicHomePage({
     salonMapRef.current?.centerOnUser();
   }, []);
 
-  // ── Fonction pour gérer la réservation ──
+  // ✅ FIX : handleBooking bloque la redirection si le salon n'a pas de slug.
   const handleBooking = (salon: SalonProfile) => {
-    const slug = salon.slug || salon.id;
-    console.log('🔍 Redirection vers la réservation du salon:', slug);
-    navigate(`/booking/${slug}`);
+    if (!salon.slug) {
+      showToast("Ce salon n'a pas encore activé les réservations en ligne");
+      return;
+    }
+    console.log('🔍 Redirection vers la réservation du salon:', salon.slug);
+    navigate(`/booking/${salon.slug}`);
   };
 
-  // ── Composant de sélecteur d'étoiles ──
-  const StarRating = ({ 
-    rating, 
-    onRate, 
-    isLoading, 
+  const StarRating = ({
+    rating,
+    onRate,
+    isLoading,
     isOwnProfile,
     isAuthenticated
-  }: { 
-    rating: number | null | undefined; 
-    onRate: (value: number) => void; 
+  }: {
+    rating: number | null | undefined;
+    onRate: (value: number) => void;
     isLoading: boolean;
     isOwnProfile: boolean;
     isAuthenticated: boolean;
@@ -1378,34 +1408,33 @@ export default function PublicHomePage({
     );
   };
 
-  // ── Composant pour l'avatar avec cercle de story ──
-  const StoryAvatar = ({ 
-    salon, 
+  const StoryAvatar = ({
+    salon,
     onClick,
     size = 'md'
-  }: { 
-    salon: SalonProfile; 
+  }: {
+    salon: SalonProfile;
     onClick: () => void;
     size?: 'sm' | 'md' | 'lg';
   }) => {
     const { hasStories, allViewed, hasUnviewed } = getStoryStatusForSalon(salon.id);
     const displayName = getSalonDisplayName(salon);
     const isOwnProfile = isAuthenticated && currentUserId === salon.user_id;
-    
+
     const sizeClasses = {
       sm: 'w-12 h-12',
       md: 'w-16 h-16',
       lg: 'w-20 h-20'
     };
-    
+
     const textSize = {
       sm: 'text-[8px]',
       md: 'text-[10px]',
       lg: 'text-xs'
     };
-    
+
     let circleColor = 'border-zinc-600';
-    
+
     if (hasStories) {
       if (hasUnviewed) {
         circleColor = 'bg-gradient-to-tr from-yellow-400 to-pink-500';
@@ -1413,7 +1442,7 @@ export default function PublicHomePage({
         circleColor = 'bg-zinc-600';
       }
     }
-    
+
     if (isOwnProfile) {
       circleColor = 'border-2 border-blue-500';
     }
@@ -1444,7 +1473,6 @@ export default function PublicHomePage({
     );
   };
 
-  // ── Rendu de la section "Mes salons" ──
   const renderFollowedSection = (): React.ReactElement | null => {
     const allFollowed = [...subscriptionSalons];
 
@@ -1498,7 +1526,6 @@ export default function PublicHomePage({
     );
   };
 
-  // ── Rendu de la carte interactive ──
   const renderMap = (): React.ReactElement => {
     const sortLabel: Record<SortMode, string> = {
       distance: 'Plus proche',
@@ -1772,9 +1799,10 @@ export default function PublicHomePage({
                   </button>
                   <button
                     onClick={() => handleBooking(routeInfo.salon)}
-                    className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                    disabled={!routeInfo.salon.slug}
+                    className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition disabled:opacity-40 disabled:cursor-not-allowed"
                   >
-                    <Calendar className="w-4 h-4" /> Réserver
+                    <Calendar className="w-4 h-4" /> {routeInfo.salon.slug ? 'Réserver' : 'Indisponible'}
                   </button>
                 </div>
               </div>
@@ -1788,11 +1816,11 @@ export default function PublicHomePage({
               <div className="text-center py-8 px-4">
                 <MapPin className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
                 <p className="text-zinc-500 text-xs">Aucun salon trouvé dans ce rayon</p>
-                <button 
+                <button
                   onClick={() => {
                     setRadiusFilter(Infinity);
                     showToast("Affichage de tous les salons");
-                  }} 
+                  }}
                   className="text-emerald-400 text-xs font-medium mt-1 hover:underline"
                 >
                   Voir tous les salons
@@ -1846,7 +1874,7 @@ export default function PublicHomePage({
                             </>
                           )}
                         </div>
-                        {salon.address && <p className="text-zinc-500 text-[10px] truncate">{salon.address}</p>}
+                        {salon.address && <p className="text-zinc-500 text-[10px] truncate">{shortAddress(salon.address)}</p>}
                       </div>
                       <div className="flex items-center gap-1 flex-shrink-0">
                         <button
@@ -1888,7 +1916,6 @@ export default function PublicHomePage({
     );
   };
 
-  // ── Rendu de tous les salons ──
   const renderAllSalons = (): React.ReactElement => {
     const sortedAll = [...filteredSalons]
       .filter(s => !s.is_own_profile)
@@ -1927,7 +1954,7 @@ export default function PublicHomePage({
             const isFollowing = followingIds.has(salon.id) || guestFollowingIds.has(salon.id);
             const isLoading = followLoading[salon.id] || false;
             const displayName = getSalonDisplayName(salon);
-            
+
             const salonStories = stories.filter(s => s.profile_id === salon.id);
             const hasStories = salonStories.length > 0;
             const { hasUnviewed } = getStoryStatusForSalon(salon.id);
@@ -1952,10 +1979,10 @@ export default function PublicHomePage({
                 <div className="flex items-center p-3 gap-3">
                   <div className="relative">
                     {hasStories && (
-                      <div 
+                      <div
                         className={`absolute -inset-0.5 rounded-full ${
-                          hasUnviewed 
-                            ? 'bg-gradient-to-tr from-yellow-400 to-pink-500' 
+                          hasUnviewed
+                            ? 'bg-gradient-to-tr from-yellow-400 to-pink-500'
                             : 'bg-zinc-600'
                         }`}
                       />
@@ -1996,7 +2023,7 @@ export default function PublicHomePage({
                         </>
                       )}
                     </div>
-                    {salon.address && <p className="text-zinc-500 text-[10px] truncate mt-0.5">{salon.address}</p>}
+                    {salon.address && <p className="text-zinc-500 text-[10px] truncate mt-0.5">{shortAddress(salon.address)}</p>}
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <button
@@ -2026,11 +2053,11 @@ export default function PublicHomePage({
                         <UserPlusIcon className="w-4 h-4 text-zinc-400" />
                       )}
                     </button>
-                    <button 
+                    <button
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedSalon(salon);
-                      }} 
+                      }}
                       className="p-1.5 rounded-lg hover:bg-zinc-800 transition"
                     >
                       <ChevronRight className="w-4 h-4 text-zinc-500" />
@@ -2045,7 +2072,6 @@ export default function PublicHomePage({
     );
   };
 
-  // ── Modal de détails du salon ──
   const renderSalonModal = (): React.ReactElement | null => {
     if (!selectedSalon) return null;
 
@@ -2073,7 +2099,7 @@ export default function PublicHomePage({
               <img src={selectedSalon.cover_image} alt="" className="w-full h-full object-cover rounded-t-2xl" />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent rounded-t-2xl" />
-            
+
             <button onClick={() => setSelectedSalon(null)} className="absolute top-4 right-4 text-white/80 hover:text-white transition bg-black/30 rounded-full p-1.5">
               <X className="w-5 h-5" />
             </button>
@@ -2100,7 +2126,7 @@ export default function PublicHomePage({
                 {selectedSalon.address && (
                   <p className="text-zinc-400 text-sm flex items-center gap-1">
                     <MapPin className="w-3.5 h-3.5" />
-                    {selectedSalon.address}
+                    {shortAddress(selectedSalon.address)}
                   </p>
                 )}
               </div>
@@ -2144,11 +2170,14 @@ export default function PublicHomePage({
             )}
 
             <div className="mt-4 flex flex-col gap-2">
+              {/* ✅ FIX : bouton désactivé si pas de slug */}
               <button
                 onClick={() => handleBooking(selectedSalon)}
-                className="w-full flex items-center justify-center gap-2 bg-white text-black font-semibold py-3 rounded-xl text-sm hover:bg-zinc-200 transition"
+                disabled={!selectedSalon.slug}
+                className="w-full flex items-center justify-center gap-2 bg-white text-black font-semibold py-3 rounded-xl text-sm hover:bg-zinc-200 transition disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <Calendar className="w-4 h-4" /> Réserver
+                <Calendar className="w-4 h-4" />
+                {selectedSalon.slug ? 'Réserver' : 'Réservation indisponible'}
               </button>
 
               <div className="flex gap-2">
@@ -2173,8 +2202,8 @@ export default function PublicHomePage({
                     onClick={() => toggleFollow(selectedSalon.id)}
                     disabled={isLoading}
                     className={`flex-1 flex items-center justify-center gap-2 font-semibold py-2.5 rounded-xl text-sm transition disabled:opacity-50 ${
-                      isFollowing 
-                        ? 'bg-zinc-800 hover:bg-zinc-700 text-white' 
+                      isFollowing
+                        ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
                         : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                     }`}
                   >
@@ -2195,16 +2224,16 @@ export default function PublicHomePage({
 
               {!isAuthenticated && (
                 <p className="text-zinc-500 text-[10px] text-center mt-1">
-                  Vous pouvez réserver et suivre des salons sans compte • 
-                  <button 
-                    onClick={onNavigateToLogin} 
+                  Vous pouvez réserver et suivre des salons sans compte •
+                  <button
+                    onClick={onNavigateToLogin}
                     className="text-blue-400 hover:underline ml-1"
                   >
                     Se connecter
                   </button>
                   {" ou "}
-                  <button 
-                    onClick={onNavigateToRegister} 
+                  <button
+                    onClick={onNavigateToRegister}
                     className="text-blue-400 hover:underline"
                   >
                     Créer un compte
@@ -2218,7 +2247,6 @@ export default function PublicHomePage({
     );
   };
 
-  // ── CHARGEMENT ──
   if (loading) {
     return (
       <div className="min-h-screen bg-zinc-950 pb-20 animate-pulse">
@@ -2241,10 +2269,8 @@ export default function PublicHomePage({
     );
   }
 
-  // ── RENDU PRINCIPAL ──
   return (
     <div className="min-h-screen bg-zinc-950 text-white pb-20">
-      {/* HEADER - Style Instagram */}
       <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 py-2">
         <div className="flex items-center justify-between max-w-lg mx-auto">
           <div className="flex items-center gap-2">
@@ -2276,36 +2302,37 @@ export default function PublicHomePage({
         </div>
       </header>
 
-      {/* CONTENU PRINCIPAL */}
       <div className="max-w-lg mx-auto pt-3">
         {renderFollowedSection()}
 
-        {!mapFullscreen && renderMap()}
+        {renderMap()}
 
-        {renderAllSalons()}
+        {!mapFullscreen && renderAllSalons()}
 
-        <div className="mt-8 pb-4 text-center">
-          <p className="text-zinc-600 text-[10px]">
-            {salons.length} salons disponibles • Propulsé par <span className="text-white font-semibold">LE COUPE</span>
-          </p>
-          <div className="flex justify-center gap-4 mt-2">
-            <a href="#" className="text-zinc-500 hover:text-white transition"><Instagram className="w-4 h-4" /></a>
-            <a href="#" className="text-zinc-500 hover:text-white transition"><Facebook className="w-4 h-4" /></a>
-            <a href="#" className="text-zinc-500 hover:text-white transition"><Twitter className="w-4 h-4" /></a>
-            <a href="#" className="text-zinc-500 hover:text-white transition"><Youtube className="w-4 h-4" /></a>
+        {!mapFullscreen && (
+          <div className="mt-8 pb-4 text-center">
+            <p className="text-zinc-600 text-[10px]">
+              {salons.length} salons disponibles • Propulsé par <span className="text-white font-semibold">LE COUPE</span>
+            </p>
+            <div className="flex justify-center gap-4 mt-2">
+              <a href="#" className="text-zinc-500 hover:text-white transition"><Instagram className="w-4 h-4" /></a>
+              <a href="#" className="text-zinc-500 hover:text-white transition"><Facebook className="w-4 h-4" /></a>
+              <a href="#" className="text-zinc-500 hover:text-white transition"><Twitter className="w-4 h-4" /></a>
+              <a href="#" className="text-zinc-500 hover:text-white transition"><Youtube className="w-4 h-4" /></a>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {!mapFullscreen && (
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
-            <button 
+            <button
               onClick={() => {
                 if (onNavigateToPage) {
                   onNavigateToPage('publicHome');
                 }
-              }} 
+              }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center">
@@ -2313,13 +2340,13 @@ export default function PublicHomePage({
               </div>
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Accueil</span>
             </button>
-            
-            <button 
+
+            <button
               onClick={() => {
                 if (onNavigateToPage) {
                   onNavigateToPage('home');
                 }
-              }} 
+              }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center">
@@ -2328,12 +2355,12 @@ export default function PublicHomePage({
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Services</span>
             </button>
 
-            <button 
+            <button
               onClick={() => {
                 if (onNavigateToPage) {
                   onNavigateToPage('bookings');
                 }
-              }} 
+              }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center">
@@ -2342,12 +2369,12 @@ export default function PublicHomePage({
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Réservations</span>
             </button>
 
-            <button 
+            <button
               onClick={() => {
                 if (onNavigateToPage) {
                   onNavigateToPage('revenue');
                 }
-              }} 
+              }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center">
@@ -2356,12 +2383,12 @@ export default function PublicHomePage({
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Revenus</span>
             </button>
 
-            <button 
+            <button
               onClick={() => {
                 if (onNavigateToPage) {
                   onNavigateToPage('expenses');
                 }
-              }} 
+              }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center">
@@ -2372,8 +2399,6 @@ export default function PublicHomePage({
           </div>
         </nav>
       )}
-
-      {mapFullscreen && renderMap()}
 
       {selectedStory && (
         <StoryViewer

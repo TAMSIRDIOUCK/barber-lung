@@ -79,9 +79,11 @@ export function BookingPage({ slug }: BookingPageProps) {
     const load = async () => {
       setLoadingSettings(true);
       try {
+        // ⚠️ FIX: .maybeSingle() au lieu de .single() — évite l'erreur 406 quand
+        // aucun salon actif ne correspond à ce slug (le cas est déjà géré par notFound)
         const { data, error } = await supabase
           .from('booking_settings').select('*')
-          .eq('slug', slug).eq('is_active', true).single();
+          .eq('slug', slug).eq('is_active', true).maybeSingle();
 
         if (error || !data) { setNotFound(true); return; }
         setSettings(data);

@@ -83,8 +83,8 @@ const STATUS_COLORS: Record<Booking['status'], string> = {
 
 const PAYOUT_STATUS_LABELS: Record<PayoutStatus, string> = {
   created: 'Initié',
-  pending: 'En cours',
-  processing: 'En cours',
+  pending: 'En attente',
+  processing: 'Traitement',
   success: 'Réussi',
   failed: 'Échoué',
 };
@@ -203,32 +203,49 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   const recentPayouts = useMemo(() => {
     return [...payoutRequests]
-      .sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime());
+      .sort((a, b) => new Date(b.requested_at).getTime() - new Date(a.requested_at).getTime())
+      .slice(0, 20);
   }, [payoutRequests]);
 
   const loadAll = async () => {
     setLoading(true);
     try {
-      const { data: s } = await supabase
-        .from('booking_settings').select('*')
-        .eq('user_id', userId).single();
+      // ✅ FIX: .maybeSingle() au lieu de .single() — évite l'erreur 406
+      // quand le salon n'a pas encore de ligne booking_settings.
+      const { data: s, error: sError } = await supabase
+        .from('booking_settings')
+        .select('*')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (sError) {
+        console.error('Erreur chargement booking_settings:', sError);
+      }
 
       if (s) {
         setSettings(s);
-        setSlug(s.slug);
-        setSalonName(s.salon_name);
+        setSlug(s.slug || '');
+        setSalonName(s.salon_name || '');
         setWelcomeMsg(s.welcome_message || '');
-        setIsActive(s.is_active);
+        setIsActive(s.is_active ?? true);
         setBookingInterval(s.booking_interval_minutes || 90);
         setAdvanceDays(s.advance_booking_days || 30);
         setEventServices(s.event_services || []);
         if (s.opening_hours) setOpeningHours(s.opening_hours);
         if (s.default_payout_mode) setDefaultPayoutMode(s.default_payout_mode);
         if (s.default_payout_account) setDefaultPayoutAccount(s.default_payout_account);
+      } else {
+        // ✅ FIX: pas encore de config → on initialise un slug par défaut
+        setSettings(null);
+        const defaultSlug = `salon-${userId.slice(0, 8)}`;
+        setSlug(defaultSlug);
+        setSalonName('');
+        setIsActive(true);
       }
 
       const { data: b } = await supabase
-        .from('bookings').select('*')
+        .from('bookings')
+        .select('*')
         .eq('salon_user_id', userId)
         .order('booking_date', { ascending: false })
         .order('booking_time', { ascending: false });
@@ -236,13 +253,17 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       setBookings(b || []);
 
       const { data: p } = await supabase
-        .from('payout_requests').select('*')
+        .from('payout_requests')
+        .select('*')
         .eq('user_id', userId)
         .order('requested_at', { ascending: false });
 
       setPayoutRequests(p || []);
-    } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => { loadAll(); }, [userId]);
@@ -440,17 +461,60 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setOpeningHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
   };
 
+  // ✅ FIX: toggle is_active persisté immédiatement pour que l'activation soit effective
+  // sans devoir cliquer sur "Enregistrer les paramètres".
+  const toggleIsActive = async () => {
+    if (!settings) {
+      alert("⚠️ Enregistrez d'abord les paramètres du salon avant d'activer la page.");
+      return;
+    }
+    const newValue = !isActive;
+    setIsActive(newValue); // optimiste
+
+    const { error } = await supabase
+      .from('booking_settings')
+      .update({ is_active: newValue, updated_at: new Date().toISOString() })
+      .eq('id', settings.id);
+
+    if (error) {
+      console.error('Erreur toggle is_active:', error);
+      setIsActive(!newValue); // rollback
+      alert('❌ Impossible de modifier le statut');
+    } else {
+      setSettings(prev => prev ? { ...prev, is_active: newValue } : prev);
+    }
+  };
+
+  // ✅ FIX: handleSave robuste avec fallback salon_name, gestion erreur 23505,
+  // confirmation si aucun service, et messages d'erreur explicites.
   const handleSave = async () => {
     setSlugError('');
+
     const cleanSlug = slug.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-    if (!cleanSlug) { setSlugError('Le slug ne peut pas être vide'); return; }
-    if (!salonName.trim()) return;
+    if (!cleanSlug) {
+      setSlugError('Le slug ne peut pas être vide');
+      alert('⚠️ Le slug ne peut pas être vide');
+      return;
+    }
+
+    // Fallback : si le salon n'a pas saisi de nom, on en met un par défaut.
+    const cleanSalonName = salonName.trim() || `Salon ${cleanSlug}`;
+
+    // Avertir si aucun service n'est défini (page booking inutilisable sans service).
+    if (eventServices.length === 0) {
+      const confirmNoService = window.confirm(
+        "⚠️ Vous n'avez ajouté aucun service.\n" +
+        "La page de réservation s'affichera mais les clients ne pourront rien réserver.\n\n" +
+        "Voulez-vous quand même enregistrer ?"
+      );
+      if (!confirmNoService) return;
+    }
 
     setSaving(true);
     try {
       const updateData = {
         slug: cleanSlug,
-        salon_name: salonName.trim(),
+        salon_name: cleanSalonName,
         welcome_message: welcomeMsg.trim(),
         is_active: isActive,
         booking_interval_minutes: bookingInterval,
@@ -465,26 +529,40 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
       if (settings) {
         const { error } = await supabase
-          .from('booking_settings').update(updateData).eq('id', settings.id);
+          .from('booking_settings')
+          .update(updateData)
+          .eq('id', settings.id);
         if (error) {
-          if (error.code === '23505') setSlugError('Ce slug est déjà utilisé');
-          else throw error;
+          if (error.code === '23505') {
+            setSlugError('Ce slug est déjà utilisé par un autre salon');
+            alert('❌ Ce slug est déjà pris, choisissez-en un autre');
+            return;
+          }
+          throw error;
         }
       } else {
         const { error } = await supabase
-          .from('booking_settings').insert({ user_id: userId, ...updateData });
+          .from('booking_settings')
+          .insert({ user_id: userId, ...updateData });
         if (error) {
-          if (error.code === '23505') setSlugError('Ce slug est déjà utilisé');
-          else throw error;
+          if (error.code === '23505') {
+            setSlugError('Ce slug est déjà utilisé par un autre salon');
+            alert('❌ Ce slug est déjà pris, choisissez-en un autre');
+            return;
+          }
+          throw error;
         }
       }
+
       await loadAll();
-      alert('Paramètres enregistrés ✅');
+      alert('✅ Paramètres enregistrés avec succès !');
       setView('home');
-    } catch (err) {
-      console.error(err);
-      alert('Erreur lors de la sauvegarde');
-    } finally { setSaving(false); }
+    } catch (err: any) {
+      console.error('Erreur sauvegarde:', err);
+      alert('❌ Erreur lors de la sauvegarde : ' + (err.message || 'inconnue'));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addEventService = () => {
@@ -560,7 +638,29 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       });
 
       if (error) {
-        setWithdrawError(error.message || 'Erreur lors du retrait');
+        // ✅ FIX: récupérer le vrai message d'erreur depuis le body de la réponse
+        let message = error.message || 'Erreur lors du retrait';
+        try {
+          const ctx = (error as any).context;
+          if (ctx && typeof ctx.json === 'function') {
+            const body = await ctx.json();
+            if (body?.error) message = body.error;
+          } else if (ctx && typeof ctx.text === 'function') {
+            const text = await ctx.text();
+            if (text) {
+              try {
+                const parsed = JSON.parse(text);
+                message = parsed.error || parsed.message || text;
+              } catch {
+                message = text;
+              }
+            }
+          }
+        } catch (parseErr) {
+          console.warn('Impossible de parser l\'erreur:', parseErr);
+        }
+        console.error('❌ request-payout a échoué:', message);
+        setWithdrawError(message);
         setWithdrawing(false);
         return;
       }
@@ -621,9 +721,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-white font-bold">Page active</h3>
-                <p className="text-zinc-500 text-xs">Les clients peuvent réserver</p>
+                <p className="text-zinc-500 text-xs">
+                  {settings
+                    ? 'Les clients peuvent réserver'
+                    : 'Enregistrez d\'abord les paramètres ci-dessous'}
+                </p>
               </div>
-              <button onClick={() => setIsActive(!isActive)} className="text-3xl">
+              <button onClick={toggleIsActive} className="text-3xl">
                 {isActive ? <ToggleRight className="w-8 h-8 text-green-500" /> : <ToggleLeft className="w-8 h-8 text-zinc-600" />}
               </button>
             </div>
@@ -1184,27 +1288,31 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             </div>
 
             <div className="space-y-2 overflow-y-auto">
-              {recentPayouts.map(p => (
-                <div key={p.id} className="bg-zinc-800 rounded-xl p-3 flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-white font-semibold text-sm">
-                      {p.amount.toLocaleString()} CFA
-                      <span className="text-zinc-500 font-normal">
-                        {' '}· {PAYOUT_MODES.find(m => m.value === p.payout_mode)?.label || p.payout_mode}
-                      </span>
-                    </p>
-                    <p className="text-zinc-500 text-xs">
-                      {new Date(p.requested_at).toLocaleDateString('fr-FR')} à {new Date(p.requested_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                    </p>
-                    {p.status === 'failed' && p.response_text && (
-                      <p className="text-red-400 text-xs mt-0.5">{p.response_text}</p>
-                    )}
+              {recentPayouts.length === 0 ? (
+                <div className="text-center py-8 text-zinc-500 text-sm">Aucun retrait pour le moment</div>
+              ) : (
+                recentPayouts.map(p => (
+                  <div key={p.id} className="bg-zinc-800 rounded-xl p-3 flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-white font-semibold text-sm">
+                        {p.amount.toLocaleString()} CFA
+                        <span className="text-zinc-500 font-normal">
+                          {' '}· {PAYOUT_MODES.find(m => m.value === p.payout_mode)?.label || p.payout_mode}
+                        </span>
+                      </p>
+                      <p className="text-zinc-500 text-xs">
+                        {new Date(p.requested_at).toLocaleDateString('fr-FR')} à {new Date(p.requested_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                      {p.status === 'failed' && p.response_text && (
+                        <p className="text-red-400 text-xs mt-0.5">{p.response_text}</p>
+                      )}
+                    </div>
+                    <span className={`shrink-0 text-[10px] px-2 py-1 rounded-full border font-semibold ${PAYOUT_STATUS_COLORS[p.status]}`}>
+                      {PAYOUT_STATUS_LABELS[p.status]}
+                    </span>
                   </div>
-                  <span className={`shrink-0 text-[10px] px-2 py-1 rounded-full border font-semibold ${PAYOUT_STATUS_COLORS[p.status]}`}>
-                    {PAYOUT_STATUS_LABELS[p.status]}
-                  </span>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
         </div>
