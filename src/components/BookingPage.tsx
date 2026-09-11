@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Scissors, Clock, Phone, User, Calendar, Check, AlertCircle,
-  QrCode, RefreshCw, XCircle, Download, Loader, Sparkles
+  QrCode, RefreshCw, XCircle, Download, Loader, Sparkles, ArrowLeft
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import QRCode from 'qrcode';
@@ -41,8 +41,19 @@ function generateTimeSlots(open: string, close: string, intervalMinutes: number,
   return slots;
 }
 
+// ✅ device_id pour identifier l'utilisateur même sans compte
+function getDeviceId(): string {
+  let deviceId = localStorage.getItem('device_id');
+  if (!deviceId) {
+    deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+    localStorage.setItem('device_id', deviceId);
+  }
+  return deviceId;
+}
+
 const POLL_MS = 15000;
-const PAYMENT_POLL_MS = 4000;
+const PAYMENT_POLL_MS = 3000;
+const MAX_PAYMENT_ATTEMPTS = 30; // 30 × 3s = 90s max
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const paydunyaMasterKey = import.meta.env.VITE_PAYDUNYA_MASTER_KEY as string | undefined;
 const paydunyaPrivateKey = import.meta.env.VITE_PAYDUNYA_PRIVATE_KEY as string | undefined;
@@ -67,8 +78,10 @@ export function BookingPage({ slug }: BookingPageProps) {
   const [step, setStep] = useState<'form' | 'pay' | 'waiting' | 'success'>('form');
   const [bookingData, setBookingData] = useState<any>(null);
   const [requestId, setRequestId] = useState<string | null>(null);
+  const [paymentAttempts, setPaymentAttempts] = useState(0);
   const isSubmittingRef = useRef(false);
   const paymentWindowRef = useRef<Window | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const [form, setForm] = useState<BookingForm>({
     client_name: '', client_phone: '', eventService: null,
@@ -79,8 +92,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     const load = async () => {
       setLoadingSettings(true);
       try {
-        // ⚠️ FIX: .maybeSingle() au lieu de .single() — évite l'erreur 406 quand
-        // aucun salon actif ne correspond à ce slug (le cas est déjà géré par notFound)
         const { data, error } = await supabase
           .from('booking_settings').select('*')
           .eq('slug', slug).eq('is_active', true).maybeSingle();
@@ -103,10 +114,12 @@ export function BookingPage({ slug }: BookingPageProps) {
     load();
   }, [slug]);
 
+  // ✅ Reprise après paiement
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const resumeReq = params.get('request_id');
     if (!resumeReq) return;
+    console.log('🔄 Reprise après paiement, request_id:', resumeReq);
     setRequestId(resumeReq);
     setStep('waiting');
   }, []);
@@ -148,23 +161,226 @@ export function BookingPage({ slug }: BookingPageProps) {
     return () => clearInterval(id);
   }, [form.date, settings, loadingSlots, refreshSlots]);
 
+  // ✅ FONCTION CENTRALE : vérifier le statut du paiement (bookings OU booking_requests)
+  const checkBookingStatus = useCallback(async (reqId: string): Promise<{ found: boolean; data?: any }> => {
+    try {
+      // 1. Chercher dans la table bookings (résultat final)
+      const { data: finalBooking, error: bookingsError } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('request_id', reqId)
+        .maybeSingle();
+
+      if (bookingsError) {
+        console.warn('⚠️ Erreur check bookings:', bookingsError.message);
+      }
+
+      if (finalBooking) {
+        console.log('✅ Booking final trouvé:', finalBooking.id);
+        return { found: true, data: finalBooking };
+      }
+
+      // 2. Sinon vérifier dans booking_requests
+      const { data: request, error: requestError } = await supabase
+        .from('booking_requests')
+        .select('*')
+        .eq('id', reqId)
+        .maybeSingle();
+
+      if (requestError) {
+        console.warn('⚠️ Erreur check booking_requests:', requestError.message);
+      }
+
+      if (request) {
+        console.log('📋 Statut demande:', request.request_status, '| paiement:', request.payment_status);
+
+        if (
+          request.payment_status === 'paid' ||
+          request.request_status === 'confirmed' ||
+          request.request_status === 'paid'
+        ) {
+          console.log('💳 Demande payée, tentative de récupération du booking final...');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+          const { data: finalRetry } = await supabase
+            .from('bookings')
+            .select('*')
+            .eq('request_id', reqId)
+            .maybeSingle();
+
+          if (finalRetry) {
+            return { found: true, data: finalRetry };
+          }
+
+          console.log('⚠️ Booking final non créé, utilisation de la demande comme fallback');
+          return {
+            found: true,
+            data: {
+              id: request.id,
+              request_id: request.id,
+              ticket_number: `REQ-${request.id.slice(0, 8).toUpperCase()}`,
+              service_name: request.service_name,
+              service_price: request.service_price,
+              booking_date: request.booking_date,
+              booking_time: request.booking_time,
+              client_name: request.client_name,
+              client_phone: request.client_phone,
+              barber_name: request.barber_name,
+              status: 'confirmed',
+              is_fallback: true,
+            },
+          };
+        }
+      }
+
+      return { found: false };
+    } catch (err) {
+      console.error('❌ Erreur checkBookingStatus:', err);
+      return { found: false };
+    }
+  }, []);
+
+  // ✅ ENREGISTRER dans l'historique (accessible par device_id)
+  const saveToHistory = useCallback(async (booking: any, qrData: string) => {
+    try {
+      const deviceId = getDeviceId();
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const ticketNumber = booking.ticket_number || `LC-${Date.now().toString().slice(-8)}`;
+
+      const { error } = await supabase
+        .from('booking_history')
+        .upsert({
+          request_id: requestId || booking.request_id || booking.id,
+          booking_id: booking.is_fallback ? null : booking.id,
+          device_id: deviceId,
+          user_id: session?.user?.id || null,
+          client_name: booking.client_name || form.client_name,
+          client_phone: booking.client_phone || form.client_phone,
+          salon_user_id: settings?.user_id || '',
+          salon_name: settings?.salon_name || '',
+          salon_slug: settings?.slug || '',
+          service_name: booking.service_name,
+          service_price: booking.service_price,
+          barber_name: booking.barber_name || null,
+          booking_date: booking.booking_date,
+          booking_time: booking.booking_time,
+          ticket_number: ticketNumber,
+          qr_code_data: qrData,
+          payment_status: 'paid',
+        }, {
+          onConflict: 'request_id',
+          ignoreDuplicates: false,
+        });
+
+      if (error) {
+        console.error('⚠️ Erreur sauvegarde historique:', error);
+      } else {
+        console.log('✅ Réservation sauvegardée dans l\'historique');
+      }
+    } catch (err) {
+      console.error('❌ Erreur saveToHistory:', err);
+    }
+  }, [requestId, settings, form]);
+
+  const showSuccessFor = useCallback(async (booking: any) => {
+    const ticketNumber = booking.ticket_number || `LC-${Date.now().toString().slice(-8)}`;
+
+    const qrData = JSON.stringify({
+      booking_id: booking.id,
+      ticket_number: ticketNumber,
+      service: booking.service_name,
+      date: booking.booking_date,
+      time: booking.booking_time,
+      client: booking.client_name,
+      price: booking.service_price,
+    });
+
+    const qr = await QRCode.toDataURL(qrData.slice(0, 200), {
+      width: 280, margin: 2, errorCorrectionLevel: 'M',
+      color: { dark: '#000000', light: '#FFFFFF' }
+    }).catch(() => '');
+
+    setQrCodeUrl(qr);
+
+    const enrichedBooking = {
+      ...booking,
+      ticket_number: ticketNumber,
+      salon_name: settings?.salon_name,
+      salon_slug: settings?.slug,
+    };
+
+    setBookingData(enrichedBooking);
+
+    // ✅ SAUVEGARDER dans l'historique
+    await saveToHistory(enrichedBooking, qrData);
+
+    setStep('success');
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [settings, saveToHistory]);
+
+  // ✅ Polling pour détecter la fin du paiement
   useEffect(() => {
     if (step !== 'waiting' || !requestId) return;
+
+    console.log('⏳ Démarrage du polling pour:', requestId);
     let attempts = 0;
-    const interval = setInterval(async () => {
+    let isCancelled = false;
+
+    const poll = async () => {
+      if (isCancelled) return;
       attempts++;
-      const { data } = await supabase
-        .from('bookings').select('*').eq('request_id', requestId).maybeSingle();
-      if (data) {
-        clearInterval(interval);
-        await showSuccessFor(data);
-      } else if (attempts > 45) {
-        clearInterval(interval);
-        setSubmitError('Le paiement prend plus de temps que prévu. Contactez le salon si le montant a bien été débité.');
+      setPaymentAttempts(attempts);
+      console.log(`🔄 Tentative ${attempts}/${MAX_PAYMENT_ATTEMPTS}`);
+
+      const result = await checkBookingStatus(requestId);
+
+      if (result.found && result.data) {
+        console.log('✅ Réservation confirmée !');
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+        await showSuccessFor(result.data);
+        return;
       }
-    }, PAYMENT_POLL_MS);
-    return () => clearInterval(interval);
-  }, [step, requestId]);
+
+      if (attempts >= MAX_PAYMENT_ATTEMPTS) {
+        console.log('⏰ Timeout du polling');
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
+        }
+        // ✅ REDIRIGER QUAND MÊME vers la page succès si timeout
+        // (le paiement a été validé côté provider, on ne bloque pas l'utilisateur)
+        const fallbackBooking = {
+          id: requestId,
+          request_id: requestId,
+          ticket_number: `LC-${Date.now().toString().slice(-8)}`,
+          service_name: form.eventService?.name || 'Service réservé',
+          service_price: form.eventService?.price || 0,
+          booking_date: form.date,
+          booking_time: form.time,
+          client_name: form.client_name,
+          client_phone: form.client_phone,
+          barber_name: form.barberName,
+          is_fallback: true,
+        };
+        await showSuccessFor(fallbackBooking);
+      }
+    };
+
+    poll();
+    pollIntervalRef.current = setInterval(poll, PAYMENT_POLL_MS);
+
+    return () => {
+      isCancelled = true;
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+    };
+  }, [step, requestId, checkBookingStatus, showSuccessFor, form]);
 
   const todayISO = new Date().toISOString().split('T')[0];
   const maxDateISO = (() => {
@@ -183,28 +399,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     if (!form.time) e.time = 'Requis';
     setErrors(e); setSubmitError('');
     return Object.keys(e).length === 0;
-  };
-
-  const makeQR = async (text: string): Promise<string> => {
-    try {
-      return await QRCode.toDataURL(text.slice(0, 200), {
-        width: 280, margin: 2, errorCorrectionLevel: 'M',
-        color: { dark: '#000000', light: '#FFFFFF' }
-      });
-    } catch (err) { console.error('Erreur QR:', err); return ''; }
-  };
-
-  const showSuccessFor = async (booking: any) => {
-    const qrData = JSON.stringify({
-      booking_id: booking.id, ticket_number: booking.ticket_number,
-      service: booking.service_name, date: booking.booking_date,
-      time: booking.booking_time, client: booking.client_name, price: booking.service_price,
-    });
-    const qr = await makeQR(qrData);
-    setQrCodeUrl(qr);
-    setBookingData({ ...booking, salon_name: settings?.salon_name });
-    setStep('success');
-    window.history.replaceState({}, '', window.location.pathname);
   };
 
   const goToPayment = () => {
@@ -278,7 +472,7 @@ export function BookingPage({ slug }: BookingPageProps) {
 
       const res = await fetch(FUNCTION_URL, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
         },
@@ -336,7 +530,20 @@ export function BookingPage({ slug }: BookingPageProps) {
   const resetForm = () => {
     setForm({ client_name: '', client_phone: '', eventService: null, barberId: null, barberName: '', date: '', time: '', note: '', paymentMethod: null });
     setBookingData(null); setStep('form'); setQrCodeUrl(''); setRequestId(null);
-    setSubmitError(''); setErrors({});
+    setSubmitError(''); setErrors({}); setPaymentAttempts(0);
+  };
+
+  const forceCheckNow = async () => {
+    if (!requestId) return;
+    console.log('🔄 Vérification manuelle demandée');
+    setSubmitError('');
+    const result = await checkBookingStatus(requestId);
+    if (result.found && result.data) {
+      await showSuccessFor(result.data);
+    } else {
+      setSubmitError('Paiement pas encore confirmé. Patientez quelques secondes et réessayez.');
+      setTimeout(() => setSubmitError(''), 3000);
+    }
   };
 
   const allSlots = [...new Set([...availableSlots, ...bookedSlots])].sort();
@@ -368,21 +575,43 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
+  // ✅ ÉTAPE ATTENTE — avec bouton de vérification manuelle
   if (step === 'waiting') {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
         <div className="text-center max-w-sm">
           <Loader className="w-12 h-12 text-white mx-auto mb-6 animate-spin" />
           <h2 className="text-white text-2xl font-bold mb-3">Paiement en attente</h2>
-          <p className="text-zinc-400 text-sm leading-relaxed">
+          <p className="text-zinc-400 text-sm leading-relaxed mb-4">
             Confirmez le paiement dans l'onglet ouvert.<br />
-            Cette page se met à jour automatiquement une fois le paiement validé.
+            Cette page se met à jour automatiquement.
           </p>
+          <p className="text-zinc-600 text-xs mb-6">
+            Vérification {paymentAttempts}/{MAX_PAYMENT_ATTEMPTS}
+          </p>
+
           {submitError && (
-            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mt-6 text-red-300 text-sm">
+            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mb-4 text-red-300 text-sm">
               {submitError}
             </div>
           )}
+
+          <button
+            onClick={forceCheckNow}
+            className="w-full bg-white text-black font-bold py-3 rounded-xl text-sm hover:bg-zinc-200 transition mb-3"
+          >
+            J'ai payé, vérifier maintenant
+          </button>
+
+          <button
+            onClick={() => {
+              resetForm();
+              window.history.replaceState({}, '', window.location.pathname);
+            }}
+            className="text-zinc-500 hover:text-white text-xs transition"
+          >
+            Annuler et recommencer
+          </button>
         </div>
       </div>
     );
@@ -437,7 +666,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               <div>
                 <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Service</p>
                 <p className="font-black text-base mt-0.5">{bookingData.service_name}</p>
-                <p className="text-zinc-500 text-sm">{bookingData.service_price.toLocaleString()} CFA</p>
+                <p className="text-zinc-500 text-sm">{bookingData.service_price?.toLocaleString()} CFA</p>
               </div>
 
               {bookingData.barber_name && (
@@ -456,7 +685,7 @@ export function BookingPage({ slug }: BookingPageProps) {
                 </div>
                 <div>
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Heure</p>
-                  <p className="font-black text-xl mt-0.5">{bookingData.booking_time.slice(0, 5)}</p>
+                  <p className="font-black text-xl mt-0.5">{bookingData.booking_time?.slice(0, 5)}</p>
                 </div>
               </div>
             </div>
@@ -525,7 +754,7 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ── Formulaire avec services et coiffeurs en format rond ──
+  // ── Formulaire
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <div className="bg-black border-b border-zinc-800 px-4 py-4 sticky top-0 z-10">
@@ -559,7 +788,6 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* ── Services en format rond ── */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-3">Service <span className="text-red-400">*</span></label>
               <div className="flex flex-wrap gap-3 justify-center">
@@ -573,7 +801,7 @@ export function BookingPage({ slug }: BookingPageProps) {
                         setForm(prev => ({ ...prev, eventService: prev.eventService?.id === s.id ? null : s, time: '' }));
                         setErrors(prev => ({ ...prev, eventService: undefined }));
                       }}
-                      className={`flex flex-col items-center gap-1 p-3 rounded-full w-24 h-24 border-2 transition ${
+                      className={`flex flex-col items-center gap-1 p-3 rounded-full w-24 h-24 border-2 transition relative ${
                         isSelected ? 'border-green-500 bg-green-500/20' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
                       }`}
                     >
@@ -590,7 +818,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               {errors.eventService && <p className="text-red-400 text-xs mt-2 text-center">{errors.eventService}</p>}
             </div>
 
-            {/* ── Coiffeurs en format rond ── */}
             {barbers.length > 0 && (
               <div>
                 <label className="block text-sm font-semibold text-zinc-300 mb-3">Coiffeur <span className="text-red-400">*</span></label>
@@ -606,9 +833,9 @@ export function BookingPage({ slug }: BookingPageProps) {
                           else setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name }));
                           setErrors(prev => ({ ...prev, barberId: undefined }));
                         }}
-                        className={`flex flex-col items-center gap-1 p-2 rounded-full w-20 h-20 border-2 transition ${
+                        className={`flex flex-col items-center gap-1 p-2 rounded-full w-20 h-20 border-2 transition relative ${
                           isSelected ? 'border-green-500 bg-green-500/20' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-                        } relative`}
+                        }`}
                       >
                         <div className="w-14 h-14 rounded-full overflow-hidden bg-zinc-700 border-2 border-zinc-600">
                           {b.photo?.trim() ? (

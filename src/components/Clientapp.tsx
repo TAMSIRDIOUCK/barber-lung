@@ -222,11 +222,10 @@ export function ClientApp() {
   };
 
   // ────────────────────────────────────────────────────────────────
-  // ✅ CORRECTION PRINCIPALE : initUser ne force plus la page
-  // d'abonnement quand il n'y a pas d'abonnement actif. On laisse
-  // l'utilisateur entrer dans l'app ('app'), et c'est App.tsx qui
-  // gère le paywall page par page (Services = gratuit, le reste =
-  // payant). Se connecter suffit désormais pour accéder à Services.
+  // ✅ initUser ne force plus la page d'abonnement quand il n'y a pas
+  // d'abonnement actif. L'utilisateur entre dans l'app ('app'), et
+  // c'est App.tsx qui gère le paywall page par page (Services = gratuit,
+  // le reste = payant). Se connecter suffit pour accéder à Services.
   // ────────────────────────────────────────────────────────────────
   const initUser = useCallback(async (u: User) => {
     if (initLock.current) return;
@@ -251,7 +250,7 @@ export function ClientApp() {
       if (error) {
         console.error('Erreur chargement abonnement:', error.message);
         setActiveSub(null);
-        setAppState('app'); // ✅ pas d'abonnement récupérable ≠ blocage de l'app
+        setAppState('app');
         return;
       }
 
@@ -268,8 +267,7 @@ export function ClientApp() {
       if (validSubs.length === 0) {
         console.log('📭 Aucun abonnement actif');
         setActiveSub(null);
-        setAppState('app'); // ✅ on entre dans l'app ; Services reste accessible,
-                             //    les pages payantes seront verrouillées par App.tsx
+        setAppState('app');
         return;
       }
 
@@ -318,7 +316,7 @@ export function ClientApp() {
     } catch (err) {
       console.error('Erreur initUser:', err);
       setActiveSub(null);
-      setAppState('app'); // ✅ en cas d'erreur, on n'empêche pas l'accès à Services
+      setAppState('app');
     } finally {
       initLock.current = false;
     }
@@ -401,24 +399,30 @@ export function ClientApp() {
   // Navigation vers la réservation d'un salon
   const handleNavigateToBooking = useCallback((slug: string) => {
     console.log(`📅 Navigation vers la réservation du salon: ${slug}`);
-    // Rediriger vers la page de réservation
     window.location.href = `/booking/${slug}`;
   }, []);
 
   // ────────────────────────────────────────────────────────────────
-  // ✅ CORRECTION : on ne redirige vers l'abonnement que pour les
-  // pages payantes (revenue, expenses, bookings). "home" (Services)
-  // ne demande qu'une connexion.
+  // ✅ CORRECTION : "history" est accessible à TOUS (connectés ou invités).
+  // On ne redirige vers login que pour les pages de l'app (home, revenue,
+  // expenses, bookings).
   // ────────────────────────────────────────────────────────────────
-  const handleNavigateToPage = useCallback((page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings') => {
+  const handleNavigateToPage = useCallback((page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings' | 'history') => {
     console.log(`📱 Navigation vers: ${page}`);
     
     if (page === 'publicHome') {
       setAppState('publicHome');
       return;
     }
+
+    // ✅ HISTORY : accessible sans connexion, on laisse PublicHomePage gérer
+    if (page === 'history') {
+      // PublicHomePage gère déjà l'affichage de l'historique en interne via onNavigateToPage
+      // On retourne simplement sans changer d'état global (le parent ne doit pas interférer)
+      return;
+    }
     
-    // Il faut être connecté pour toute page de l'application
+    // Il faut être connecté pour toute autre page de l'application
     if (!isAuthenticated || !user) {
       handleNavigateToAuth('login');
       return;
@@ -523,7 +527,7 @@ export function ClientApp() {
   }
 
   // ────────────────────────────────────────────────────────────────
-  // ✅ CORRECTION : on n'exige plus `activeSub` pour afficher l'app.
+  // ✅ On n'exige plus `activeSub` pour afficher l'app.
   // Un utilisateur connecté sans abonnement actif reçoit un
   // `authUser.subscription` "inactive" par défaut ; c'est App.tsx qui
   // verrouille les pages payantes (revenue/expenses/bookings) et

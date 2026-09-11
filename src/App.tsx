@@ -32,85 +32,106 @@ interface AppProps {
   onNavigateToAuth: (page: 'login' | 'register') => void;
 }
 
-// ── Composant Page de Succès de Paiement ──
+// ── PaymentSuccessPage ──
 function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(3);
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
   const [error, setError] = useState<string | null>(null);
+  const [attempts, setAttempts] = useState(0);
   const wasOpenedAsPopup = !!window.opener;
+  const completedRef = { current: false };
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const subscriptionId = params.get('subscription_id');
 
-    if (!subscriptionId) {
-      const timer = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            onComplete();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      return () => clearInterval(timer);
-    }
-
-    const checkSubscription = async () => {
-      setStatus('activating');
-      let attempts = 0;
-      const maxAttempts = 15;
-
-      const checkInterval = setInterval(async () => {
-        attempts++;
-        try {
-          const { data: subscription } = await supabase
-            .from('subscriptions')
-            .select('status')
-            .eq('id', parseInt(subscriptionId))
-            .maybeSingle();
-
-          if (subscription?.status === 'active') {
-            clearInterval(checkInterval);
-            setStatus('success');
-            if (wasOpenedAsPopup) {
-              setTimeout(() => window.close(), 2000);
-            } else {
-              setTimeout(() => onComplete(), 2000);
-            }
-          } else if (attempts >= maxAttempts) {
-            clearInterval(checkInterval);
-            setStatus('success');
-            if (wasOpenedAsPopup) {
-              setTimeout(() => window.close(), 2000);
-            } else {
-              setTimeout(() => onComplete(), 2000);
-            }
-          }
-        } catch (err) {
-          console.error('Erreur vérification:', err);
-          if (attempts >= maxAttempts) {
-            clearInterval(checkInterval);
-            setError('Une erreur est survenue.');
-            setStatus('success');
-          }
-        }
-      }, 2000);
-
-      return () => clearInterval(checkInterval);
+    const redirectAfterSuccess = () => {
+      if (completedRef.current) return;
+      completedRef.current = true;
+      if (wasOpenedAsPopup) {
+        setTimeout(() => {
+          try { window.close(); } catch {}
+          setTimeout(() => { window.location.href = '/'; }, 500);
+        }, 2000);
+      } else {
+        setTimeout(() => onComplete(), 2000);
+      }
     };
 
-    checkSubscription();
+    if (!subscriptionId) {
+      const checkSession = async () => {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          setStatus('success');
+          redirectAfterSuccess();
+        } catch {
+          setStatus('success');
+          setTimeout(() => onComplete(), 1500);
+        }
+      };
+      checkSession();
+      return;
+    }
+
+    let attemptsCount = 0;
+    const maxAttempts = 20;
+    let intervalId: NodeJS.Timeout | null = null;
+
+    const checkSubscription = async (): Promise<boolean> => {
+      attemptsCount++;
+      setAttempts(attemptsCount);
+      try {
+        const { data: subById } = await supabase
+          .from('subscriptions')
+          .select('id, status')
+          .eq('id', parseInt(subscriptionId))
+          .maybeSingle();
+        if (subById?.status === 'active') return true;
+
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const { data: subs } = await supabase
+            .from('subscriptions')
+            .select('id, status, expires_at')
+            .eq('user_id', session.user.id)
+            .in('status', ['active', 'actif'])
+            .limit(5);
+          const now = new Date();
+          const validSub = subs?.find((s: any) => {
+            const statusOk = ['active', 'actif'].includes((s.status || '').toLowerCase());
+            const dateOk = !s.expires_at || new Date(s.expires_at) > now;
+            return statusOk && dateOk;
+          });
+          if (validSub) return true;
+        }
+        return false;
+      } catch { return false; }
+    };
+
+    setStatus('activating');
+    intervalId = setInterval(async () => {
+      const isActive = await checkSubscription();
+      if (isActive) {
+        if (intervalId) clearInterval(intervalId);
+        setStatus('success');
+        redirectAfterSuccess();
+        return;
+      }
+      if (attemptsCount >= maxAttempts) {
+        if (intervalId) clearInterval(intervalId);
+        setStatus('success');
+        redirectAfterSuccess();
+      }
+    }, 1500);
+
+    return () => { if (intervalId) clearInterval(intervalId); };
   }, [onComplete, wasOpenedAsPopup]);
 
   return (
     <div className="min-h-screen bg-black flex items-center justify-center p-4">
       <div className="text-center max-w-md">
         {error && (
-          <div className="mb-4 p-3 bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl">
-            {error}
-          </div>
+          <div className="mb-4 p-3 bg-red-950 border border-red-700 text-red-300 text-sm rounded-xl">{error}</div>
         )}
         {status === 'checking' && (
           <>
@@ -124,6 +145,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
               <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
             </div>
             <h2 className="text-white text-xl font-bold">Activation en cours...</h2>
+            <p className="text-zinc-500 text-sm mt-2">Vérification {attempts}/{20}</p>
           </>
         )}
         {status === 'success' && (
@@ -133,13 +155,15 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             </div>
             <h2 className="text-white text-2xl font-bold mb-2">Paiement réussi ! 🎉</h2>
             <p className="text-zinc-400 mb-4">Votre abonnement est maintenant actif.</p>
-            {wasOpenedAsPopup ? (
-              <p className="text-zinc-500 text-sm">Cet onglet va se fermer automatiquement.</p>
-            ) : (
-              <p className="text-zinc-500 text-sm">
-                Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
-              </p>
-            )}
+            <p className="text-zinc-500 text-sm">
+              Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
+            </p>
+            <button
+              onClick={onComplete}
+              className="mt-6 bg-white text-black px-6 py-3 rounded-xl font-bold hover:bg-zinc-200 transition"
+            >
+              Continuer maintenant
+            </button>
           </>
         )}
       </div>
@@ -147,7 +171,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-// ── Composant Page d'Annulation ──
+// ── PaymentCancelPage ──
 function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(5);
   const wasOpenedAsPopup = !!window.opener;
@@ -158,7 +182,8 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         if (prev <= 1) {
           clearInterval(timer);
           if (wasOpenedAsPopup) {
-            window.close();
+            try { window.close(); } catch {}
+            setTimeout(() => { window.location.href = '/'; }, 300);
           } else {
             onComplete();
           }
@@ -178,24 +203,19 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         </div>
         <h2 className="text-white text-2xl font-bold mb-2">Paiement annulé</h2>
         <p className="text-zinc-400 mb-4">Vous n'avez pas confirmé le paiement.</p>
-        {wasOpenedAsPopup ? (
-          <p className="text-zinc-500 text-sm">Cet onglet va se fermer automatiquement.</p>
-        ) : (
-          <p className="text-zinc-500 text-sm">
-            Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
-          </p>
-        )}
+        <p className="text-zinc-500 text-sm">Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...</p>
         <button
           onClick={() => {
             if (wasOpenedAsPopup) {
-              window.close();
+              try { window.close(); } catch {}
+              setTimeout(() => { window.location.href = '/'; }, 300);
             } else {
               onComplete();
             }
           }}
           className="mt-4 bg-white text-black px-6 py-2 rounded-lg font-semibold hover:bg-zinc-200 transition"
         >
-          {wasOpenedAsPopup ? 'Fermer' : 'Retour à l\'accueil'}
+          Retour à l'accueil
         </button>
       </div>
     </div>
@@ -238,16 +258,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       const params = new URLSearchParams(window.location.search);
       const isSuccess = params.get('payment_success') === 'true';
       const isCancelled = params.get('payment_cancelled') === 'true';
-      
-      if (isSuccess) {
-        setShowPaymentSuccess(true);
-        window.history.replaceState({}, document.title, '/');
-      } else if (isCancelled) {
-        setShowPaymentCancel(true);
-        window.history.replaceState({}, document.title, '/');
-      }
+      const subscriptionId = params.get('subscription_id');
+      if (isSuccess || subscriptionId) setShowPaymentSuccess(true);
+      else if (isCancelled) setShowPaymentCancel(true);
     };
-
     handlePaymentReturn();
   }, []);
 
@@ -262,12 +276,8 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           .gte('expiry_date', new Date().toISOString())
           .maybeSingle();
         setHasActiveBanner(!!data);
-      } catch (err) {
-        console.error('Erreur vérification bannière:', err);
-        setHasActiveBanner(false);
-      } finally {
-        setCheckingBanner(false);
-      }
+      } catch { setHasActiveBanner(false); }
+      finally { setCheckingBanner(false); }
     };
     checkActiveBanner();
   }, []);
@@ -275,6 +285,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
   const handlePaymentComplete = () => {
     setShowPaymentSuccess(false);
     setShowPaymentCancel(false);
+    window.history.replaceState({}, document.title, '/');
     window.location.href = '/';
   };
 
@@ -288,11 +299,8 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           .eq('id', authUser.id)
           .single();
         if (!error && data) setIsAdmin(data.role === 'admin');
-      } catch (err) {
-        console.error('Erreur vérification rôle admin:', err);
-      } finally {
-        setCheckingAdmin(false);
-      }
+      } catch {}
+      finally { setCheckingAdmin(false); }
     };
     checkAdminRole();
   }, [authUser]);
@@ -309,7 +317,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
   const handleExpenseAdded = () => setRefreshTrigger(prev => prev + 1);
 
   const navigateToBooking = (slug: string) => {
-    console.log('📅 Navigation vers la réservation du salon:', slug);
     setBookingSlug(slug);
     setShowPublicHome(false);
     setCurrentPage('booking');
@@ -317,12 +324,9 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     setShowRenewPage(false);
   };
 
+  // ✅ navigateToPage : PAS de 'history', uniquement les pages de l'app
   const navigateToPage = (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings' | 'admin') => {
-    console.log(`📱 navigateToPage appelée avec: ${page}`);
-    
-    // ✅ ACCUEIL PUBLIC - Page publique (non connecté)
     if (page === 'publicHome') {
-      console.log('🏠 Redirection vers Accueil public');
       setShowPublicHome(true);
       setBookingSlug(null);
       setCurrentPage('home');
@@ -331,13 +335,8 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    // ✅ ADMIN - Page admin (connecté + droits admin)
     if (page === 'admin') {
-      if (!isAdmin) {
-        console.log('⛔ Accès admin non autorisé');
-        return;
-      }
-      console.log('🔐 Redirection vers Admin');
+      if (!isAdmin) return;
       setShowPublicHome(false);
       setBookingSlug(null);
       setCurrentPage('admin');
@@ -346,14 +345,11 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    // ✅ SERVICES - Page de l'application (connecté)
     if (page === 'home') {
       if (!isAuthenticated || !authUser) {
-        console.log('🔒 Non connecté, redirection vers login');
         onNavigateToAuth('login');
         return;
       }
-      console.log('✂️ Redirection vers Services');
       setShowPublicHome(false);
       setBookingSlug(null);
       setCurrentPage('home');
@@ -362,17 +358,13 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    // ✅ PAGES PAYANTES - Revenus, Dépenses, Réservations (connecté + abonnement)
     if (!isAuthenticated || !authUser) {
-      console.log('🔒 Non connecté, redirection vers login');
       onNavigateToAuth('login');
       return;
     }
 
     const isPaidPage = page === 'revenue' || page === 'expenses' || page === 'bookings';
-    
     if (isPaidPage && !hasActiveSubscription) {
-      console.log('💳 Pas d\'abonnement actif, redirection vers paiement');
       const pageMap: Record<string, Page> = {
         revenue: 'revenue',
         expenses: 'expenses',
@@ -384,7 +376,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       return;
     }
 
-    console.log(`✅ Navigation vers ${page} autorisée`);
     setShowPublicHome(false);
     setBookingSlug(null);
     setShowRenewPage(false);
@@ -394,13 +385,8 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     setMobileMenuOpen(false);
   };
 
-  const handleNavigateToLogin = () => {
-    onNavigateToAuth('login');
-  };
-
-  const handleNavigateToRegister = () => {
-    onNavigateToAuth('register');
-  };
+  const handleNavigateToLogin = () => onNavigateToAuth('login');
+  const handleNavigateToRegister = () => onNavigateToAuth('register');
 
   const handleShare = async () => {
     const url = window.location.origin;
@@ -415,7 +401,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     } catch {}
   };
 
-  // 📌 PAGES DE L'APPLICATION (connecté)
   const appPages: { id: Page; label: string; Icon: any }[] = [
     { id: 'home', label: 'Services', Icon: Scissors },
     { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
@@ -427,11 +412,14 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     ? [...appPages, { id: 'admin' as Page, label: 'Admin', Icon: Shield }]
     : appPages;
 
-  const expiryDate = authUser?.subscription?.expires_at 
+  const expiryDate = authUser?.subscription?.expires_at
     ? new Date(authUser.subscription.expires_at).toLocaleDateString('fr-FR', {
         day: '2-digit', month: 'short', year: 'numeric'
       })
     : 'N/A';
+
+  if (showPaymentSuccess) return <PaymentSuccessPage onComplete={handlePaymentComplete} />;
+  if (showPaymentCancel) return <PaymentCancelPage onComplete={handlePaymentComplete} />;
 
   if (currentPage === 'booking' && bookingSlug) {
     return (
@@ -439,14 +427,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
         <BookingPage slug={bookingSlug} />
       </div>
     );
-  }
-
-  if (showPaymentSuccess) {
-    return <PaymentSuccessPage onComplete={handlePaymentComplete} />;
-  }
-
-  if (showPaymentCancel) {
-    return <PaymentCancelPage onComplete={handlePaymentComplete} />;
   }
 
   if (showRenewPage && authUser) {
@@ -472,7 +452,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
-  // ✅ PAGE D'ACCUEIL PUBLIQUE (non connecté ou navigation publique)
   if (showPublicHome) {
     return (
       <PublicHomePage
@@ -494,7 +473,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
-  // ── APPLICATION PRINCIPALE (Connecté) ──
   return (
     <RequirePhoneNumber userId={authUser.id}>
       {showChangePassword && (
@@ -502,7 +480,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
       )}
 
       <div className="min-h-[100dvh] bg-zinc-950 overflow-x-hidden">
-        {/* HEADER - Version compacte pour tous les écrans */}
         <header className="bg-black border-b border-zinc-800 sticky top-0 z-40">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-14">
@@ -551,20 +528,14 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           {mobileMenuOpen && (
             <div className="border-t border-zinc-800 bg-black px-4 py-3 space-y-1 w-full lg:hidden">
               <button
-                onClick={() => {
-                  navigateToPage('publicHome');
-                  setMobileMenuOpen(false);
-                }}
+                onClick={() => { navigateToPage('publicHome'); setMobileMenuOpen(false); }}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition text-zinc-400 hover:text-white hover:bg-zinc-800"
               >
                 <Home className="w-4 h-4" /> Accueil
               </button>
               {isAdmin && (
                 <button
-                  onClick={() => {
-                    navigateToPage('admin');
-                    setMobileMenuOpen(false);
-                  }}
+                  onClick={() => { navigateToPage('admin'); setMobileMenuOpen(false); }}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
                     currentPage === 'admin' ? 'bg-white text-black' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
                   }`}
@@ -576,12 +547,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                 const isPaidPage = id === 'revenue' || id === 'expenses' || id === 'bookings';
                 const isLocked = isPaidPage && !hasActiveSubscription;
                 const isHome = id === 'home';
-                
                 return (
                   <button
                     key={id}
                     onClick={() => {
-                      if (id === 'booking') return;
                       if (isLocked) {
                         setRedirectToPage(id as Page);
                         setShowRenewPage(true);
@@ -612,8 +581,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   onClick={() => { setShowChangePassword(true); setMobileMenuOpen(false); }}
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
                 >
-                  <KeyRound className="w-4 h-4" />
-                  Modifier le mot de passe
+                  <KeyRound className="w-4 h-4" /> Modifier le mot de passe
                 </button>
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="min-w-0 mr-2">
@@ -629,7 +597,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           )}
         </header>
 
-        {/* MAIN */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] w-full overflow-x-hidden">
           {needsRenewal && daysLeft !== null && currentPage !== 'home' && currentPage !== 'admin' && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -637,12 +604,9 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 {daysLeft <= 0
                   ? 'Votre abonnement a expiré. Renouvelez-le pour accéder à vos revenus, dépenses et réservations.'
-                  : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}. Pensez à renouveler pour accéder à vos revenus, dépenses et réservations.`}
+                  : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}.`}
               </span>
-              <button
-                onClick={() => setShowRenewPage(true)}
-                className="bg-white text-black px-4 py-2 rounded-lg font-bold whitespace-nowrap"
-              >
+              <button onClick={() => setShowRenewPage(true)} className="bg-white text-black px-4 py-2 rounded-lg font-bold whitespace-nowrap">
                 Payer maintenant
               </button>
             </div>
@@ -653,161 +617,66 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
               <SalonProfile userId={authUser.id} />
               <PromoBanner />
               {!checkingBanner && !hasActiveBanner && (
-                <ReferralProgram
-                  userId={authUser.id}
-                  userName={authUser.fullName || authUser.email}
-                />
+                <ReferralProgram userId={authUser.id} userName={authUser.fullName || authUser.email} />
               )}
-              <ServiceSelector
-                userId={authUser.id}
-                salonName={salonName}
-                authUser={authUser}
-                onConfirm={handleServiceConfirm}
-              />
-              <TransactionHistory 
-                userId={authUser.id} 
-                refreshTrigger={refreshTrigger}
-              />
+              <ServiceSelector userId={authUser.id} salonName={salonName} authUser={authUser} onConfirm={handleServiceConfirm} />
+              <TransactionHistory userId={authUser.id} refreshTrigger={refreshTrigger} />
             </div>
           )}
-          {currentPage === 'bookings' && (
-            <BookingSettingsPage 
-              userId={authUser.id}
-            />
-          )}
-          {currentPage === 'revenue' && (
-            <RevenuePage 
-              userId={authUser.id} 
-              refreshTrigger={refreshTrigger}
-            />
-          )}
-          {currentPage === 'expenses' && (
-            <ExpensesPage 
-              userId={authUser.id} 
-              onExpenseAdded={handleExpenseAdded}
-            />
-          )}
+          {currentPage === 'bookings' && <BookingSettingsPage userId={authUser.id} />}
+          {currentPage === 'revenue' && <RevenuePage userId={authUser.id} refreshTrigger={refreshTrigger} />}
+          {currentPage === 'expenses' && <ExpensesPage userId={authUser.id} onExpenseAdded={handleExpenseAdded} />}
           {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
-        {/* ✅ BOTTOM NAV - Navigation unifiée et sans doublon */}
+        {/* BOTTOM NAV : 5 boutons SANS "Mes réservations" */}
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-7xl mx-auto">
-            {/* ✅ ACCUEIL - Page publique */}
-            <button 
-              onClick={() => navigateToPage('publicHome')} 
-              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
-            >
-              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                showPublicHome ? 'bg-white' : 'group-hover:bg-white/10'
-              }`}>
+            <button onClick={() => navigateToPage('publicHome')} className="flex flex-col items-center gap-0.5 px-2 py-1 group">
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${showPublicHome ? 'bg-white' : 'group-hover:bg-white/10'}`}>
                 <Home className={`w-5 h-5 ${showPublicHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className={`text-[8px] font-medium ${
-                showPublicHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'
-              }`}>
-                Accueil
-              </span>
-            </button>
-            
-            {/* ✅ SERVICES - Page de l'application (connecté) */}
-            <button 
-              onClick={() => {
-                if (!isAuthenticated || !authUser) {
-                  onNavigateToAuth('login');
-                  return;
-                }
-                navigateToPage('home');
-              }} 
-              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
-            >
-              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                currentPage === 'home' && !showPublicHome ? 'bg-white' : 'group-hover:bg-white/10'
-              }`}>
-                <Scissors className={`w-5 h-5 ${
-                  currentPage === 'home' && !showPublicHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'
-                }`} />
-              </div>
-              <span className={`text-[8px] font-medium ${
-                currentPage === 'home' && !showPublicHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'
-              }`}>
-                Services
-              </span>
+              <span className={`text-[8px] font-medium ${showPublicHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Accueil</span>
             </button>
 
-            {/* ✅ RÉSERVATIONS */}
-            <button 
-              onClick={() => {
-                if (!isAuthenticated || !authUser) {
-                  onNavigateToAuth('login');
-                  return;
-                }
-                navigateToPage('bookings');
-              }} 
+            <button
+              onClick={() => { if (!isAuthenticated || !authUser) { onNavigateToAuth('login'); return; } navigateToPage('home'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                currentPage === 'bookings' ? 'bg-white' : 'group-hover:bg-white/10'
-              }`}>
-                <CalendarCheck className={`w-5 h-5 ${
-                  currentPage === 'bookings' ? 'text-black' : 'text-zinc-600 group-hover:text-white'
-                }`} />
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${currentPage === 'home' && !showPublicHome ? 'bg-white' : 'group-hover:bg-white/10'}`}>
+                <Scissors className={`w-5 h-5 ${currentPage === 'home' && !showPublicHome ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className={`text-[8px] font-medium ${
-                currentPage === 'bookings' ? 'text-white' : 'text-zinc-600 group-hover:text-white'
-              }`}>
-                Réservations
-              </span>
+              <span className={`text-[8px] font-medium ${currentPage === 'home' && !showPublicHome ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Services</span>
             </button>
 
-            {/* ✅ REVENUS */}
-            <button 
-              onClick={() => {
-                if (!isAuthenticated || !authUser) {
-                  onNavigateToAuth('login');
-                  return;
-                }
-                navigateToPage('revenue');
-              }} 
+            <button
+              onClick={() => { if (!isAuthenticated || !authUser) { onNavigateToAuth('login'); return; } navigateToPage('bookings'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                currentPage === 'revenue' ? 'bg-white' : 'group-hover:bg-white/10'
-              }`}>
-                <TrendingUp className={`w-5 h-5 ${
-                  currentPage === 'revenue' ? 'text-black' : 'text-zinc-600 group-hover:text-white'
-                }`} />
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${currentPage === 'bookings' ? 'bg-white' : 'group-hover:bg-white/10'}`}>
+                <CalendarCheck className={`w-5 h-5 ${currentPage === 'bookings' ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className={`text-[8px] font-medium ${
-                currentPage === 'revenue' ? 'text-white' : 'text-zinc-600 group-hover:text-white'
-              }`}>
-                Revenus
-              </span>
+              <span className={`text-[8px] font-medium ${currentPage === 'bookings' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Réservations</span>
             </button>
 
-            {/* ✅ DÉPENSES */}
-            <button 
-              onClick={() => {
-                if (!isAuthenticated || !authUser) {
-                  onNavigateToAuth('login');
-                  return;
-                }
-                navigateToPage('expenses');
-              }} 
+            <button
+              onClick={() => { if (!isAuthenticated || !authUser) { onNavigateToAuth('login'); return; } navigateToPage('revenue'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${
-                currentPage === 'expenses' ? 'bg-white' : 'group-hover:bg-white/10'
-              }`}>
-                <DollarSign className={`w-5 h-5 ${
-                  currentPage === 'expenses' ? 'text-black' : 'text-zinc-600 group-hover:text-white'
-                }`} />
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${currentPage === 'revenue' ? 'bg-white' : 'group-hover:bg-white/10'}`}>
+                <TrendingUp className={`w-5 h-5 ${currentPage === 'revenue' ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className={`text-[8px] font-medium ${
-                currentPage === 'expenses' ? 'text-white' : 'text-zinc-600 group-hover:text-white'
-              }`}>
-                Dépenses
-              </span>
+              <span className={`text-[8px] font-medium ${currentPage === 'revenue' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Revenus</span>
+            </button>
+
+            <button
+              onClick={() => { if (!isAuthenticated || !authUser) { onNavigateToAuth('login'); return; } navigateToPage('expenses'); }}
+              className="flex flex-col items-center gap-0.5 px-2 py-1 group"
+            >
+              <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${currentPage === 'expenses' ? 'bg-white' : 'group-hover:bg-white/10'}`}>
+                <DollarSign className={`w-5 h-5 ${currentPage === 'expenses' ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
+              </div>
+              <span className={`text-[8px] font-medium ${currentPage === 'expenses' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Dépenses</span>
             </button>
           </div>
         </nav>

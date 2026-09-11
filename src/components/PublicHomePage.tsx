@@ -8,10 +8,12 @@ import {
   Crown, TrendingUp, Instagram, Facebook, Twitter, Youtube,
   Heart, Share2, Home, DollarSign, CalendarCheck,
   ChevronDown, Plus, Minus, Maximize2, User,
-  Eye, UserPlus as UserPlusIcon, UserCheck, Lock, Clock, Route as RouteIcon, Loader2
+  Eye, UserPlus as UserPlusIcon, UserCheck, Lock, Clock, Route as RouteIcon, Loader2,
+  History
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import SalonMapView, { type SalonMapHandle } from './SalonMapView';
+import { BookingHistoryPage } from './BookingHistoryPage';
 
 interface SalonProfile {
   id: string;
@@ -424,6 +426,9 @@ export default function PublicHomePage({
   });
 
   const [ratingLoading, setRatingLoading] = useState<Record<string, boolean>>({});
+
+  // ✅ State LOCAL pour l'historique (PAS dans la navigation globale)
+  const [showHistory, setShowHistory] = useState(false);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -969,20 +974,13 @@ export default function PublicHomePage({
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      console.log('🔄 Chargement des profils...');
-
       const { data: profiles, error: profilesError } = await supabase
         .from('profiles')
         .select('*')
         .eq('is_active', true)
         .order('created_at', { ascending: false });
 
-      if (profilesError) {
-        console.error('❌ Erreur chargement profiles:', profilesError);
-        throw profilesError;
-      }
-
-      console.log('📊 Profils récupérés:', profiles?.length || 0);
+      if (profilesError) throw profilesError;
 
       const profileIds = profiles?.map((p) => p.id) || [];
       const authUserIds = (profiles?.map((p) => p.user_id).filter(Boolean) as string[]) || [];
@@ -1004,15 +1002,11 @@ export default function PublicHomePage({
 
       let slugMap: Record<string, string> = {};
       if (authUserIds.length > 0) {
-        const { data: bookingSettingsRows, error: bsError } = await supabase
+        const { data: bookingSettingsRows } = await supabase
           .from('booking_settings')
           .select('user_id, slug')
           .in('user_id', authUserIds)
           .eq('is_active', true);
-
-        if (bsError) {
-          console.error('Erreur chargement booking_settings:', bsError);
-        }
 
         if (bookingSettingsRows) {
           bookingSettingsRows.forEach((row: any) => {
@@ -1094,13 +1088,11 @@ export default function PublicHomePage({
         });
       }
 
-      const { data: storiesData, error: storiesError } = await supabase
+      const { data: storiesData } = await supabase
         .from('stories')
         .select('*')
         .gte('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false });
-
-      if (storiesError) console.error('Erreur stories:', storiesError);
 
       const salonsWithStats = (profiles || []).map((p) => {
         const isFollowed = userFollowingIds.has(p.id) || guestFollowingIdsSet.has(p.id);
@@ -1144,8 +1136,6 @@ export default function PublicHomePage({
       await loadUserLikes();
       await loadUserRatings();
 
-      console.log('📊 Salons chargés:', salonsWithStats.length);
-
     } catch (err) {
       console.error('Erreur chargement:', err);
     } finally {
@@ -1157,94 +1147,69 @@ export default function PublicHomePage({
     loadData();
   }, [loadData]);
 
-  // ─── GÉOLOCALISATION CORRIGÉE ───────────────────────────────────────
+  // ─── GÉOLOCALISATION ───
   const watchIdRef = useRef<number | null>(null);
   const [geoStatus, setGeoStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied' | 'error'>('idle');
 
   const startGeolocation = useCallback(() => {
-    // 1. Vérifier que l'API existe
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      console.warn('⚠️ navigator.geolocation indisponible');
       setLocationError("La géolocalisation n'est pas supportée par votre navigateur");
       setUserLocation(DEFAULT_POSITION);
       setGeoStatus('error');
       return;
     }
 
-    // 2. Vérifier le contexte sécurisé (HTTPS ou localhost)
     if (typeof window !== 'undefined' && !window.isSecureContext) {
-      console.warn('⚠️ Contexte non sécurisé — la géoloc nécessite HTTPS');
       setLocationError('La localisation nécessite une connexion sécurisée (HTTPS)');
       setUserLocation(DEFAULT_POSITION);
       setGeoStatus('error');
       return;
     }
 
-    // 3. Nettoyer l'ancien watch
     if (watchIdRef.current !== null) {
-      try {
-        navigator.geolocation.clearWatch(watchIdRef.current);
-      } catch {}
+      try { navigator.geolocation.clearWatch(watchIdRef.current); } catch {}
       watchIdRef.current = null;
     }
 
-    console.log('📍 Demande de géolocalisation...');
     setGeoStatus('requesting');
 
     try {
       watchIdRef.current = navigator.geolocation.watchPosition(
         (pos) => {
-          console.log('✅ Position obtenue:', pos.coords.latitude, pos.coords.longitude);
           setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
           setLocationError(null);
           setGeoStatus('granted');
         },
         (err) => {
-          // ⚠️ Afficher les vrais détails de l'erreur (pas juste "GeolocationPositionError")
-          const code = err?.code;
-          const message = err?.message || 'Sans message';
-          console.error(`❌ Erreur géoloc [code=${code}]: ${message}`, err);
-
           let userMessage = 'Position introuvable — position par défaut utilisée';
           let newStatus: typeof geoStatus = 'error';
 
-          switch (code) {
-            case 1: // PERMISSION_DENIED
+          switch (err?.code) {
+            case 1:
               userMessage = 'Localisation refusée. Autorisez-la dans les paramètres du navigateur.';
               newStatus = 'denied';
               break;
-            case 2: // POSITION_UNAVAILABLE
+            case 2:
               userMessage = 'Position indisponible. Vérifiez que le GPS est activé.';
-              newStatus = 'error';
               break;
-            case 3: // TIMEOUT
+            case 3:
               userMessage = 'Délai de localisation dépassé.';
-              newStatus = 'error';
               break;
-            default:
-              userMessage = 'Position introuvable — position par défaut utilisée';
-              newStatus = 'error';
           }
 
           setLocationError(userMessage);
           setGeoStatus(newStatus);
           setUserLocation((prev) => prev ?? DEFAULT_POSITION);
         },
-        {
-          enableHighAccuracy: false,
-          timeout: 15000,
-          maximumAge: 60000,
-        }
+        { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
       );
-    } catch (syncErr: any) {
-      console.error('❌ Exception synchrone géoloc:', syncErr);
+    } catch {
       setLocationError('Impossible de démarrer la localisation');
       setUserLocation(DEFAULT_POSITION);
       setGeoStatus('error');
     }
   }, []);
 
-  // Au montage : vérifier la permission puis démarrer
   useEffect(() => {
     if (typeof navigator === 'undefined' || !navigator.permissions?.query) {
       startGeolocation();
@@ -1261,7 +1226,6 @@ export default function PublicHomePage({
       .query({ name: 'geolocation' as PermissionName })
       .then((result) => {
         if (cancelled) return;
-        console.log('📋 Permission géoloc:', result.state);
 
         if (result.state === 'granted' || result.state === 'prompt') {
           startGeolocation();
@@ -1273,14 +1237,10 @@ export default function PublicHomePage({
 
         result.onchange = () => {
           if (cancelled) return;
-          console.log('📋 Permission changée:', result.state);
-          if (result.state === 'granted') {
-            startGeolocation();
-          }
+          if (result.state === 'granted') startGeolocation();
         };
       })
-      .catch((err) => {
-        console.warn('⚠️ query permission échoué:', err);
+      .catch(() => {
         if (!cancelled) startGeolocation();
       });
 
@@ -1291,7 +1251,6 @@ export default function PublicHomePage({
         watchIdRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -1300,9 +1259,7 @@ export default function PublicHomePage({
     } else {
       document.body.style.overflow = '';
     }
-    return () => {
-      document.body.style.overflow = '';
-    };
+    return () => { document.body.style.overflow = ''; };
   }, [mapFullscreen]);
 
   const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
@@ -1432,7 +1389,6 @@ export default function PublicHomePage({
       showToast("Ce salon n'a pas encore activé les réservations en ligne");
       return;
     }
-    console.log('🔍 Redirection vers la réservation du salon:', salon.slug);
     navigate(`/booking/${salon.slug}`);
   };
 
@@ -1488,9 +1444,7 @@ export default function PublicHomePage({
           ))}
         </div>
         {rating && rating > 0 && (
-          <span className="text-zinc-400 text-xs">
-            {rating.toFixed(1)} ⭐
-          </span>
+          <span className="text-zinc-400 text-xs">{rating.toFixed(1)} ⭐</span>
         )}
         {isLoading && (
           <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin ml-1" />
@@ -1888,7 +1842,6 @@ export default function PublicHomePage({
                   <button
                     onClick={closeItinerary}
                     className="p-2 rounded-full bg-zinc-800 hover:bg-zinc-700 transition text-zinc-400 hover:text-white flex-shrink-0"
-                    title="Fermer l'itinéraire"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -1957,9 +1910,7 @@ export default function PublicHomePage({
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
-                          <p className="text-white font-semibold text-sm truncate">
-                            {displayName}
-                          </p>
+                          <p className="text-white font-semibold text-sm truncate">{displayName}</p>
                           {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐</span>}
                         </div>
                         <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
@@ -1998,7 +1949,6 @@ export default function PublicHomePage({
                           }}
                           disabled={isLoading}
                           className="p-1.5 rounded-lg hover:bg-zinc-700 transition disabled:opacity-50"
-                          title={isFollowing ? 'Ne plus suivre' : 'Suivre'}
                         >
                           {isLoading ? (
                             <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
@@ -2103,9 +2053,7 @@ export default function PublicHomePage({
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-white font-semibold text-sm truncate">
-                        {displayName}
-                      </p>
+                      <p className="text-white font-semibold text-sm truncate">{displayName}</p>
                       {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐ Abonné</span>}
                       {hasStories && hasUnviewed && (
                         <div className="w-2.5 h-2.5 rounded-full bg-gradient-to-tr from-yellow-400 to-pink-500 flex-shrink-0" />
@@ -2118,7 +2066,7 @@ export default function PublicHomePage({
                       </span>
                       <span className="flex items-center gap-0.5">
                         <User className="w-3 h-3 text-emerald-400" />
-                        {salon.followers_count || 0}
+                        {salon.followers_count ?? 0}
                       </span>
                       {distance !== null && (
                         <>
@@ -2131,23 +2079,16 @@ export default function PublicHomePage({
                   </div>
                   <div className="flex items-center gap-1 flex-shrink-0">
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startItinerary(salon);
-                      }}
+                      onClick={(e) => { e.stopPropagation(); startItinerary(salon); }}
                       className="p-1.5 rounded-lg hover:bg-zinc-800 transition"
                       title="Itinéraire"
                     >
                       <RouteIcon className="w-4 h-4 text-emerald-400" />
                     </button>
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleFollow(salon.id);
-                      }}
+                      onClick={(e) => { e.stopPropagation(); toggleFollow(salon.id); }}
                       disabled={isLoading}
                       className="p-1.5 rounded-lg hover:bg-zinc-800 transition disabled:opacity-50"
-                      title={isFollowing ? 'Ne plus suivre' : 'Suivre'}
                     >
                       {isLoading ? (
                         <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
@@ -2158,10 +2099,7 @@ export default function PublicHomePage({
                       )}
                     </button>
                     <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedSalon(salon);
-                      }}
+                      onClick={(e) => { e.stopPropagation(); setSelectedSalon(salon); }}
                       className="p-1.5 rounded-lg hover:bg-zinc-800 transition"
                     >
                       <ChevronRight className="w-4 h-4 text-zinc-500" />
@@ -2203,7 +2141,6 @@ export default function PublicHomePage({
               <img src={selectedSalon.cover_image} alt="" className="w-full h-full object-cover rounded-t-2xl" />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent rounded-t-2xl" />
-
             <button onClick={() => setSelectedSalon(null)} className="absolute top-4 right-4 text-white/80 hover:text-white transition bg-black/30 rounded-full p-1.5">
               <X className="w-5 h-5" />
             </button>
@@ -2222,9 +2159,7 @@ export default function PublicHomePage({
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-white font-bold text-xl">
-                    {displayName}
-                  </h3>
+                  <h3 className="text-white font-bold text-xl">{displayName}</h3>
                   {selectedSalon.has_active_subscription && <span className="text-yellow-400 text-xs">⭐</span>}
                 </div>
                 {selectedSalon.address && (
@@ -2328,17 +2263,11 @@ export default function PublicHomePage({
               {!isAuthenticated && (
                 <p className="text-zinc-500 text-[10px] text-center mt-1">
                   Vous pouvez réserver et suivre des salons sans compte •
-                  <button
-                    onClick={onNavigateToLogin}
-                    className="text-blue-400 hover:underline ml-1"
-                  >
+                  <button onClick={onNavigateToLogin} className="text-blue-400 hover:underline ml-1">
                     Se connecter
                   </button>
                   {" ou "}
-                  <button
-                    onClick={onNavigateToRegister}
-                    className="text-blue-400 hover:underline"
-                  >
+                  <button onClick={onNavigateToRegister} className="text-blue-400 hover:underline">
                     Créer un compte
                   </button>
                 </p>
@@ -2372,44 +2301,55 @@ export default function PublicHomePage({
     );
   }
 
+  // ✅ AFFICHER L'HISTORIQUE EN LOCAL
+  if (showHistory) {
+    return (
+      <BookingHistoryPage
+        onBack={() => setShowHistory(false)}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-zinc-950 text-white pb-20">
       <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 py-2">
-        <div className="flex items-center justify-between max-w-lg mx-auto">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between max-w-lg mx-auto gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0">
             <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
               <Scissors className="w-5 h-5 text-black" />
             </div>
-            <h1 className="text-white font-black text-lg tracking-tight">LE COUPE</h1>
+            <h1 className="text-white font-black text-lg tracking-tight hidden sm:block">LE COUPE</h1>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="relative">
+
+          <div className="flex items-center gap-2 flex-1 justify-end">
+            <div className="relative flex-1 max-w-[200px]">
               <input
                 type="text"
                 placeholder="Rechercher..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-36 sm:w-48 md:w-56 bg-zinc-800/80 border border-zinc-700 rounded-full px-4 py-1.5 text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-white transition"
+                className="w-full bg-zinc-800/80 border border-zinc-700 rounded-full px-4 py-1.5 pr-9 text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-white transition"
               />
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
             </div>
-            {!isAuthenticated && (
-              <button
-                onClick={onNavigateToLogin}
-                className="text-sm text-blue-400 font-medium hover:text-blue-300 transition"
-              >
-                Connexion
-              </button>
-            )}
+
+            {/* ✅ Bouton History (LOCAL) */}
+            <button
+              onClick={() => setShowHistory(true)}
+              className="p-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 transition text-zinc-400 hover:text-white flex-shrink-0"
+              title="Mes réservations"
+            >
+              <History className="w-5 h-5" />
+            </button>
+
+            {/* ❌ BOUTON CONNEXION SUPPRIMÉ */}
           </div>
         </div>
       </header>
 
       <div className="max-w-lg mx-auto pt-3">
         {renderFollowedSection()}
-
         {renderMap()}
-
         {!mapFullscreen && renderAllSalons()}
 
         {!mapFullscreen && (
@@ -2431,11 +2371,7 @@ export default function PublicHomePage({
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
             <button
-              onClick={() => {
-                if (onNavigateToPage) {
-                  onNavigateToPage('publicHome');
-                }
-              }}
+              onClick={() => { if (onNavigateToPage) onNavigateToPage('publicHome'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center bg-white">
@@ -2445,11 +2381,7 @@ export default function PublicHomePage({
             </button>
 
             <button
-              onClick={() => {
-                if (onNavigateToPage) {
-                  onNavigateToPage('home');
-                }
-              }}
+              onClick={() => { if (onNavigateToPage) onNavigateToPage('home'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
@@ -2459,11 +2391,7 @@ export default function PublicHomePage({
             </button>
 
             <button
-              onClick={() => {
-                if (onNavigateToPage) {
-                  onNavigateToPage('bookings');
-                }
-              }}
+              onClick={() => { if (onNavigateToPage) onNavigateToPage('bookings'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
@@ -2473,11 +2401,7 @@ export default function PublicHomePage({
             </button>
 
             <button
-              onClick={() => {
-                if (onNavigateToPage) {
-                  onNavigateToPage('revenue');
-                }
-              }}
+              onClick={() => { if (onNavigateToPage) onNavigateToPage('revenue'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
@@ -2487,11 +2411,7 @@ export default function PublicHomePage({
             </button>
 
             <button
-              onClick={() => {
-                if (onNavigateToPage) {
-                  onNavigateToPage('expenses');
-                }
-              }}
+              onClick={() => { if (onNavigateToPage) onNavigateToPage('expenses'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
               <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
