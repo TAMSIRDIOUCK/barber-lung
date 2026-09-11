@@ -9,7 +9,8 @@ const PAYDUNYA_MASTER_KEY = Deno.env.get("PAYDUNYA_MASTER_KEY");
 const PAYDUNYA_PRIVATE_KEY = Deno.env.get("PAYDUNYA_PRIVATE_KEY");
 const PAYDUNYA_TOKEN = Deno.env.get("PAYDUNYA_TOKEN");
 
-const NET_FEE_RATE = 0.015;
+// ✅ Taux passé de 1,5 % à 15 %
+const NET_FEE_RATE = 0.15;
 const MIN_PAYOUT_AMOUNT = 500;
 
 const ALLOWED_MODES = new Set([
@@ -73,20 +74,29 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Numéro de compte invalide (6 à 12 chiffres)" }, 400);
     }
 
+    // ✅ FIX : on ne filtre PLUS sur payment_status. Le front calcule le solde
+    // uniquement à partir de status === 'done'. Le filtre payment_status = 'paid'
+    // créait un désaccord si la colonne n'était pas remplie exactement.
+    // On garde uniquement le filtre sur status === 'done' (argent débloqué
+    // seulement après scan du QR code par le salon).
     const { data: bookings, error: bErr } = await supabase
       .from("bookings")
-      .select("service_price, net_amount")
-      .eq("salon_user_id", userId)
-      .eq("payment_status", "paid");
+      .select("service_price, net_amount, status")
+      .eq("salon_user_id", userId);
     if (bErr) {
       console.error("Erreur lecture bookings:", bErr);
       return jsonResponse({ error: "Erreur lecture des réservations" }, 500);
     }
 
-    const totalNetRevenue = (bookings || []).reduce((sum, b) => {
-      const net = b.net_amount != null ? b.net_amount : Math.round(Number(b.service_price) * (1 - NET_FEE_RATE));
-      return sum + net;
-    }, 0);
+    // Seules les réservations "done" (ticket scanné) comptent
+    const totalNetRevenue = (bookings || [])
+      .filter((b) => b.status === "done")
+      .reduce((sum, b) => {
+        const net = b.net_amount != null
+          ? b.net_amount
+          : Math.round(Number(b.service_price) * (1 - NET_FEE_RATE));
+        return sum + net;
+      }, 0);
 
     const { data: payouts, error: pErr } = await supabase
       .from("payout_requests")
@@ -102,6 +112,8 @@ Deno.serve(async (req) => {
       .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
     const availableBalance = Math.max(0, totalNetRevenue - takenOrInFlight);
+
+    console.log("💰 Total net (done):", totalNetRevenue, "| Déjà pris/en cours:", takenOrInFlight, "| Disponible:", availableBalance, "| Demandé:", amount);
 
     if (amount > availableBalance) {
       return jsonResponse(
