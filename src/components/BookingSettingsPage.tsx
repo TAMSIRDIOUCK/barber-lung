@@ -71,11 +71,6 @@ interface BookingSettingsPageProps {
   userId: string;
 }
 
-// ✅ "confirmed" = payé par le client mais service pas encore rendu → argent
-// bloqué. "done" = le salon a scanné le ticket du client → service rendu,
-// argent débloqué et retirable. Il n'existe plus de moyen manuel de passer
-// de l'un à l'autre : seul le scan du QR code du client déclenche la
-// transition confirmed -> done (voir validateAndCompleteBooking).
 const STATUS_LABELS: Record<Booking['status'], string> = {
   confirmed: 'En attente',
   done: 'Terminé',
@@ -102,7 +97,6 @@ const PAYOUT_STATUS_COLORS: Record<PayoutStatus, string> = {
   failed: 'bg-red-500/15 text-red-400 border-red-500/30',
 };
 
-// Modes de retrait proposés au salon (sous-ensemble pertinent des withdraw_mode PayDunya)
 const PAYOUT_MODES: { value: string; label: string }[] = [
   { value: 'orange-money-senegal', label: 'Orange Money' },
   { value: 'wave-senegal', label: 'Wave' },
@@ -145,7 +139,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [processing, setProcessing] = useState(false);
 
-  // ── Retrait automatique ──
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [withdrawMode, setWithdrawMode] = useState(PAYOUT_MODES[0].value);
@@ -178,30 +171,24 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   const bookingUrl = `${window.location.origin}/booking/${settings?.slug || ''}`;
 
-  // ✅ SÉCURITÉ : seules les réservations "done" (ticket scanné par le salon)
-  // comptent dans le solde retirable. Une réservation "confirmed" (payée mais
-  // service pas encore rendu) ne débloque PAS son montant.
   const totalNetRevenue = useMemo(() => {
     return bookings
       .filter(b => b.status === 'done')
       .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
   }, [bookings]);
 
-  // Montant payé par des clients mais encore bloqué (service pas encore rendu)
   const pendingRevenue = useMemo(() => {
     return bookings
       .filter(b => b.status === 'confirmed')
       .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
   }, [bookings]);
 
-  // Montant déjà retiré ou en cours de retrait (created / pending / processing / success)
   const takenOrInFlight = useMemo(() => {
     return payoutRequests
       .filter(p => p.status !== 'failed')
       .reduce((sum, p) => sum + p.amount, 0);
   }, [payoutRequests]);
 
-  // Solde réellement disponible pour un nouveau retrait
   const availableBalance = useMemo(() => {
     return Math.max(0, totalNetRevenue - takenOrInFlight);
   }, [totalNetRevenue, takenOrInFlight]);
@@ -226,8 +213,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const loadAll = async () => {
     setLoading(true);
     try {
-      // .maybeSingle() au lieu de .single() — évite l'erreur 406
-      // quand le salon n'a pas encore de ligne booking_settings.
       const { data: s, error: sError } = await supabase
         .from('booking_settings')
         .select('*')
@@ -251,7 +236,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         if (s.default_payout_mode) setDefaultPayoutMode(s.default_payout_mode);
         if (s.default_payout_account) setDefaultPayoutAccount(s.default_payout_account);
       } else {
-        // pas encore de config → on initialise un slug par défaut
         setSettings(null);
         const defaultSlug = `salon-${userId.slice(0, 8)}`;
         setSlug(defaultSlug);
@@ -305,10 +289,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     };
   }, []);
 
-  // ✅ SEUL point d'entrée pour terminer une réservation : le salon doit
-  // scanner le QR code du client. Il n'existe plus de bouton "Marquer comme
-  // terminé" — ça empêche un salon de débloquer un paiement sans avoir
-  // réellement rendu le service.
   const validateAndCompleteBooking = async (qrCodeValue: string) => {
     if (!qrCodeValue || processing) return;
 
@@ -481,15 +461,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setOpeningHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
   };
 
-  // toggle is_active persisté immédiatement pour que l'activation soit effective
-  // sans devoir cliquer sur "Enregistrer les paramètres".
   const toggleIsActive = async () => {
     if (!settings) {
       alert("⚠️ Enregistrez d'abord les paramètres du salon avant d'activer la page.");
       return;
     }
     const newValue = !isActive;
-    setIsActive(newValue); // optimiste
+    setIsActive(newValue);
 
     const { error } = await supabase
       .from('booking_settings')
@@ -498,15 +476,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
     if (error) {
       console.error('Erreur toggle is_active:', error);
-      setIsActive(!newValue); // rollback
+      setIsActive(!newValue);
       alert('❌ Impossible de modifier le statut');
     } else {
       setSettings(prev => prev ? { ...prev, is_active: newValue } : prev);
     }
   };
 
-  // handleSave robuste avec fallback salon_name, gestion erreur 23505,
-  // confirmation si aucun service, et messages d'erreur explicites.
   const handleSave = async () => {
     setSlugError('');
 
@@ -517,10 +493,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       return;
     }
 
-    // Fallback : si le salon n'a pas saisi de nom, on en met un par défaut.
     const cleanSalonName = salonName.trim() || `Salon ${cleanSlug}`;
 
-    // Avertir si aucun service n'est défini (page booking inutilisable sans service).
     if (eventServices.length === 0) {
       const confirmNoService = window.confirm(
         "⚠️ Vous n'avez ajouté aucun service.\n" +
@@ -603,7 +577,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ── Retrait automatique du solde ──
   const openWithdrawModal = () => {
     setWithdrawError(null);
     setWithdrawSuccess(null);
@@ -613,6 +586,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setShowWithdrawModal(true);
   };
 
+  // ✅ CORRECTION ICI : on n'envoie PLUS le header Authorization manuellement.
+  // Supabase injecte automatiquement le token de la session courante.
   const handleWithdraw = async () => {
     setWithdrawError(null);
     setWithdrawSuccess(null);
@@ -635,21 +610,25 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
     setWithdrawing(true);
     try {
+      // Vérifier la session avant l'appel
       const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-      if (!accessToken) {
+      console.log('🔑 Session active:', !!sessionData.session);
+      console.log('🔑 Token présent:', !!sessionData.session?.access_token);
+
+      if (!sessionData.session) {
         setWithdrawError('Session expirée, reconnectez-vous');
         setWithdrawing(false);
         return;
       }
 
+      // ✅ On passe UNIQUEMENT le body, Supabase gère le header Authorization
       const { data, error } = await supabase.functions.invoke('request-payout', {
         body: { amount, payout_mode: withdrawMode, payout_account: account },
-        headers: { Authorization: `Bearer ${accessToken}` },
       });
 
+      console.log('📥 Réponse request-payout:', { data, error });
+
       if (error) {
-        // récupérer le vrai message d'erreur depuis le body de la réponse
         let message = error.message || 'Erreur lors du retrait';
         try {
           const ctx = (error as any).context;
@@ -716,7 +695,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     );
   }
 
-  // ── Vue Paramètres — plein écran ──
+  // ── Vue Paramètres ──
   if (view === 'settings') {
     return (
       <div className="min-h-screen bg-zinc-950 pb-24">
@@ -966,7 +945,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     );
   }
 
-  // ── Vue Accueil (façon Wave) ──
+  // ── Vue Accueil ──
   return (
     <div className="pb-24 space-y-4 max-w-lg mx-auto">
       <style>{`
@@ -1038,7 +1017,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       </div>
 
       <div className="px-4 space-y-4">
-        {/* Grille d'icônes (façon Wave) */}
         <div className="grid grid-cols-3 gap-y-4 py-2">
           {[
             { icon: <Link2 className="w-5 h-5" />, label: 'Lien', bg: 'bg-indigo-100 text-indigo-600', onClick: () => setShowShareSection(v => !v) },
@@ -1103,7 +1081,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           </div>
         )}
 
-        {/* Liste des réservations, toujours visible */}
         <div>
           <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2 px-1">Réservations ({counts.all})</h3>
 
@@ -1194,10 +1171,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     )}
                   </div>
 
-                  {/* ✅ Plus de bouton manuel "Marquer comme terminé" — la seule
-                      façon de terminer une réservation et débloquer son paiement
-                      est de scanner le QR code du client (bouton scanner en haut
-                      de l'accueil). */}
                   <div className="px-4 pb-4 border-t border-zinc-800/50 pt-3">
                     {booking.status === 'confirmed' && (
                       <div className="w-full flex items-center justify-center gap-2 text-amber-400 text-sm py-2 bg-amber-500/10 rounded-xl">
