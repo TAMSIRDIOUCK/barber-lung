@@ -5,7 +5,7 @@ import {
   Settings, ToggleLeft, ToggleRight, RefreshCw, Scissors,
   ExternalLink, X, ChevronLeft,
   Plus, Trash2, AlertTriangle, CheckCircle2, Eye, EyeOff,
-  Wallet, Clock, ArrowDownToLine
+  Wallet, Clock, ArrowDownToLine, Lock
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Html5Qrcode } from "html5-qrcode";
@@ -71,14 +71,19 @@ interface BookingSettingsPageProps {
   userId: string;
 }
 
+// ✅ "confirmed" = payé par le client mais service pas encore rendu → argent
+// bloqué. "done" = le salon a scanné le ticket du client → service rendu,
+// argent débloqué et retirable. Il n'existe plus de moyen manuel de passer
+// de l'un à l'autre : seul le scan du QR code du client déclenche la
+// transition confirmed -> done (voir validateAndCompleteBooking).
 const STATUS_LABELS: Record<Booking['status'], string> = {
-  confirmed: 'Confirmé',
+  confirmed: 'En attente',
   done: 'Terminé',
 };
 
 const STATUS_COLORS: Record<Booking['status'], string> = {
-  confirmed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-  done: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
+  confirmed: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  done: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
 };
 
 const PAYOUT_STATUS_LABELS: Record<PayoutStatus, string> = {
@@ -131,7 +136,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [filter, setFilter] = useState<'all' | Booking['status']>('all');
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanSuccess, setScanSuccess] = useState<string | null>(null);
@@ -174,8 +178,20 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   const bookingUrl = `${window.location.origin}/booking/${settings?.slug || ''}`;
 
+  // ✅ SÉCURITÉ : seules les réservations "done" (ticket scanné par le salon)
+  // comptent dans le solde retirable. Une réservation "confirmed" (payée mais
+  // service pas encore rendu) ne débloque PAS son montant.
   const totalNetRevenue = useMemo(() => {
-    return bookings.reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
+    return bookings
+      .filter(b => b.status === 'done')
+      .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
+  }, [bookings]);
+
+  // Montant payé par des clients mais encore bloqué (service pas encore rendu)
+  const pendingRevenue = useMemo(() => {
+    return bookings
+      .filter(b => b.status === 'confirmed')
+      .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
   }, [bookings]);
 
   // Montant déjà retiré ou en cours de retrait (created / pending / processing / success)
@@ -210,7 +226,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const loadAll = async () => {
     setLoading(true);
     try {
-      // ✅ FIX: .maybeSingle() au lieu de .single() — évite l'erreur 406
+      // .maybeSingle() au lieu de .single() — évite l'erreur 406
       // quand le salon n'a pas encore de ligne booking_settings.
       const { data: s, error: sError } = await supabase
         .from('booking_settings')
@@ -235,7 +251,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         if (s.default_payout_mode) setDefaultPayoutMode(s.default_payout_mode);
         if (s.default_payout_account) setDefaultPayoutAccount(s.default_payout_account);
       } else {
-        // ✅ FIX: pas encore de config → on initialise un slug par défaut
+        // pas encore de config → on initialise un slug par défaut
         setSettings(null);
         const defaultSlug = `salon-${userId.slice(0, 8)}`;
         setSlug(defaultSlug);
@@ -289,6 +305,10 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     };
   }, []);
 
+  // ✅ SEUL point d'entrée pour terminer une réservation : le salon doit
+  // scanner le QR code du client. Il n'existe plus de bouton "Marquer comme
+  // terminé" — ça empêche un salon de débloquer un paiement sans avoir
+  // réellement rendu le service.
   const validateAndCompleteBooking = async (qrCodeValue: string) => {
     if (!qrCodeValue || processing) return;
 
@@ -366,7 +386,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         b.id === booking!.id ? { ...b, qr_code_scanned: true, scanned_at: new Date().toISOString(), status: 'done' } : b
       ));
 
-      setScanSuccess(`✅ Ticket ${booking.ticket_number} validé ! (${booking.client_name})`);
+      setScanSuccess(`✅ Ticket ${booking.ticket_number} validé ! Paiement débloqué (${booking.client_name})`);
 
       setTimeout(() => {
         stopScanner();
@@ -461,7 +481,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setOpeningHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
   };
 
-  // ✅ FIX: toggle is_active persisté immédiatement pour que l'activation soit effective
+  // toggle is_active persisté immédiatement pour que l'activation soit effective
   // sans devoir cliquer sur "Enregistrer les paramètres".
   const toggleIsActive = async () => {
     if (!settings) {
@@ -485,7 +505,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     }
   };
 
-  // ✅ FIX: handleSave robuste avec fallback salon_name, gestion erreur 23505,
+  // handleSave robuste avec fallback salon_name, gestion erreur 23505,
   // confirmation si aucun service, et messages d'erreur explicites.
   const handleSave = async () => {
     setSlugError('');
@@ -577,15 +597,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setNewEventService({ name: '', price: '' });
   };
 
-  const handleMarkDone = async (bookingId: string) => {
-    setUpdatingId(bookingId);
-    try {
-      await supabase.from('bookings').update({ status: 'done' }).eq('id', bookingId);
-      setBookings(prev => prev.map(b => b.id === bookingId ? { ...b, status: 'done' } : b));
-    } catch (err) { console.error(err); }
-    finally { setUpdatingId(null); }
-  };
-
   const handleCopy = async () => {
     await navigator.clipboard.writeText(bookingUrl);
     setCopied(true);
@@ -638,7 +649,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       });
 
       if (error) {
-        // ✅ FIX: récupérer le vrai message d'erreur depuis le body de la réponse
+        // récupérer le vrai message d'erreur depuis le body de la réponse
         let message = error.message || 'Erreur lors du retrait';
         try {
           const ctx = (error as any).context;
@@ -897,7 +908,16 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
             <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
               <p className="text-blue-400 text-xs">
-                💳 Le client paie directement via PayDunya pour confirmer sa réservation — aucun RDV n'est enregistré sans paiement validé.
+                💳 Le client paie directement pour confirmer sa réservation — aucun RDV n'est enregistré sans paiement validé.
+              </p>
+            </div>
+
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 flex items-start gap-2">
+              <Lock className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-amber-400 text-xs">
+                🔒 Pour votre sécurité et celle du client, l'argent d'une réservation n'est débloqué pour retrait
+                qu'après avoir <strong>scanné le QR code du client</strong> à la fin du service. Il n'existe pas de
+                validation manuelle.
               </p>
             </div>
           </div>
@@ -976,7 +996,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               {balanceVisible ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
             </button>
           </div>
-          <p className="text-white/60 text-xs mt-1">Solde disponible pour retrait (après frais)</p>
+          <p className="text-white/60 text-xs mt-1">Solde disponible pour retrait (services terminés)</p>
+          {pendingRevenue > 0 && (
+            <p className="text-white/50 text-[11px] mt-1 flex items-center justify-center gap-1">
+              <Lock className="w-3 h-3" />
+              + {pendingRevenue.toLocaleString('fr-FR')} F en attente — scannez le ticket du client pour débloquer
+            </p>
+          )}
         </div>
 
         <div className="flex gap-2 mb-6">
@@ -998,7 +1024,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           )}
         </div>
         {hasPendingPayout && (
-          <p className="text-white/70 text-xs text-center -mt-4 mb-4">⏳ Un retrait est en cours de traitement</p>
+          <p className="text-white/70 text-xs text-center -mt-4 mb-4"></p>
         )}
 
         {settings && salonQRCode && (
@@ -1063,9 +1089,14 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                       {new Date(b.created_at).toLocaleDateString('fr-FR')} à {new Date(b.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>
-                  <span className="text-emerald-400 font-bold text-sm shrink-0 ml-3">
-                    +{(b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))).toLocaleString()}F
-                  </span>
+                  <div className="text-right shrink-0 ml-3">
+                    <span className={`font-bold text-sm block ${b.status === 'done' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      +{(b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))).toLocaleString()}F
+                    </span>
+                    <span className="text-[10px] text-zinc-500">
+                      {b.status === 'done' ? 'débloqué' : 'en attente'}
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1163,23 +1194,26 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     )}
                   </div>
 
-                  <div className="px-4 pb-4 flex flex-wrap gap-2 border-t border-zinc-800/50 pt-3">
-                    {booking.status === 'confirmed' && !booking.qr_code_scanned && (
-                      <button
-                        onClick={() => handleMarkDone(booking.id)}
-                        disabled={updatingId === booking.id}
-                        className="w-full bg-sky-500 hover:bg-sky-400 text-black font-semibold py-2 rounded-xl text-sm transition active:scale-95"
-                      >
-                        Marquer comme terminé
-                      </button>
-                    )}
-                    {booking.status === 'confirmed' && booking.qr_code_scanned && (
-                      <div className="w-full text-center text-emerald-400 text-sm py-2">
-                        ✓ Ticket scanné et validé
+                  {/* ✅ Plus de bouton manuel "Marquer comme terminé" — la seule
+                      façon de terminer une réservation et débloquer son paiement
+                      est de scanner le QR code du client (bouton scanner en haut
+                      de l'accueil). */}
+                  <div className="px-4 pb-4 border-t border-zinc-800/50 pt-3">
+                    {booking.status === 'confirmed' && (
+                      <div className="w-full flex items-center justify-center gap-2 text-amber-400 text-sm py-2 bg-amber-500/10 rounded-xl">
+                        <Lock className="w-4 h-4 shrink-0" />
+                        <span>
+                          En attente de validation — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA bloqués
+                        </span>
                       </div>
                     )}
                     {booking.status === 'done' && (
-                      <div className="w-full text-center text-zinc-500 text-sm py-2">Terminé</div>
+                      <div className="w-full text-center text-emerald-400 text-sm py-2 flex items-center justify-center gap-2 bg-emerald-500/10 rounded-xl">
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>
+                          Terminé — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA débloqués
+                        </span>
+                      </div>
                     )}
                   </div>
                 </div>

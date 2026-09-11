@@ -29,7 +29,6 @@ interface SalonProfile {
   is_active: boolean;
   created_at: string;
   rating?: number;
-  // ✅ FIX: le slug peut être null si le salon n'a pas activé ses réservations.
   slug: string | null;
   has_active_subscription?: boolean;
   is_following?: boolean;
@@ -76,7 +75,8 @@ const RADIUS_OPTIONS: { value: number; label: string }[] = [
   { value: Infinity, label: 'Tout' },
 ];
 
-// ── Fonction utilitaire pour récupérer un nom de salon ──
+const DEFAULT_POSITION = { lat: 14.7167, lng: -17.4677 };
+
 function getSalonDisplayName(salon: Partial<SalonProfile>): string {
   if (salon.salon_name && typeof salon.salon_name === 'string' && salon.salon_name.trim()) {
     return salon.salon_name.trim();
@@ -87,14 +87,12 @@ function getSalonDisplayName(salon: Partial<SalonProfile>): string {
   return 'Salon';
 }
 
-// ── Affichage d'adresse raccourci ──
 function shortAddress(address?: string | null, maxLen = 28): string {
   if (!address || !address.trim()) return '';
   const first = address.split(',')[0].trim();
   return first.length > maxLen ? first.slice(0, maxLen).trim() + '…' : first;
 }
 
-// ── Générer un device_id unique ──
 function getDeviceId(): string {
   let deviceId = localStorage.getItem('device_id');
   if (!deviceId) {
@@ -104,7 +102,6 @@ function getDeviceId(): string {
   return deviceId;
 }
 
-// ── Statut des stories d'un salon ──
 function getStoryStatus(
   salonId: string,
   stories: Story[],
@@ -123,7 +120,6 @@ function getStoryStatus(
   return { hasStories, allViewed, hasUnviewed };
 }
 
-// ── Formatage de la durée ──
 function formatDuration(minutes: number): string {
   if (minutes < 1) return '< 1 min';
   if (minutes < 60) return `${Math.round(minutes)} min`;
@@ -970,7 +966,6 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId, salons, selectedSalon, showToast]);
 
-  // ── Chargement des données ──
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
@@ -989,13 +984,9 @@ export default function PublicHomePage({
 
       console.log('📊 Profils récupérés:', profiles?.length || 0);
 
-      // ⚠️ IMPORTANT : on distingue deux identifiants différents
-      // - profiles.id      → utilisé par followers/reviews/stories (FK vers profiles)
-      // - profiles.user_id → utilisé par subscriptions/booking_settings (FK vers auth.users)
       const profileIds = profiles?.map((p) => p.id) || [];
       const authUserIds = (profiles?.map((p) => p.user_id).filter(Boolean) as string[]) || [];
 
-      // ── Subscriptions (utilise auth.users.id) ──
       let subscriptionMap: Record<string, boolean> = {};
       if (authUserIds.length > 0) {
         const { data: subscriptions } = await supabase
@@ -1011,9 +1002,6 @@ export default function PublicHomePage({
         }
       }
 
-      // ── Slug de réservation (utilise auth.users.id) ──
-      // ✅ FIX : on interroge booking_settings avec les authUserIds (et non profileIds).
-      // Avant, on passait profiles.id → booking_settings.user_id, ce qui ne matchait jamais.
       let slugMap: Record<string, string> = {};
       if (authUserIds.length > 0) {
         const { data: bookingSettingsRows, error: bsError } = await supabase
@@ -1033,7 +1021,6 @@ export default function PublicHomePage({
         }
       }
 
-      // ── Following (utilise profiles.id) ──
       let userFollowingIds: Set<string> = new Set();
       let guestFollowingIdsSet: Set<string> = new Set();
       const deviceId = getDeviceId();
@@ -1070,7 +1057,6 @@ export default function PublicHomePage({
         }
       }
 
-      // ── Followers count (utilise profiles.id) ──
       let followersMap: Record<string, number> = {};
       if (profileIds.length > 0) {
         const { data: followers } = await supabase
@@ -1086,7 +1072,6 @@ export default function PublicHomePage({
         }
       }
 
-      // ── Reviews (utilise profiles.id) ──
       let reviewsMap: Record<string, { count: number; avg: number }> = {};
       if (profileIds.length > 0) {
         const { data: reviews } = await supabase
@@ -1109,7 +1094,6 @@ export default function PublicHomePage({
         });
       }
 
-      // ── Stories ──
       const { data: storiesData, error: storiesError } = await supabase
         .from('stories')
         .select('*')
@@ -1118,16 +1102,12 @@ export default function PublicHomePage({
 
       if (storiesError) console.error('Erreur stories:', storiesError);
 
-      // ── Construction de la liste ──
       const salonsWithStats = (profiles || []).map((p) => {
         const isFollowed = userFollowingIds.has(p.id) || guestFollowingIdsSet.has(p.id);
         const isOwnProfile = isAuthenticated && currentUserId === p.user_id;
         const reviewData = reviewsMap[p.id];
         const displayName = getSalonDisplayName(p);
 
-        // ✅ FIX : slug = slugMap[p.user_id] (jamais p.id en fallback).
-        // Si le salon n'a pas de booking_settings actif, slug = null → le bouton
-        // Réserver sera désactivé et le client ne sera pas envoyé vers une 404.
         const slug = slugMap[p.user_id] || null;
 
         return {
@@ -1175,8 +1155,144 @@ export default function PublicHomePage({
 
   useEffect(() => {
     loadData();
-    getUserLocation();
   }, [loadData]);
+
+  // ─── GÉOLOCALISATION CORRIGÉE ───────────────────────────────────────
+  const watchIdRef = useRef<number | null>(null);
+  const [geoStatus, setGeoStatus] = useState<'idle' | 'requesting' | 'granted' | 'denied' | 'error'>('idle');
+
+  const startGeolocation = useCallback(() => {
+    // 1. Vérifier que l'API existe
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      console.warn('⚠️ navigator.geolocation indisponible');
+      setLocationError("La géolocalisation n'est pas supportée par votre navigateur");
+      setUserLocation(DEFAULT_POSITION);
+      setGeoStatus('error');
+      return;
+    }
+
+    // 2. Vérifier le contexte sécurisé (HTTPS ou localhost)
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      console.warn('⚠️ Contexte non sécurisé — la géoloc nécessite HTTPS');
+      setLocationError('La localisation nécessite une connexion sécurisée (HTTPS)');
+      setUserLocation(DEFAULT_POSITION);
+      setGeoStatus('error');
+      return;
+    }
+
+    // 3. Nettoyer l'ancien watch
+    if (watchIdRef.current !== null) {
+      try {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      } catch {}
+      watchIdRef.current = null;
+    }
+
+    console.log('📍 Demande de géolocalisation...');
+    setGeoStatus('requesting');
+
+    try {
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          console.log('✅ Position obtenue:', pos.coords.latitude, pos.coords.longitude);
+          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setLocationError(null);
+          setGeoStatus('granted');
+        },
+        (err) => {
+          // ⚠️ Afficher les vrais détails de l'erreur (pas juste "GeolocationPositionError")
+          const code = err?.code;
+          const message = err?.message || 'Sans message';
+          console.error(`❌ Erreur géoloc [code=${code}]: ${message}`, err);
+
+          let userMessage = 'Position introuvable — position par défaut utilisée';
+          let newStatus: typeof geoStatus = 'error';
+
+          switch (code) {
+            case 1: // PERMISSION_DENIED
+              userMessage = 'Localisation refusée. Autorisez-la dans les paramètres du navigateur.';
+              newStatus = 'denied';
+              break;
+            case 2: // POSITION_UNAVAILABLE
+              userMessage = 'Position indisponible. Vérifiez que le GPS est activé.';
+              newStatus = 'error';
+              break;
+            case 3: // TIMEOUT
+              userMessage = 'Délai de localisation dépassé.';
+              newStatus = 'error';
+              break;
+            default:
+              userMessage = 'Position introuvable — position par défaut utilisée';
+              newStatus = 'error';
+          }
+
+          setLocationError(userMessage);
+          setGeoStatus(newStatus);
+          setUserLocation((prev) => prev ?? DEFAULT_POSITION);
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 15000,
+          maximumAge: 60000,
+        }
+      );
+    } catch (syncErr: any) {
+      console.error('❌ Exception synchrone géoloc:', syncErr);
+      setLocationError('Impossible de démarrer la localisation');
+      setUserLocation(DEFAULT_POSITION);
+      setGeoStatus('error');
+    }
+  }, []);
+
+  // Au montage : vérifier la permission puis démarrer
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.permissions?.query) {
+      startGeolocation();
+      return () => {
+        if (watchIdRef.current !== null) {
+          try { navigator.geolocation.clearWatch(watchIdRef.current); } catch {}
+        }
+      };
+    }
+
+    let cancelled = false;
+
+    navigator.permissions
+      .query({ name: 'geolocation' as PermissionName })
+      .then((result) => {
+        if (cancelled) return;
+        console.log('📋 Permission géoloc:', result.state);
+
+        if (result.state === 'granted' || result.state === 'prompt') {
+          startGeolocation();
+        } else {
+          setGeoStatus('denied');
+          setLocationError('Localisation refusée. Cliquez sur 🔒 pour autoriser.');
+          setUserLocation(DEFAULT_POSITION);
+        }
+
+        result.onchange = () => {
+          if (cancelled) return;
+          console.log('📋 Permission changée:', result.state);
+          if (result.state === 'granted') {
+            startGeolocation();
+          }
+        };
+      })
+      .catch((err) => {
+        console.warn('⚠️ query permission échoué:', err);
+        if (!cancelled) startGeolocation();
+      });
+
+    return () => {
+      cancelled = true;
+      if (watchIdRef.current !== null) {
+        try { navigator.geolocation.clearWatch(watchIdRef.current); } catch {}
+        watchIdRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (mapFullscreen) {
@@ -1188,31 +1304,6 @@ export default function PublicHomePage({
       document.body.style.overflow = '';
     };
   }, [mapFullscreen]);
-
-  const getUserLocation = () => {
-    if (!navigator.geolocation) {
-      setLocationError("La géolocalisation n'est pas supportée par votre navigateur");
-      showToast("Veuillez activer votre localisation pour voir les salons");
-      const defaultPos = { lat: 14.7167, lng: -17.4677 };
-      setUserLocation(defaultPos);
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setUserLocation(loc);
-        setLocationError(null);
-      },
-      (err) => {
-        console.error('Erreur géoloc:', err);
-        setLocationError('Position introuvable — position par défaut utilisée');
-        showToast("Position introuvable, utilisation de la position par défaut");
-        const defaultPos = { lat: 14.7167, lng: -17.4677 };
-        setUserLocation(defaultPos);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
-    );
-  };
 
   const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
     const R = 6371;
@@ -1329,10 +1420,13 @@ export default function PublicHomePage({
   };
 
   const centerOnUser = useCallback(() => {
+    if (!userLocation) {
+      showToast('Position non disponible');
+      return;
+    }
     salonMapRef.current?.centerOnUser();
-  }, []);
+  }, [userLocation, showToast]);
 
-  // ✅ FIX : handleBooking bloque la redirection si le salon n'a pas de slug.
   const handleBooking = (salon: SalonProfile) => {
     if (!salon.slug) {
       showToast("Ce salon n'a pas encore activé les réservations en ligne");
@@ -1560,7 +1654,9 @@ export default function PublicHomePage({
               <button
                 onClick={centerOnUser}
                 disabled={!userLocation}
-                className="p-2 bg-zinc-800/80 rounded-lg hover:bg-zinc-700 transition text-zinc-400 hover:text-white disabled:opacity-40"
+                className={`p-2 rounded-lg transition text-zinc-400 hover:text-white disabled:opacity-40 ${
+                  geoStatus === 'granted' ? 'bg-emerald-500/15' : 'bg-zinc-800/80 hover:bg-zinc-700'
+                }`}
                 title="Centrer sur ma position"
               >
                 <Navigation className="w-4 h-4" />
@@ -1598,7 +1694,15 @@ export default function PublicHomePage({
           {locationError && !routeInfo && (
             <div className="flex items-center gap-1.5 px-3 pb-2 text-amber-400">
               <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-              <p className="text-[10px]">{locationError}</p>
+              <p className="text-[10px] flex-1">{locationError}</p>
+              {geoStatus === 'denied' && (
+                <button
+                  onClick={startGeolocation}
+                  className="text-[10px] text-amber-300 underline hover:text-amber-200 flex-shrink-0"
+                >
+                  Réessayer
+                </button>
+              )}
             </div>
           )}
 
@@ -2170,7 +2274,6 @@ export default function PublicHomePage({
             )}
 
             <div className="mt-4 flex flex-col gap-2">
-              {/* ✅ FIX : bouton désactivé si pas de slug */}
               <button
                 onClick={() => handleBooking(selectedSalon)}
                 disabled={!selectedSalon.slug}
@@ -2335,10 +2438,10 @@ export default function PublicHomePage({
               }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
-                <Home className="w-5 h-5 text-zinc-600 group-hover:text-white" />
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center bg-white">
+                <Home className="w-5 h-5 text-black" />
               </div>
-              <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Accueil</span>
+              <span className="text-[8px] font-medium text-white">Accueil</span>
             </button>
 
             <button
@@ -2349,7 +2452,7 @@ export default function PublicHomePage({
               }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
                 <Scissors className="w-5 h-5 text-zinc-600 group-hover:text-white" />
               </div>
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Services</span>
@@ -2363,7 +2466,7 @@ export default function PublicHomePage({
               }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
                 <CalendarCheck className="w-5 h-5 text-zinc-600 group-hover:text-white" />
               </div>
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Réservations</span>
@@ -2377,7 +2480,7 @@ export default function PublicHomePage({
               }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
                 <TrendingUp className="w-5 h-5 text-zinc-600 group-hover:text-white" />
               </div>
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Revenus</span>
@@ -2391,7 +2494,7 @@ export default function PublicHomePage({
               }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
             >
-              <div className="p-1 rounded-xl transition-all flex items-center justify-center">
+              <div className="p-1 rounded-xl transition-all flex items-center justify-center group-hover:bg-white/10">
                 <DollarSign className="w-5 h-5 text-zinc-600 group-hover:text-white" />
               </div>
               <span className="text-[8px] font-medium text-zinc-600 group-hover:text-white">Dépenses</span>
