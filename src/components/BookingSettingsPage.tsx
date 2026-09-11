@@ -118,7 +118,9 @@ const DAYS = [
 ];
 
 const SCANNER_ID = 'qr-scanner-container';
-const NET_FEE_RATE = 0.015;
+
+// ✅ Taux passé de 1,5 % à 15 %
+const NET_FEE_RATE = 0.15;
 
 export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [view, setView] = useState<'home' | 'settings'>('home');
@@ -586,8 +588,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setShowWithdrawModal(true);
   };
 
-  // ✅ CORRECTION ICI : on n'envoie PLUS le header Authorization manuellement.
-  // Supabase injecte automatiquement le token de la session courante.
   const handleWithdraw = async () => {
     setWithdrawError(null);
     setWithdrawSuccess(null);
@@ -610,7 +610,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
     setWithdrawing(true);
     try {
-      // Vérifier la session avant l'appel
       const { data: sessionData } = await supabase.auth.getSession();
       console.log('🔑 Session active:', !!sessionData.session);
       console.log('🔑 Token présent:', !!sessionData.session?.access_token);
@@ -621,7 +620,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         return;
       }
 
-      // ✅ On passe UNIQUEMENT le body, Supabase gère le header Authorization
       const { data, error } = await supabase.functions.invoke('request-payout', {
         body: { amount, payout_mode: withdrawMode, payout_account: account },
       });
@@ -1144,7 +1142,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     </div>
                     {booking.net_amount != null && (
                       <div className="flex items-center gap-2 text-sm text-zinc-500 pl-5">
-                        <span className="text-xs">Net reçu (après 1,5%)</span>
+                        <span className="text-xs">Net reçu (après 15%)</span>
                         <span className="ml-auto shrink-0 text-emerald-400 font-semibold text-xs">
                           {booking.net_amount.toLocaleString()} CFA
                         </span>

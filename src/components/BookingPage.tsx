@@ -164,7 +164,6 @@ export function BookingPage({ slug }: BookingPageProps) {
   // ✅ FONCTION CENTRALE : vérifier le statut du paiement (bookings OU booking_requests)
   const checkBookingStatus = useCallback(async (reqId: string): Promise<{ found: boolean; data?: any }> => {
     try {
-      // 1. Chercher dans la table bookings (résultat final)
       const { data: finalBooking, error: bookingsError } = await supabase
         .from('bookings')
         .select('*')
@@ -180,7 +179,6 @@ export function BookingPage({ slug }: BookingPageProps) {
         return { found: true, data: finalBooking };
       }
 
-      // 2. Sinon vérifier dans booking_requests
       const { data: request, error: requestError } = await supabase
         .from('booking_requests')
         .select('*')
@@ -274,7 +272,12 @@ export function BookingPage({ slug }: BookingPageProps) {
         });
 
       if (error) {
-        console.error('⚠️ Erreur sauvegarde historique:', error);
+        console.error('⚠️ Erreur sauvegarde historique:', {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+        });
       } else {
         console.log('✅ Réservation sauvegardée dans l\'historique');
       }
@@ -312,7 +315,6 @@ export function BookingPage({ slug }: BookingPageProps) {
 
     setBookingData(enrichedBooking);
 
-    // ✅ SAUVEGARDER dans l'historique
     await saveToHistory(enrichedBooking, qrData);
 
     setStep('success');
@@ -351,8 +353,6 @@ export function BookingPage({ slug }: BookingPageProps) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
         }
-        // ✅ REDIRIGER QUAND MÊME vers la page succès si timeout
-        // (le paiement a été validé côté provider, on ne bloque pas l'utilisateur)
         const fallbackBooking = {
           id: requestId,
           request_id: requestId,
@@ -575,7 +575,7 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ✅ ÉTAPE ATTENTE — avec bouton de vérification manuelle
+  // ✅ ÉTAPE ATTENTE
   if (step === 'waiting') {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
@@ -619,7 +619,9 @@ export function BookingPage({ slug }: BookingPageProps) {
 
   if (step === 'success' && bookingData) {
     const dateFmt = new Date(bookingData.booking_date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const netAmount = bookingData.net_amount ?? Math.round(bookingData.service_price * 0.985);
+
+    // ✅ Taux passé à 15 %
+    const netAmount = bookingData.net_amount ?? Math.round(bookingData.service_price * 0.85);
 
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
@@ -649,7 +651,7 @@ export function BookingPage({ slug }: BookingPageProps) {
                   <div className="mt-3 bg-zinc-50 border border-zinc-200 rounded-lg py-2">
                     <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Montant reçu par le salon</p>
                     <p className="text-black font-black text-xl">{formatCFA(netAmount)}</p>
-                    <p className="text-zinc-400 text-[10px]">(après 1,5% de frais de service)</p>
+                    <p className="text-zinc-400 text-[10px]">(après 15% de frais de service)</p>
                   </div>
 
                   <button
