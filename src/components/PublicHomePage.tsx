@@ -79,8 +79,6 @@ const RADIUS_OPTIONS: { value: number; label: string }[] = [
 
 const DEFAULT_POSITION = { lat: 14.7167, lng: -17.4677 };
 
-// Durée fixe d'affichage pour une story IMAGE (Instagram = 5s). Les vidéos, elles,
-// suivent leur propre durée réelle (voir StoryViewer) au lieu d'un timer fixe.
 const STORY_IMAGE_DURATION_MS = 5000;
 const IMAGE_TICK_MS = 50;
 
@@ -135,8 +133,6 @@ function formatDuration(minutes: number): string {
   return `${h} h ${m > 0 ? m + ' min' : ''}`.trim();
 }
 
-// ── Image sécurisée : évite les cases blanches / icônes cassées quand une URL
-// est invalide ou ne charge pas (avatar, couverture, etc.) ──
 function SafeImage({
   src,
   alt,
@@ -224,7 +220,6 @@ function StoryViewer({
     setCurrentIndex((prev) => (prev > 0 ? prev - 1 : prev));
   }, []);
 
-  // Préchargement de l'image suivante (stories image uniquement)
   useEffect(() => {
     const nextStory = stories[currentIndex + 1];
     if (nextStory && !(nextStory.media_type === 'video' || nextStory.image_url?.match(/\.(mp4|webm|mov|avi)$/i))) {
@@ -233,7 +228,6 @@ function StoryViewer({
     }
   }, [currentIndex, stories]);
 
-  // Marque le salon comme "vu" une seule fois par ouverture du viewer (pour le rond de statut)
   useEffect(() => {
     if (!hasViewedRef.current) {
       hasViewedRef.current = true;
@@ -241,7 +235,6 @@ function StoryViewer({
     }
   }, [salonId, onStoryViewed]);
 
-  // Enregistre une VUE à chaque fois qu'une story devient active (comptage à chaque ouverture, comme les likes)
   useEffect(() => {
     if (!currentStory) return;
     const alreadyLoggedThisSession = openedStoryIdsRef.current.has(currentStory.id);
@@ -260,8 +253,6 @@ function StoryViewer({
 
   const isVideo = !!currentStory && (currentStory.media_type === 'video' || !!currentStory.image_url?.match(/\.(mp4|webm|mov|avi)$/i));
 
-  // Timer de progression pour les images uniquement — durée fixe.
-  // Les vidéos avancent selon leur propre durée réelle (voir onTimeUpdate / onEnded sur <video>).
   useEffect(() => {
     if (isVideo) return;
     if (isPaused || !isImageLoaded) return;
@@ -284,7 +275,6 @@ function StoryViewer({
     };
   }, [currentIndex, isPaused, isImageLoaded, isVideo, goToNext]);
 
-  // Pause/reprise de la vidéo quand l'utilisateur maintient l'écran appuyé
   useEffect(() => {
     if (!isVideo || !videoRef.current) return;
     if (isPaused) {
@@ -325,7 +315,6 @@ function StoryViewer({
     setIsLoading(false);
     if (videoRef.current) {
       videoRef.current.play().catch(() => {
-        // Autoplay bloqué par le navigateur : on force le mode muet et on réessaie
         setSoundOn(false);
         videoRef.current?.play().catch(() => {});
       });
@@ -460,7 +449,6 @@ function StoryViewer({
       </div>
 
       <div className="absolute bottom-[max(1.5rem,env(safe-area-inset-bottom))] left-0 right-0 flex items-center justify-center gap-6 px-4 flex-shrink-0">
-        {/* ❌ Compteur de likes supprimé — seul le cœur reste */}
         <button
           onClick={handleLikeClick}
           className="flex items-center gap-2 text-white/80 hover:text-white transition active:scale-95"
@@ -543,7 +531,6 @@ export default function PublicHomePage({
 
   const [ratingLoading, setRatingLoading] = useState<Record<string, boolean>>({});
 
-  // ✅ State LOCAL pour l'historique (PAS dans la navigation globale)
   const [showHistory, setShowHistory] = useState(false);
 
   const showToast = useCallback((message: string) => {
@@ -578,11 +565,7 @@ export default function PublicHomePage({
     }
   }, [salons]);
 
-  // ─── VUES : on enregistre une ligne dans la table `views` À CHAQUE OUVERTURE ───
-  // (contrairement au like qui est un simple ON/OFF, une vue est comptée à chaque fois,
-  // exactement comme demandé — un même utilisateur qui revoit la story ajoute une vue).
   const logStoryView = useCallback(async (storyId: string, profileId: string) => {
-    // Mise à jour optimiste immédiate du compteur affiché
     setStories(prev => prev.map(s =>
       s.id === storyId ? { ...s, view_count: (s.view_count || 0) + 1 } : s
     ));
@@ -607,10 +590,10 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId]);
 
+  // ─── LIKE : cœur uniquement, pas de compteur, pas de toast ───
   const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
     const wasLiked = userLikes.has(storyId);
 
-    // ✅ Mise à jour optimiste du cœur uniquement (plus de compteur, plus de toast)
     setUserLikes(prev => {
       const next = new Set(prev);
       if (wasLiked) next.delete(storyId); else next.add(storyId);
@@ -619,47 +602,56 @@ export default function PublicHomePage({
 
     try {
       const deviceId = getDeviceId();
-      let existing: { id: string } | null = null;
 
       if (isAuthenticated && currentUserId) {
-        const { data } = await supabase
+        const { data: existing } = await supabase
           .from('likes')
           .select('id')
           .eq('profile_id', currentUserId)
           .eq('target_type', 'story')
           .eq('target_id', storyId)
           .maybeSingle();
-        existing = data;
+
+        if (wasLiked) {
+          if (existing) {
+            await supabase.from('likes').delete().eq('id', existing.id);
+          }
+        } else if (!existing) {
+          const { error } = await supabase.from('likes').insert({
+            profile_id: currentUserId,
+            target_type: 'story',
+            target_id: storyId,
+          });
+          if (error && error.code !== '23505') throw error;
+        }
       } else {
-        const { data } = await supabase
+        const { data: existing, error: findError } = await supabase
           .from('likes')
           .select('id')
           .eq('device_id', deviceId)
           .eq('target_type', 'story')
           .eq('target_id', storyId)
           .maybeSingle();
-        existing = data;
-      }
 
-      if (wasLiked) {
-        if (existing) {
-          await supabase.from('likes').delete().eq('id', existing.id);
+        if (findError && findError.code !== '42703') {
+          console.error('Erreur recherche like invité:', findError);
         }
-      } else if (!existing) {
-        const insertData: any = {
-          target_type: 'story',
-          target_id: storyId,
-          device_id: deviceId,
-        };
-        if (isAuthenticated && currentUserId) {
-          insertData.profile_id = currentUserId;
+
+        if (wasLiked) {
+          if (existing) {
+            await supabase.from('likes').delete().eq('id', existing.id);
+          }
+        } else if (!existing) {
+          const { error } = await supabase.from('likes').insert({
+            device_id: deviceId,
+            target_type: 'story',
+            target_id: storyId,
+          });
+          if (error && error.code !== '23505' && error.code !== '42703') throw error;
         }
-        const { error } = await supabase.from('likes').insert(insertData);
-        if (error && error.code !== '23505') throw error;
       }
     } catch (err: any) {
       console.error('Erreur like:', err);
-      // ❌ Échec réseau : on annule proprement la mise à jour optimiste du cœur
       setUserLikes(prev => {
         const next = new Set(prev);
         if (wasLiked) next.add(storyId); else next.delete(storyId);
@@ -668,6 +660,7 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId, userLikes]);
 
+  // ─── CHARGEMENT DES LIKES ───
   const loadUserLikes = useCallback(async () => {
     try {
       const deviceId = getDeviceId();
@@ -692,11 +685,19 @@ export default function PublicHomePage({
           .eq('device_id', deviceId)
           .eq('target_type', 'story');
 
-        if (error) {
+        if (error && error.code !== '42703') {
           console.error('Erreur chargement likes invité:', error);
           return;
         }
-        likedIds = data?.map((l: any) => l.target_id) || [];
+
+        if (!error && data) {
+          likedIds = data.map((l: any) => l.target_id) || [];
+        } else {
+          try {
+            const raw = localStorage.getItem('guest_story_likes');
+            if (raw) likedIds = JSON.parse(raw);
+          } catch {}
+        }
       }
 
       setUserLikes(new Set(likedIds));
@@ -704,6 +705,14 @@ export default function PublicHomePage({
       console.error('Erreur chargement likes:', err);
     }
   }, [isAuthenticated, currentUserId]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      try {
+        localStorage.setItem('guest_story_likes', JSON.stringify(Array.from(userLikes)));
+      } catch {}
+    }
+  }, [userLikes, isAuthenticated]);
 
   const rateSalon = useCallback(async (salonId: string, rating: number) => {
     const deviceId = getDeviceId();
@@ -804,7 +813,7 @@ export default function PublicHomePage({
           console.error('Erreur insertion note:', insertError);
           throw insertError;
         }
-        showToast(` : ${rating} ⭐`); 
+        showToast(` : ${rating} ⭐`);
       }
 
       const { data: allReviews, error: fetchError } = await supabase
@@ -1233,8 +1242,6 @@ export default function PublicHomePage({
         .gte('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false });
 
-      // ── VUES : le compteur affiché vient du nombre réel de lignes dans la table `views`,
-      // exactement comme les notes viennent de la table `reviews` ──
       const storyIds = (storiesData || []).map((s: any) => s.id);
       let viewCountMap: Record<string, number> = {};
       if (storyIds.length > 0) {
@@ -1262,7 +1269,6 @@ export default function PublicHomePage({
         const isFollowed = userFollowingIds.has(p.id) || guestFollowingIdsSet.has(p.id);
         const isOwnProfile = isAuthenticated && currentUserId === p.user_id;
         const reviewData = reviewsMap[p.id];
-        const displayName = getSalonDisplayName(p);
 
         const slug = slugMap[p.user_id] || null;
 
@@ -1446,6 +1452,7 @@ export default function PublicHomePage({
     return matchesSearch;
   });
 
+  // ─── LISTE : filtrée par rayon (utilisée sous la carte) ───
   const nearbySalons = useMemo(() => {
     let list = filteredSalons.filter((salon) => {
       if (!userLocation || radiusFilter === Infinity) return true;
@@ -1464,7 +1471,23 @@ export default function PublicHomePage({
     });
   }, [filteredSalons, userLocation, radiusFilter, sortBy, mapFilterMode]);
 
-  const mapSalons = useMemo(() => nearbySalons.filter((s) => !s.is_own_profile), [nearbySalons]);
+  // ─── CARTE : TOUS les salons (sans filtre de rayon) ───
+  // Le cercle de rayon reste visuel, mais les marqueurs restent affichés partout.
+  const mapSalons = useMemo(() => {
+    let list = filteredSalons.filter((s) => !s.is_own_profile);
+
+    if (mapFilterMode === 'subscribed') {
+      list = list.filter((s) => s.is_following);
+    }
+
+    return [...list].sort((a, b) => {
+      if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
+      if (!userLocation) return 0;
+      const distA = calculateDistance(userLocation.lat, userLocation.lng, a.latitude || 0, a.longitude || 0);
+      const distB = calculateDistance(userLocation.lat, userLocation.lng, b.latitude || 0, b.longitude || 0);
+      return distA - distB;
+    });
+  }, [filteredSalons, sortBy, mapFilterMode, userLocation]);
 
   const startItinerary = useCallback(async (salon: SalonProfile) => {
     if (!salon.latitude || !salon.longitude) {
@@ -1532,13 +1555,6 @@ export default function PublicHomePage({
       setActiveMapSalonId(salon.id);
     }
   }, []);
-
-  const jumpToSalonOnMap = (salon: SalonProfile) => {
-    setSelectedSalon(null);
-    setMapFilterMode('all');
-    mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    setTimeout(() => centerOnSalon(salon), 350);
-  };
 
   const centerOnUser = useCallback(() => {
     if (!userLocation) {
@@ -1620,8 +1636,6 @@ export default function PublicHomePage({
     );
   };
 
-  // Classes statiques (Tailwind ne peut pas interpréter des noms de classes générées
-  // dynamiquement comme `max-w-[${x}px]` — c'était la cause du débordement des profils).
   const AVATAR_SIZE_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
     sm: 'w-12 h-12',
     md: 'w-16 h-16',
@@ -1699,7 +1713,6 @@ export default function PublicHomePage({
   const renderFollowedSection = (): React.ReactElement | null => {
     const allFollowed = [...subscriptionSalons];
 
-    // ✅ Le profil de l'utilisateur connecté est toujours affiché en premier
     if (isAuthenticated && currentUserId) {
       const ownProfile = salons.find((s) => s.user_id === currentUserId);
       if (ownProfile) {
@@ -1778,7 +1791,9 @@ export default function PublicHomePage({
                   {routeInfo ? `Itinéraire vers ${getSalonDisplayName(routeInfo.salon)}` : 'Salons à proximité'}
                 </h3>
                 <p className="text-zinc-500 text-[10px] leading-tight truncate">
-                  {routeInfo ? 'Trajet en voiture' : `${mapSalons.length} résultat${mapSalons.length > 1 ? 's' : ''}`}
+                  {routeInfo
+                    ? 'Trajet en voiture'
+                    : `${mapSalons.length} sur la carte • ${nearbySalons.length} dans le rayon`}
                 </p>
               </div>
             </div>
@@ -2047,23 +2062,28 @@ export default function PublicHomePage({
 
         {!routeInfo && (
           <div className={`${mapFullscreen ? '' : 'max-h-[220px]'} overflow-y-auto bg-zinc-950/30 border-t border-zinc-800/60`}>
-            {mapSalons.length === 0 ? (
+            {nearbySalons.length === 0 ? (
               <div className="text-center py-8 px-4">
                 <MapPin className="w-8 h-8 text-zinc-700 mx-auto mb-2" />
-                <p className="text-zinc-500 text-xs">Aucun salon trouvé dans ce rayon</p>
+                <p className="text-zinc-500 text-xs">Aucun salon dans un rayon de {radiusFilter === Infinity ? '∞' : `${radiusFilter} km`}</p>
+                {mapSalons.length > 0 && (
+                  <p className="text-zinc-600 text-[10px] mt-1">
+                    {mapSalons.length} salon{mapSalons.length > 1 ? 's' : ''} visible{mapSalons.length > 1 ? 's' : ''} sur la carte
+                  </p>
+                )}
                 <button
                   onClick={() => {
                     setRadiusFilter(Infinity);
-                    showToast("Affichage de tous les salons");
+                    showToast("Affichage de tous les salons dans la liste");
                   }}
-                  className="text-emerald-400 text-xs font-medium mt-1 hover:underline"
+                  className="text-emerald-400 text-xs font-medium mt-2 hover:underline"
                 >
-                  Voir tous les salons
+                  Voir tous les salons dans la liste
                 </button>
               </div>
             ) : (
               <div className="p-3 space-y-1.5">
-                {mapSalons.map((salon) => {
+                {nearbySalons.map((salon) => {
                   const distance = userLocation
                     ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
                     : null;
@@ -2482,7 +2502,6 @@ export default function PublicHomePage({
     );
   }
 
-  // ✅ AFFICHER L'HISTORIQUE EN LOCAL
   if (showHistory) {
     return (
       <BookingHistoryPage
@@ -2514,7 +2533,6 @@ export default function PublicHomePage({
               <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
             </div>
 
-            {/* ✅ Bouton History (LOCAL) */}
             <button
               onClick={() => setShowHistory(true)}
               className="p-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-700 transition text-zinc-400 hover:text-white flex-shrink-0"
@@ -2522,8 +2540,6 @@ export default function PublicHomePage({
             >
               <History className="w-5 h-5" />
             </button>
-
-            {/* ❌ BOUTON CONNEXION SUPPRIMÉ */}
           </div>
         </div>
       </header>

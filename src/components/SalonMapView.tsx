@@ -9,7 +9,6 @@ export interface MapSalon {
   longitude: number;
   avatar_url: string | null;
   has_active_subscription?: boolean;
-  [key: string]: any;
 }
 
 export interface SalonMapHandle {
@@ -20,16 +19,38 @@ export interface SalonMapHandle {
   invalidateSize: () => void;
 }
 
-interface SalonMapViewProps {
-  salons: MapSalon[];
+interface SalonMapViewProps<T extends MapSalon> {
+  salons: T[];
   userLocation: { lat: number; lng: number } | null;
   radiusFilter: number; // km, Infinity = pas de cercle
   activeSalonId?: string | null;
-  onSelectSalon: (salon: MapSalon) => void;
-  getDisplayName: (salon: MapSalon) => string;
+  onSelectSalon: (salon: T) => void;
+  getDisplayName: (salon: T) => string;
   hasUnviewedStory?: (salonId: string) => boolean;
   routeCoords?: [number, number][] | null;
   height?: string;
+}
+
+const DAKAR_FALLBACK = { lat: 14.7167, lng: -17.4677 };
+
+// ── Vérifie si un salon a des coordonnées valides (non null, non 0) ──
+function hasValidCoords(salon: MapSalon): boolean {
+  return (
+    typeof salon.latitude === 'number' &&
+    typeof salon.longitude === 'number' &&
+    salon.latitude !== 0 &&
+    salon.longitude !== 0 &&
+    !isNaN(salon.latitude) &&
+    !isNaN(salon.longitude)
+  );
+}
+
+// ── Coordonnées effectives d'un salon (avec fallback Dakar si manquantes) ──
+function getSalonCoords(salon: MapSalon): [number, number] {
+  if (hasValidCoords(salon)) {
+    return [salon.latitude, salon.longitude];
+  }
+  return [DAKAR_FALLBACK.lat, DAKAR_FALLBACK.lng];
 }
 
 // ── HTML du marqueur salon (photo de profil ronde + pointe) ──
@@ -37,7 +58,8 @@ function buildSalonMarkerHtml(
   salon: MapSalon,
   displayName: string,
   isActive: boolean,
-  hasUnviewed: boolean
+  hasUnviewed: boolean,
+  isFallback: boolean
 ) {
   const initial = (displayName || 'S').charAt(0).toUpperCase();
   const ringClass = salon.has_active_subscription
@@ -46,6 +68,12 @@ function buildSalonMarkerHtml(
   const avatarHtml = salon.avatar_url
     ? `<img src="${salon.avatar_url}" class="w-full h-full object-cover" />`
     : `<div class="w-full h-full flex items-center justify-center bg-indigo-600 text-white font-bold text-sm">${initial}</div>`;
+
+  // ✅ Les salons sans coordonnées ont un marqueur légèrement grisé / avec icône d'alerte
+  const fallbackRing = isFallback ? 'ring-2 ring-orange-400' : ringClass;
+  const fallbackBadge = isFallback
+    ? `<div style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;background:#f97316;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:bold;border:2px solid white;z-index:2;">?</div>`
+    : '';
 
   return `
     <div class="relative flex flex-col items-center" style="filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));">
@@ -56,10 +84,11 @@ function buildSalonMarkerHtml(
       }
       <div class="relative rounded-full overflow-hidden border-2 ${
         isActive ? 'border-emerald-400' : 'border-black'
-      } ${ringClass} bg-zinc-800 transition-transform"
+      } ${fallbackRing} bg-zinc-800 transition-transform"
         style="width:44px;height:44px;z-index:1;transform:${isActive ? 'scale(1.15)' : 'scale(1)'};">
         ${avatarHtml}
       </div>
+      ${fallbackBadge}
       <div class="rotate-45 ${isActive ? 'bg-emerald-400' : 'bg-white'}"
         style="width:9px;height:9px;margin-top:-6px;z-index:1;"></div>
     </div>
@@ -76,8 +105,11 @@ function buildUserMarkerHtml() {
   `;
 }
 
-const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function SalonMapView(
-  {
+function SalonMapViewInner<T extends MapSalon>(
+  props: SalonMapViewProps<T>,
+  ref: React.Ref<SalonMapHandle>
+) {
+  const {
     salons,
     userLocation,
     radiusFilter,
@@ -87,9 +119,8 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     hasUnviewedStory,
     routeCoords,
     height,
-  },
-  ref
-) {
+  } = props;
+
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Record<string, L.Marker>>({});
@@ -106,8 +137,8 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center: userLocation ? [userLocation.lat, userLocation.lng] : [14.7167, -17.4677],
-      zoom: 13,
+      center: userLocation ? [userLocation.lat, userLocation.lng] : [DAKAR_FALLBACK.lat, DAKAR_FALLBACK.lng],
+      zoom: 12, // ✅ zoom un peu plus large pour voir tous les salons au démarrage
       zoomControl: false,
       attributionControl: true,
     });
@@ -145,9 +176,10 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
           mapRef.current.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 0.8 });
         }
       },
-      centerOnSalon: (salon: MapSalon) => {
-        if (salon.latitude && salon.longitude && mapRef.current) {
-          mapRef.current.flyTo([salon.latitude, salon.longitude], 15, { duration: 0.8 });
+      centerOnSalon: (salon) => {
+        const [lat, lng] = getSalonCoords(salon);
+        if (mapRef.current) {
+          mapRef.current.flyTo([lat, lng], 15, { duration: 0.8 });
         }
       },
       invalidateSize: () => mapRef.current?.invalidateSize(),
@@ -155,7 +187,7 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     [userLocation]
   );
 
-  // ── Recalcule la taille quand le conteneur change (ex: passage en plein écran) ──
+  // ── Recalcule la taille quand le conteneur change ──
   useEffect(() => {
     if (!mapRef.current) return;
     const timer = setTimeout(() => mapRef.current?.invalidateSize(), 200);
@@ -182,7 +214,7 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     }
   }, [userLocation]);
 
-  // ── Cercle de rayon de recherche ──
+  // ── Cercle de rayon de recherche (purement visuel) ──
   useEffect(() => {
     if (!mapRef.current) return;
     if (!userLocation || !isFinite(radiusFilter) || (routeCoords && routeCoords.length > 0)) {
@@ -208,12 +240,18 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     }
   }, [userLocation, radiusFilter, routeCoords]);
 
-  // ── Marqueurs des salons ──
+  // ────────────────────────────────────────────────────────────────
+  // ✅ MARQUEURS DES SALONS
+  // - Affiche TOUS les salons reçus
+  // - Les salons sans coordonnées valides sont placés à Dakar (fallback)
+  // - Le marqueur d'un salon sans coordonnées a un liseré orange + badge "?"
+  // ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current) return;
     const map = mapRef.current;
     const currentIds = new Set(salons.map((s) => s.id));
 
+    // Supprimer les marqueurs qui ne sont plus dans la liste
     Object.keys(markersRef.current).forEach((id) => {
       if (!currentIds.has(id)) {
         map.removeLayer(markersRef.current[id]);
@@ -221,12 +259,15 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
       }
     });
 
+    // Ajouter / mettre à jour les marqueurs de TOUS les salons
     salons.forEach((salon) => {
-      if (!salon.latitude || !salon.longitude) return;
+      const [lat, lng] = getSalonCoords(salon);
+      const isFallback = !hasValidCoords(salon);
       const displayName = getDisplayName(salon);
       const isActive = activeSalonId === salon.id;
       const unviewed = hasUnviewedStory ? hasUnviewedStory(salon.id) : false;
-      const html = buildSalonMarkerHtml(salon, displayName, isActive, unviewed);
+
+      const html = buildSalonMarkerHtml(salon, displayName, isActive, unviewed, isFallback);
       const icon = L.divIcon({
         html,
         className: '',
@@ -237,10 +278,10 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
       let marker = markersRef.current[salon.id];
       if (marker) {
         marker.setIcon(icon);
-        marker.setLatLng([salon.latitude, salon.longitude]);
+        marker.setLatLng([lat, lng]);
         marker.setZIndexOffset(isActive ? 500 : 0);
       } else {
-        marker = L.marker([salon.latitude, salon.longitude], {
+        marker = L.marker([lat, lng], {
           icon,
           zIndexOffset: isActive ? 500 : 0,
         })
@@ -252,21 +293,36 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [salons, activeSalonId]);
 
-  // ── Ajustement automatique du zoom au premier chargement ──
+  // ────────────────────────────────────────────────────────────────
+  // ✅ AJUSTEMENT AUTOMATIQUE DU ZOOM
+  // - Inclut TOUS les salons (avec coordonnées + ceux en fallback)
+  // - Dézoome suffisamment pour tous les voir
+  // ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!mapRef.current || hasAutoFitRef.current) return;
-    if (!userLocation || salons.length === 0) return;
+    if (!userLocation && salons.length === 0) return;
     if (routeCoords && routeCoords.length > 0) return;
 
-    const bounds = L.latLngBounds([[userLocation.lat, userLocation.lng]]);
+    const bounds = L.latLngBounds([]);
+    if (userLocation) bounds.extend([userLocation.lat, userLocation.lng]);
+
+    // Ajouter TOUS les salons (avec fallback Dakar si nécessaire)
     salons.forEach((s) => {
-      if (s.latitude && s.longitude) bounds.extend([s.latitude, s.longitude]);
+      const [lat, lng] = getSalonCoords(s);
+      bounds.extend([lat, lng]);
     });
-    mapRef.current.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 });
-    hasAutoFitRef.current = true;
+
+    if (bounds.isValid()) {
+      // ✅ padding plus généreux + maxZoom plus bas pour englober tous les marqueurs
+      mapRef.current.fitBounds(bounds, {
+        padding: [40, 40],
+        maxZoom: 12, // si les salons sont très dispersés, on dézoome plus
+      });
+      hasAutoFitRef.current = true;
+    }
   }, [salons, userLocation, routeCoords]);
 
-  // ── Tracé de l'itinéraire (effet "glow" façon Yango) ──
+  // ── Tracé de l'itinéraire ──
   useEffect(() => {
     if (!mapRef.current) return;
     const map = mapRef.current;
@@ -309,7 +365,17 @@ const SalonMapView = forwardRef<SalonMapHandle, SalonMapViewProps>(function Salo
     }
   }, [routeCoords]);
 
-  return <div ref={containerRef} style={{ height: height || '100%', width: '100%' }} className="bg-zinc-900" />;
-});
+  return (
+    <div
+      ref={containerRef}
+      style={{ height: height || '100%', width: '100%' }}
+      className="bg-zinc-900"
+    />
+  );
+}
+
+const SalonMapView = forwardRef(SalonMapViewInner) as <T extends MapSalon>(
+  props: SalonMapViewProps<T> & { ref?: React.Ref<SalonMapHandle> }
+) => ReturnType<typeof SalonMapViewInner>;
 
 export default SalonMapView;

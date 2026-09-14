@@ -101,7 +101,11 @@ export function SalonLocationEditor({
     );
   }, [map, marker]);
 
-  // ── Charger les salons à proximité ──
+  // ────────────────────────────────────────────────────────────────
+  // ✅ CHARGEMENT DES SALONS — CORRIGÉ
+  // Avant : filtré à 50 km et limité à 20 salons
+  // Après : TOUS les salons actifs avec coordonnées, peu importe la distance
+  // ────────────────────────────────────────────────────────────────
   const loadNearbySalons = useCallback(async (lat: number, lng: number) => {
     setLoadingSalons(true);
     try {
@@ -134,7 +138,10 @@ export function SalonLocationEditor({
         }
       }
 
+      // ✅ TOUS les salons : on garde le calcul de distance pour l'affichage,
+      // mais on ne filtre PAS par rayon et on ne limite PAS le nombre.
       const salonsWithDistance = (profiles || [])
+        .filter((p) => p.latitude !== 0 && p.longitude !== 0) // ignore les coordonnées invalides
         .map((p) => {
           const distance = calculateDistance(lat, lng, p.latitude || 0, p.longitude || 0);
           return {
@@ -147,12 +154,11 @@ export function SalonLocationEditor({
             address: p.address || '',
             avatar_url: p.avatar_url || null,
             has_active_subscription: subscriptionMap[p.user_id] || false,
-            distance: distance
+            distance: distance,
           };
         })
-        .filter(s => s.distance <= 50)
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, 20);
+        // ✅ Tri par distance croissante, mais SANS filtre et SANS limite
+        .sort((a, b) => a.distance - b.distance);
 
       setNearbySalons(salonsWithDistance);
 
@@ -198,7 +204,7 @@ export function SalonLocationEditor({
 
         const icon = L.divIcon({
           html: `<div class="flex items-center justify-center w-8 h-8 rounded-full bg-emerald-500/20 border-2 border-emerald-400 shadow-lg">
-            <Store class="w-4 h-4 text-emerald-400" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgb(52 211 153)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 7 4.41-4.41A2 2 0 0 1 7.83 2h8.34a2 2 0 0 1 1.42.59L22 7"/><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M15 22v-4a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2v4"/><path d="M2 7h20"/><path d="M22 7v3a2 2 0 0 1-2 2a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 16 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 12 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 8 12a2.7 2.7 0 0 1-1.59-.63.7.7 0 0 0-.82 0A2.7 2.7 0 0 1 4 12a2 2 0 0 1-2-2V7"/></svg>
           </div>`,
           className: 'custom-marker',
           iconSize: [32, 32],
@@ -250,7 +256,7 @@ export function SalonLocationEditor({
         // Marqueur du salon (draggable)
         const salonIcon = L.divIcon({
           html: `<div class="flex items-center justify-center w-10 h-10 rounded-full bg-emerald-500 border-2 border-white shadow-lg">
-            <MapPin class="w-5 h-5 text-white" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
           </div>`,
           className: 'custom-marker',
           iconSize: [40, 40],
@@ -287,12 +293,11 @@ export function SalonLocationEditor({
         };
       } catch (err) {
         console.warn('⚠️ Leaflet non disponible:', err);
-        // ✅ Suppression du message d'erreur "La carte n'est pas disponible"
-        // On utilise un fallback silencieux
       }
     };
 
     loadMap();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -374,7 +379,6 @@ export function SalonLocationEditor({
         </div>
 
         <div className="p-4 space-y-4 flex-1 overflow-y-auto">
-          {/* Message d'erreur (sauf pour la carte) */}
           {error && !error.includes('carte') && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-red-400 text-sm flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -382,7 +386,6 @@ export function SalonLocationEditor({
             </div>
           )}
 
-          {/* Bouton principal - Partager ma position */}
           <div className="flex flex-col items-center gap-3">
             <button
               onClick={getCurrentLocation}
@@ -429,33 +432,7 @@ export function SalonLocationEditor({
             <div 
               ref={mapRef} 
               className="w-full h-72 bg-zinc-800 rounded-xl border border-zinc-700 overflow-hidden relative"
-            >
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-500">
-                {isGettingLocation ? (
-                  <>
-                    <Loader2 className="w-8 h-8 mb-2 animate-spin text-blue-400" />
-                    <p className="text-sm">Recherche de votre position...</p>
-                  </>
-                ) : (
-                  <>
-                    <MapPin className="w-12 h-12 mb-2 text-zinc-600" />
-                    <p className="text-sm">Chargement de la carte...</p>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Légende */}
-            <div className="absolute bottom-4 left-4 bg-black/70 backdrop-blur-sm rounded-xl px-3 py-2 text-xs text-zinc-300 flex items-center gap-3">
-              <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-emerald-500 border border-white"></div>
-                <span>Mon salon</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Store className="w-3 h-3 text-emerald-400" />
-                <span>Salons</span>
-              </div>
-            </div>
+            />
           </div>
 
           {/* Salons à proximité */}
@@ -466,7 +443,7 @@ export function SalonLocationEditor({
                 className="flex items-center gap-2 text-zinc-400 text-sm font-medium hover:text-white transition"
               >
                 <Users className="w-4 h-4" />
-                Salons à proximité ({nearbySalons.length})
+                Tous les salons ({nearbySalons.length})
                 <span className="text-xs">{showNearbySalons ? '▼' : '▶'}</span>
               </button>
 
@@ -492,14 +469,14 @@ export function SalonLocationEditor({
                             </div>
                           )}
                         </div>
-                        <div className="flex-1 text-left">
-                          <p className="text-white text-sm font-medium">{salon.salon_name}</p>
+                        <div className="flex-1 text-left min-w-0">
+                          <p className="text-white text-sm font-medium truncate">{salon.salon_name}</p>
                           <p className="text-zinc-400 text-xs">
                             {salon.distance ? salon.distance.toFixed(1) : '0.0'} km
                           </p>
                         </div>
                         {salon.has_active_subscription && (
-                          <span className="text-yellow-400 text-xs">⭐</span>
+                          <span className="text-yellow-400 text-xs shrink-0">⭐</span>
                         )}
                       </button>
                     ))
@@ -513,7 +490,7 @@ export function SalonLocationEditor({
           {address && (
             <div className="bg-zinc-800 rounded-xl p-3 border border-zinc-700">
               <p className="text-zinc-400 text-xs mb-1">Adresse trouvée</p>
-              <p className="text-white text-sm">{address}</p>
+              <p className="text-white text-sm break-words">{address}</p>
             </div>
           )}
 
