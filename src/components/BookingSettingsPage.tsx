@@ -119,7 +119,6 @@ const DAYS = [
 
 const SCANNER_ID = 'qr-scanner-container';
 
-// ✅ Taux passé de 1,5 % à 15 %
 const NET_FEE_RATE = 0.15;
 
 export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
@@ -611,9 +610,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     setWithdrawing(true);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
-      console.log('🔑 Session active:', !!sessionData.session);
-      console.log('🔑 Token présent:', !!sessionData.session?.access_token);
-
       if (!sessionData.session) {
         setWithdrawError('Session expirée, reconnectez-vous');
         setWithdrawing(false);
@@ -623,8 +619,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       const { data, error } = await supabase.functions.invoke('request-payout', {
         body: { amount, payout_mode: withdrawMode, payout_account: account },
       });
-
-      console.log('📥 Réponse request-payout:', { data, error });
 
       if (error) {
         let message = error.message || 'Erreur lors du retrait';
@@ -644,10 +638,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               }
             }
           }
-        } catch (parseErr) {
-          console.warn('Impossible de parser l\'erreur:', parseErr);
-        }
-        console.error('❌ request-payout a échoué:', message);
+        } catch {}
         setWithdrawError(message);
         setWithdrawing(false);
         return;
@@ -686,7 +677,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3">
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3 px-4">
         <div className="animate-spin rounded-full h-8 w-8 border-2 border-zinc-700 border-t-white" />
         <p className="text-zinc-500 text-sm">Chargement...</p>
       </div>
@@ -698,16 +689,19 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     return (
       <div className="min-h-screen bg-zinc-950 pb-24">
         <div className="sticky top-0 bg-zinc-950 border-b border-zinc-800 px-4 py-4 flex items-center gap-3 z-10">
-          <button onClick={() => setView('home')} className="text-zinc-400 hover:text-white transition">
+          <button
+            onClick={() => setView('home')}
+            className="text-zinc-400 hover:text-white transition p-1 -ml-1"
+          >
             <ChevronLeft className="w-6 h-6" />
           </button>
           <h2 className="text-white text-lg font-bold">Paramètres</h2>
         </div>
 
-        <div className="max-w-lg mx-auto px-4 pt-4 space-y-6">
+        <div className="max-w-lg mx-auto px-4 pt-4 space-y-5 sm:space-y-6">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
                 <h3 className="text-white font-bold">Page active</h3>
                 <p className="text-zinc-500 text-xs">
                   {settings
@@ -715,8 +709,10 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     : 'Enregistrez d\'abord les paramètres ci-dessous'}
                 </p>
               </div>
-              <button onClick={toggleIsActive} className="text-3xl">
-                {isActive ? <ToggleRight className="w-8 h-8 text-green-500" /> : <ToggleLeft className="w-8 h-8 text-zinc-600" />}
+              <button onClick={toggleIsActive} className="shrink-0">
+                {isActive
+                  ? <ToggleRight className="w-9 h-9 text-green-500" />
+                  : <ToggleLeft className="w-9 h-9 text-zinc-600" />}
               </button>
             </div>
           </div>
@@ -745,7 +741,9 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 placeholder="mon-salon"
               />
               {slugError && <p className="text-red-400 text-xs mt-1">{slugError}</p>}
-              <p className="text-zinc-500 text-xs mt-1 break-all">{window.location.origin}/booking/{slug || 'mon-salon'}</p>
+              <p className="text-zinc-500 text-[11px] mt-1 break-all">
+                {window.location.origin}/booking/{slug || 'mon-salon'}
+              </p>
             </div>
 
             <div>
@@ -768,41 +766,41 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 <div className="text-center py-6 text-zinc-500 text-sm">Aucun service ajouté</div>
               ) : (
                 eventServices.map((service, idx) => (
-                  <div key={service.id} className="flex flex-col sm:flex-row items-start sm:items-center gap-2 bg-zinc-800 rounded-xl p-3">
-                    <div className="flex-1 w-full sm:w-auto">
+                  <div key={service.id} className="flex items-center gap-2 bg-zinc-800 rounded-xl p-3">
+                    <div className="flex-1 min-w-0">
                       <p className="text-white text-sm font-medium break-words">{service.name}</p>
-                      <p className="text-emerald-400 text-xs font-semibold">{service.price.toLocaleString()} CFA</p>
+                      <p className="text-emerald-400 text-xs font-semibold">
+                        {service.price.toLocaleString()} CFA
+                      </p>
                     </div>
                     <button
                       onClick={() => setEventServices(eventServices.filter((_, i) => i !== idx))}
-                      className="w-full sm:w-auto flex items-center justify-center gap-1 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition active:scale-95"
+                      className="shrink-0 p-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition active:scale-95"
+                      aria-label="Supprimer"
                     >
                       <Trash2 className="w-4 h-4" />
-                      <span className="text-xs sm:hidden">Supprimer</span>
                     </button>
                   </div>
                 ))
               )}
             </div>
 
-            <div className="border-t border-zinc-800 pt-3 mt-2">
-              <p className="text-zinc-400 text-xs mb-2">➕ Ajouter un service</p>
-              <div className="flex flex-col sm:flex-row gap-2">
+            <div className="border-t border-zinc-800 pt-3 mt-2 space-y-2">
+              <p className="text-zinc-400 text-xs">➕ Ajouter un service</p>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_120px_auto] gap-2">
                 <input
                   type="text"
                   value={newEventService.name}
                   onChange={(e) => setNewEventService({ ...newEventService, name: e.target.value })}
                   placeholder="Nom du service"
-                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
-                  onKeyPress={(e) => { if (e.key === 'Enter') addEventService(); }}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
                 />
                 <input
                   type="number"
                   value={newEventService.price}
                   onChange={(e) => setNewEventService({ ...newEventService, price: e.target.value })}
                   placeholder="Prix (CFA)"
-                  className="w-full sm:w-32 bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
-                  onKeyPress={(e) => { if (e.key === 'Enter') addEventService(); }}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
                 />
                 <button
                   onClick={addEventService}
@@ -820,17 +818,19 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <div className="space-y-2">
               {DAYS.map(({ key, label }) => (
                 <div key={key} className="flex flex-wrap items-center gap-2">
-                  <div className="w-12 text-white font-medium">{label}</div>
+                  <div className="w-10 sm:w-12 text-white text-sm font-medium">{label}</div>
                   <button
                     onClick={() => updateOpeningHour(key, 'closed', !openingHours[key]?.closed)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                      openingHours[key]?.closed ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'
+                    className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                      openingHours[key]?.closed
+                        ? 'bg-red-500/20 text-red-400'
+                        : 'bg-emerald-500/20 text-emerald-400'
                     }`}
                   >
                     {openingHours[key]?.closed ? 'Fermé' : 'Ouvert'}
                   </button>
                   {!openingHours[key]?.closed && (
-                    <div className="flex items-center gap-2 flex-1 flex-wrap">
+                    <div className="flex items-center gap-2 flex-1 min-w-0 flex-wrap">
                       <input
                         type="time"
                         value={openingHours[key]?.open || '09:00'}
@@ -893,8 +893,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               <Lock className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
               <p className="text-amber-400 text-xs">
                 🔒 Pour votre sécurité et celle du client, l'argent d'une réservation n'est débloqué pour retrait
-                qu'après avoir <strong>scanné le QR code du client</strong> à la fin du service. Il n'existe pas de
-                validation manuelle.
+                qu'après avoir <strong>scanné le QR code du client</strong> à la fin du service.
               </p>
             </div>
           </div>
@@ -923,6 +922,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               <label className="text-zinc-400 text-xs block mb-1">Numéro (sans indicatif pays)</label>
               <input
                 type="tel"
+                inputMode="numeric"
                 value={defaultPayoutAccount}
                 onChange={(e) => setDefaultPayoutAccount(e.target.value.replace(/\D/g, ''))}
                 placeholder="771234567"
@@ -945,39 +945,53 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   // ── Vue Accueil ──
   return (
-    <div className="pb-24 space-y-4 max-w-lg mx-auto">
+    <div className="pb-24 space-y-4 max-w-lg mx-auto overflow-x-hidden">
       <style>{`
         #qr-scanner-container video { width: 100% !important; height: 100% !important; object-fit: cover !important; }
         #qr-scanner-container { width: 100%; height: 100%; background: black; }
         @keyframes scanLine { 0% { transform: translateY(-200px); } 100% { transform: translateY(200px); } }
         .animate-scan-line { animation: scanLine 2s linear infinite; }
+        .scrollbar-none::-webkit-scrollbar { display: none; }
+        .scrollbar-none { scrollbar-width: none; }
       `}</style>
 
       <div className="bg-gradient-to-br from-indigo-600 to-blue-700 px-4 pt-4 pb-8 rounded-b-3xl">
         <div className="flex items-center justify-between mb-6">
-          <button onClick={() => setView('settings')} className="text-white/90 hover:text-white transition">
+          <button
+            onClick={() => setView('settings')}
+            className="text-white/90 hover:text-white transition p-1 -ml-1"
+          >
             <Settings className="w-6 h-6" />
           </button>
-          <button onClick={loadAll} className="text-white/90 hover:text-white transition">
+          <button
+            onClick={loadAll}
+            className="text-white/90 hover:text-white transition p-1 -mr-1"
+          >
             <RefreshCw className="w-5 h-5" />
           </button>
         </div>
 
         <div className="text-center mb-4">
-          <div className="flex items-center justify-center gap-2">
-            <span className="text-white text-5xl font-black tracking-tight">
+          <div className="flex items-center justify-center gap-2 flex-wrap">
+            <span className="text-white text-4xl sm:text-5xl font-black tracking-tight">
               {balanceVisible ? availableBalance.toLocaleString('fr-FR') : '••••••'}
             </span>
-            <span className="text-white/70 text-2xl font-bold">F</span>
-            <button onClick={() => setBalanceVisible(v => !v)} className="text-white/60 hover:text-white transition ml-1">
+            <span className="text-white/70 text-xl sm:text-2xl font-bold">F</span>
+            <button
+              onClick={() => setBalanceVisible(v => !v)}
+              className="text-white/60 hover:text-white transition p-1"
+              aria-label="Afficher/masquer le solde"
+            >
               {balanceVisible ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
             </button>
           </div>
-          <p className="text-white/60 text-xs mt-1">Solde disponible pour retrait (services terminés)</p>
+          <p className="text-white/60 text-xs mt-1 px-2">
+            Solde disponible pour retrait (services terminés)
+          </p>
           {pendingRevenue > 0 && (
-            <p className="text-white/50 text-[11px] mt-1 flex items-center justify-center gap-1">
-              <Lock className="w-3 h-3" />
-              + {pendingRevenue.toLocaleString('fr-FR')} F en attente — scannez le ticket du client pour débloquer
+            <p className="text-white/50 text-[11px] mt-1 flex items-center justify-center gap-1 px-2 flex-wrap">
+              <Lock className="w-3 h-3 shrink-0" />
+              <span>+ {pendingRevenue.toLocaleString('fr-FR')} F en attente — scannez le ticket du client pour débloquer</span>
             </p>
           )}
         </div>
@@ -994,22 +1008,29 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           {payoutRequests.length > 0 && (
             <button
               onClick={() => setShowPayoutHistory(true)}
-              className="flex items-center justify-center gap-2 bg-white/15 text-white font-semibold py-3 px-4 rounded-xl active:scale-[0.98] transition"
+              className="flex items-center justify-center gap-2 bg-white/15 text-white font-semibold py-3 px-4 rounded-xl active:scale-[0.98] transition shrink-0"
+              aria-label="Historique des retraits"
             >
               <Clock className="w-4 h-4" />
             </button>
           )}
         </div>
-        {hasPendingPayout && (
-          <p className="text-white/70 text-xs text-center -mt-4 mb-4"></p>
-        )}
 
         {settings && salonQRCode && (
           <div className="bg-sky-400/90 rounded-2xl p-4 flex flex-col items-center gap-2">
-            <button onClick={startScanner} className="bg-white p-3 rounded-xl shadow-lg active:scale-95 transition">
-              <img src={salonQRCode} alt="QR Code salon — cliquez pour scanner" className="w-32 h-32" />
+            <button
+              onClick={startScanner}
+              className="bg-white p-3 rounded-xl shadow-lg active:scale-95 transition"
+            >
+              <img
+                src={salonQRCode}
+                alt="QR Code salon — cliquez pour scanner"
+                className="w-28 h-28 sm:w-32 sm:h-32"
+              />
             </button>
-            <p className="text-white/90 text-xs font-medium">Touchez le QR code pour scanner un ticket client</p>
+            <p className="text-white/90 text-xs font-medium text-center px-2">
+              Touchez le QR code pour scanner un ticket client
+            </p>
           </div>
         )}
       </div>
@@ -1045,7 +1066,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 href={bookingUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="w-11 h-11 flex items-center justify-center border border-zinc-700 rounded-xl text-zinc-400 hover:text-white transition"
+                className="w-11 h-11 flex items-center justify-center border border-zinc-700 rounded-xl text-zinc-400 hover:text-white transition shrink-0"
               >
                 <ExternalLink className="w-4 h-4" />
               </a>
@@ -1055,17 +1076,22 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
         {recentBookings.length > 0 && (
           <div>
-            <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2 px-1">Activité récente</h3>
+            <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2 px-1">
+              Activité récente
+            </h3>
             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl divide-y divide-zinc-800 overflow-hidden">
               {recentBookings.map((b) => (
-                <div key={b.id} className="px-4 py-3 flex items-center justify-between">
+                <div key={b.id} className="px-4 py-3 flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-white text-sm font-medium truncate">{b.service_name} — {b.client_name}</p>
-                    <p className="text-zinc-500 text-xs">
-                      {new Date(b.created_at).toLocaleDateString('fr-FR')} à {new Date(b.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                    <p className="text-white text-sm font-medium truncate">
+                      {b.service_name} — {b.client_name}
+                    </p>
+                    <p className="text-zinc-500 text-xs truncate">
+                      {new Date(b.created_at).toLocaleDateString('fr-FR')} à{' '}
+                      {new Date(b.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>
-                  <div className="text-right shrink-0 ml-3">
+                  <div className="text-right shrink-0">
                     <span className={`font-bold text-sm block ${b.status === 'done' ? 'text-emerald-400' : 'text-amber-400'}`}>
                       +{(b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))).toLocaleString()}F
                     </span>
@@ -1080,7 +1106,9 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         )}
 
         <div>
-          <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2 px-1">Réservations ({counts.all})</h3>
+          <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-2 px-1">
+            Réservations ({counts.all})
+          </h3>
 
           <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-none mb-3">
             {(['all', 'confirmed', 'done'] as const).map(val => (
@@ -1108,9 +1136,9 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <div className="space-y-2">
               {filteredBookings.map(booking => (
                 <div key={booking.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
-                  <div className="flex items-center justify-between px-4 pt-4 pb-2 gap-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-black font-mono text-white text-base bg-zinc-800 px-2.5 py-1 rounded-lg leading-none">
+                  <div className="flex items-center justify-between px-4 pt-4 pb-2 gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      <span className="font-black font-mono text-white text-sm sm:text-base bg-zinc-800 px-2.5 py-1 rounded-lg leading-none">
                         {booking.ticket_number}
                       </span>
                       <span className={`text-[10px] px-2 py-1 rounded-full border font-semibold ${STATUS_COLORS[booking.status]}`}>
@@ -1135,8 +1163,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     </div>
                     <div className="flex items-center gap-2 text-sm text-zinc-400">
                       <Scissors className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                      <span className="truncate">{booking.service_name}</span>
-                      <span className="ml-auto shrink-0 text-white font-bold text-xs">
+                      <span className="truncate flex-1">{booking.service_name}</span>
+                      <span className="shrink-0 text-white font-bold text-xs">
                         {booking.service_price.toLocaleString()} CFA
                       </span>
                     </div>
@@ -1157,29 +1185,29 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     {booking.barber_name && (
                       <div className="flex items-center gap-2 text-sm text-zinc-400">
                         <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                        <span>Coiffeur: {booking.barber_name}</span>
+                        <span className="truncate">Coiffeur: {booking.barber_name}</span>
                       </div>
                     )}
 
                     {booking.note && (
                       <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
-                        <span className="text-zinc-600">📝</span>
-                        <span className="italic">{booking.note}</span>
+                        <span className="text-zinc-600 shrink-0">📝</span>
+                        <span className="italic break-words">{booking.note}</span>
                       </div>
                     )}
                   </div>
 
                   <div className="px-4 pb-4 border-t border-zinc-800/50 pt-3">
                     {booking.status === 'confirmed' && (
-                      <div className="w-full flex items-center justify-center gap-2 text-amber-400 text-sm py-2 bg-amber-500/10 rounded-xl">
+                      <div className="w-full flex items-center justify-center gap-2 text-amber-400 text-xs sm:text-sm py-2 px-2 bg-amber-500/10 rounded-xl text-center">
                         <Lock className="w-4 h-4 shrink-0" />
                         <span>
-                          En attente de validation — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA bloqués
+                          En attente — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA bloqués
                         </span>
                       </div>
                     )}
                     {booking.status === 'done' && (
-                      <div className="w-full text-center text-emerald-400 text-sm py-2 flex items-center justify-center gap-2 bg-emerald-500/10 rounded-xl">
+                      <div className="w-full text-center text-emerald-400 text-xs sm:text-sm py-2 px-2 flex items-center justify-center gap-2 bg-emerald-500/10 rounded-xl">
                         <CheckCircle2 className="w-4 h-4 shrink-0" />
                         <span>
                           Terminé — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA débloqués
@@ -1197,28 +1225,30 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       {/* MODAL RETRAIT */}
       {showWithdrawModal && (
         <div className="fixed inset-0 z-[100] bg-black/70 flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="w-full sm:max-w-md bg-zinc-900 border border-zinc-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-white font-bold text-lg flex items-center gap-2">
-                <ArrowDownToLine className="w-5 h-5 text-emerald-400" />
-                Retirer mon solde
+          <div className="w-full sm:max-w-md bg-zinc-900 border border-zinc-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-white font-bold text-lg flex items-center gap-2 min-w-0">
+                <ArrowDownToLine className="w-5 h-5 text-emerald-400 shrink-0" />
+                <span className="truncate">Retirer mon solde</span>
               </h2>
               <button
                 onClick={() => setShowWithdrawModal(false)}
-                className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
+                className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95 shrink-0"
               >
                 <X className="w-4 h-4 text-white" />
               </button>
             </div>
 
             <p className="text-zinc-500 text-xs">
-              Solde disponible : <span className="text-emerald-400 font-semibold">{availableBalance.toLocaleString()} CFA</span>
+              Solde disponible :{' '}
+              <span className="text-emerald-400 font-semibold">{availableBalance.toLocaleString()} CFA</span>
             </p>
 
             <div>
               <label className="text-zinc-400 text-xs block mb-1">Montant à retirer (CFA)</label>
               <input
                 type="number"
+                inputMode="numeric"
                 value={withdrawAmount}
                 onChange={(e) => setWithdrawAmount(e.target.value)}
                 max={availableBalance}
@@ -1243,6 +1273,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               <label className="text-zinc-400 text-xs block mb-1">Numéro (sans indicatif pays)</label>
               <input
                 type="tel"
+                inputMode="numeric"
                 value={withdrawAccount}
                 onChange={(e) => setWithdrawAccount(e.target.value.replace(/\D/g, ''))}
                 placeholder="771234567"
@@ -1253,13 +1284,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             {withdrawError && (
               <div className="bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl p-3 flex items-center gap-2 text-sm">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
-                {withdrawError}
+                <span className="break-words">{withdrawError}</span>
               </div>
             )}
             {withdrawSuccess && (
               <div className="bg-green-500/20 border border-green-500/40 text-green-300 rounded-xl p-3 flex items-center gap-2 text-sm">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
-                {withdrawSuccess}
+                <span className="break-words">{withdrawSuccess}</span>
               </div>
             )}
 
@@ -1268,7 +1299,9 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               disabled={withdrawing}
               className="w-full bg-white text-black font-bold py-3.5 rounded-xl active:scale-[0.98] transition disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {withdrawing && <div className="animate-spin rounded-full h-4 w-4 border-2 border-black/30 border-t-black" />}
+              {withdrawing && (
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-black/30 border-t-black" />
+              )}
               {withdrawing ? 'Envoi en cours...' : 'Confirmer le retrait'}
             </button>
             <p className="text-zinc-600 text-[11px] text-center">
@@ -1282,11 +1315,11 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       {showPayoutHistory && (
         <div className="fixed inset-0 z-[100] bg-black/70 flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="w-full sm:max-w-md bg-zinc-900 border border-zinc-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between shrink-0">
-              <h2 className="text-white font-bold text-lg">Historique des retraits</h2>
+            <div className="flex items-center justify-between shrink-0 gap-3">
+              <h2 className="text-white font-bold text-lg truncate">Historique des retraits</h2>
               <button
                 onClick={() => setShowPayoutHistory(false)}
-                className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
+                className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95 shrink-0"
               >
                 <X className="w-4 h-4 text-white" />
               </button>
@@ -1297,19 +1330,20 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 <div className="text-center py-8 text-zinc-500 text-sm">Aucun retrait pour le moment</div>
               ) : (
                 recentPayouts.map(p => (
-                  <div key={p.id} className="bg-zinc-800 rounded-xl p-3 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-white font-semibold text-sm">
+                  <div key={p.id} className="bg-zinc-800 rounded-xl p-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-white font-semibold text-sm break-words">
                         {p.amount.toLocaleString()} CFA
                         <span className="text-zinc-500 font-normal">
                           {' '}· {PAYOUT_MODES.find(m => m.value === p.payout_mode)?.label || p.payout_mode}
                         </span>
                       </p>
                       <p className="text-zinc-500 text-xs">
-                        {new Date(p.requested_at).toLocaleDateString('fr-FR')} à {new Date(p.requested_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(p.requested_at).toLocaleDateString('fr-FR')} à{' '}
+                        {new Date(p.requested_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                       </p>
                       {p.status === 'failed' && p.response_text && (
-                        <p className="text-red-400 text-xs mt-0.5">{p.response_text}</p>
+                        <p className="text-red-400 text-xs mt-0.5 break-words">{p.response_text}</p>
                       )}
                     </div>
                     <span className={`shrink-0 text-[10px] px-2 py-1 rounded-full border font-semibold ${PAYOUT_STATUS_COLORS[p.status]}`}>
@@ -1328,7 +1362,10 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         <div className="fixed inset-0 z-[100] bg-black flex flex-col">
           <div className="flex items-center justify-between p-4 border-b border-zinc-800 shrink-0">
             <h2 className="text-white font-bold text-lg">Scanner un ticket</h2>
-            <button onClick={stopScanner} className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95">
+            <button
+              onClick={stopScanner}
+              className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center active:scale-95"
+            >
               <X className="w-5 h-5 text-white" />
             </button>
           </div>
@@ -1337,7 +1374,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <div id={SCANNER_ID} className="w-full h-full" />
             <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
               <div className="relative">
-                <div className="w-64 h-64 border-2 border-green-500 rounded-2xl" />
+                <div className="w-56 h-56 sm:w-64 sm:h-64 border-2 border-green-500 rounded-2xl" />
                 <div className="absolute -top-1 -left-1 w-8 h-8 border-t-4 border-l-4 border-green-500 rounded-tl-xl" />
                 <div className="absolute -top-1 -right-1 w-8 h-8 border-t-4 border-r-4 border-green-500 rounded-tr-xl" />
                 <div className="absolute -bottom-1 -left-1 w-8 h-8 border-b-4 border-l-4 border-green-500 rounded-bl-xl" />
@@ -1352,22 +1389,22 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
             {processing && (
               <div className="bg-blue-500/20 border border-blue-500/40 text-blue-300 rounded-xl p-3 flex items-center gap-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-400 border-t-transparent" />
-                Validation en cours...
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-400 border-t-transparent shrink-0" />
+                <span>Validation en cours...</span>
               </div>
             )}
 
             {scanError && (
               <div className="bg-red-500/20 border border-red-500/40 text-red-300 rounded-xl p-3 flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
-                {scanError}
+                <span className="break-words">{scanError}</span>
               </div>
             )}
 
             {scanSuccess && (
               <div className="bg-green-500/20 border border-green-500/40 text-green-300 rounded-xl p-3 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
-                {scanSuccess}
+                <span className="break-words">{scanSuccess}</span>
               </div>
             )}
           </div>

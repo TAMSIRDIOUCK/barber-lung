@@ -9,7 +9,7 @@ import {
   Heart, Share2, Home, DollarSign, CalendarCheck,
   ChevronDown, Plus, Minus, Maximize2, User,
   Eye, UserPlus as UserPlusIcon, UserCheck, Lock, Clock, Route as RouteIcon, Loader2,
-  History
+  History, Volume2, VolumeX
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import SalonMapView, { type SalonMapHandle } from './SalonMapView';
@@ -79,6 +79,11 @@ const RADIUS_OPTIONS: { value: number; label: string }[] = [
 
 const DEFAULT_POSITION = { lat: 14.7167, lng: -17.4677 };
 
+// Durée fixe d'affichage pour une story IMAGE (Instagram = 5s). Les vidéos, elles,
+// suivent leur propre durée réelle (voir StoryViewer) au lieu d'un timer fixe.
+const STORY_IMAGE_DURATION_MS = 5000;
+const IMAGE_TICK_MS = 50;
+
 function getSalonDisplayName(salon: Partial<SalonProfile>): string {
   if (salon.salon_name && typeof salon.salon_name === 'string' && salon.salon_name.trim()) {
     return salon.salon_name.trim();
@@ -130,6 +135,46 @@ function formatDuration(minutes: number): string {
   return `${h} h ${m > 0 ? m + ' min' : ''}`.trim();
 }
 
+// ── Image sécurisée : évite les cases blanches / icônes cassées quand une URL
+// est invalide ou ne charge pas (avatar, couverture, etc.) ──
+function SafeImage({
+  src,
+  alt,
+  className = '',
+  fallback = null,
+  fallbackClassName = 'bg-indigo-600',
+}: {
+  src?: string | null;
+  alt: string;
+  className?: string;
+  fallback?: React.ReactNode;
+  fallbackClassName?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
+  if (!src || failed) {
+    return (
+      <div className={`${className} flex items-center justify-center ${fallbackClassName}`}>
+        {fallback}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className={className}
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 // ── Composant StoryViewer ──
 function StoryViewer({
   stories,
@@ -139,6 +184,7 @@ function StoryViewer({
   salonId,
   onViewProfile,
   onStoryViewed,
+  onStoryOpened,
   onLikeStory,
   userLikes,
 }: {
@@ -149,6 +195,7 @@ function StoryViewer({
   salonId: string;
   onViewProfile: (salonId: string) => void;
   onStoryViewed?: (salonId: string) => void;
+  onStoryOpened?: (storyId: string, profileId: string) => void;
   onLikeStory?: (storyId: string, profileId: string) => void;
   userLikes?: Set<string>;
 }) {
@@ -157,29 +204,53 @@ function StoryViewer({
   const [isPaused, setIsPaused] = useState(false);
   const [isImageLoaded, setIsImageLoaded] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [soundOn, setSoundOn] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const hasViewedRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const openedStoryIdsRef = useRef<Set<string>>(new Set());
 
+  const currentStory = stories[currentIndex];
+
+  const goToNext = useCallback(() => {
+    setCurrentIndex((prev) => {
+      if (prev < stories.length - 1) return prev + 1;
+      onClose();
+      return prev;
+    });
+  }, [stories.length, onClose]);
+
+  const goToPrev = useCallback(() => {
+    setCurrentIndex((prev) => (prev > 0 ? prev - 1 : prev));
+  }, []);
+
+  // Préchargement de l'image suivante (stories image uniquement)
   useEffect(() => {
-    const nextIndex = currentIndex + 1;
-    if (nextIndex < stories.length) {
-      const nextStory = stories[nextIndex];
-      if (nextStory) {
-        const img = new Image();
-        img.src = nextStory.image_url;
-      }
+    const nextStory = stories[currentIndex + 1];
+    if (nextStory && !(nextStory.media_type === 'video' || nextStory.image_url?.match(/\.(mp4|webm|mov|avi)$/i))) {
+      const img = new Image();
+      img.src = nextStory.image_url;
     }
   }, [currentIndex, stories]);
 
+  // Marque le salon comme "vu" une seule fois par ouverture du viewer (pour le rond de statut)
   useEffect(() => {
     if (!hasViewedRef.current) {
       hasViewedRef.current = true;
-      if (onStoryViewed) {
-        onStoryViewed(salonId);
-      }
+      if (onStoryViewed) onStoryViewed(salonId);
     }
   }, [salonId, onStoryViewed]);
+
+  // Enregistre une VUE à chaque fois qu'une story devient active (comptage à chaque ouverture, comme les likes)
+  useEffect(() => {
+    if (!currentStory) return;
+    const alreadyLoggedThisSession = openedStoryIdsRef.current.has(currentStory.id);
+    if (!alreadyLoggedThisSession) {
+      openedStoryIdsRef.current.add(currentStory.id);
+      if (onStoryOpened) onStoryOpened(currentStory.id, currentStory.profile_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStory?.id]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -187,33 +258,44 @@ function StoryViewer({
     setProgress(0);
   }, [currentIndex]);
 
+  const isVideo = !!currentStory && (currentStory.media_type === 'video' || !!currentStory.image_url?.match(/\.(mp4|webm|mov|avi)$/i));
+
+  // Timer de progression pour les images uniquement — durée fixe.
+  // Les vidéos avancent selon leur propre durée réelle (voir onTimeUpdate / onEnded sur <video>).
   useEffect(() => {
+    if (isVideo) return;
     if (isPaused || !isImageLoaded) return;
+
+    const totalTicks = STORY_IMAGE_DURATION_MS / IMAGE_TICK_MS;
+    const increment = 100 / totalTicks;
 
     timerRef.current = setInterval(() => {
       setProgress((prev) => {
-        if (prev >= 100) {
-          if (currentIndex < stories.length - 1) {
-            setCurrentIndex((p) => p + 1);
-            return 0;
-          } else {
-            onClose();
-            return 100;
-          }
+        if (prev + increment >= 100) {
+          goToNext();
+          return 100;
         }
-        return prev + 1.5;
+        return prev + increment;
       });
-    }, 50);
+    }, IMAGE_TICK_MS);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [currentIndex, isPaused, isImageLoaded, stories.length, onClose]);
+  }, [currentIndex, isPaused, isImageLoaded, isVideo, goToNext]);
 
-  const currentStory = stories[currentIndex];
+  // Pause/reprise de la vidéo quand l'utilisateur maintient l'écran appuyé
+  useEffect(() => {
+    if (!isVideo || !videoRef.current) return;
+    if (isPaused) {
+      videoRef.current.pause();
+    } else if (isImageLoaded) {
+      videoRef.current.play().catch(() => {});
+    }
+  }, [isPaused, isVideo, isImageLoaded]);
+
   if (!currentStory) return null;
 
-  const isVideo = currentStory.media_type === 'video' || currentStory.image_url?.match(/\.(mp4|webm|mov|avi)$/i);
   const isLiked = userLikes?.has(currentStory.id) || false;
 
   const handleAvatarClick = () => {
@@ -222,9 +304,7 @@ function StoryViewer({
   };
 
   const handleLikeClick = () => {
-    if (onLikeStory) {
-      onLikeStory(currentStory.id, currentStory.profile_id);
-    }
+    if (onLikeStory) onLikeStory(currentStory.id, currentStory.profile_id);
   };
 
   const handleImageLoad = () => {
@@ -236,20 +316,38 @@ function StoryViewer({
     setIsImageLoaded(true);
     setIsLoading(false);
     setTimeout(() => {
-      if (currentIndex < stories.length - 1) {
-        setCurrentIndex((p) => p + 1);
-      } else {
-        onClose();
-      }
-    }, 2000);
+      goToNext();
+    }, 1500);
   };
 
-  const handleVideoLoad = () => {
+  const handleVideoLoadedData = () => {
     setIsImageLoaded(true);
     setIsLoading(false);
     if (videoRef.current) {
-      videoRef.current.play().catch(() => {});
+      videoRef.current.play().catch(() => {
+        // Autoplay bloqué par le navigateur : on force le mode muet et on réessaie
+        setSoundOn(false);
+        videoRef.current?.play().catch(() => {});
+      });
     }
+  };
+
+  const handleVideoTimeUpdate = () => {
+    const v = videoRef.current;
+    if (!v || !v.duration || isNaN(v.duration) || !isFinite(v.duration)) return;
+    setProgress((v.currentTime / v.duration) * 100);
+  };
+
+  const handleVideoEnded = () => {
+    goToNext();
+  };
+
+  const handleVideoWaiting = () => setIsLoading(true);
+  const handleVideoPlaying = () => setIsLoading(false);
+
+  const toggleSound = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSoundOn((s) => !s);
   };
 
   const getTimeRemaining = () => {
@@ -265,13 +363,13 @@ function StoryViewer({
 
   return (
     <div
-      className="fixed inset-0 z-[100] bg-black flex flex-col"
+      className="fixed inset-0 z-[100] bg-black flex flex-col overflow-hidden"
       onTouchStart={() => setIsPaused(true)}
       onTouchEnd={() => setIsPaused(false)}
       onMouseDown={() => setIsPaused(true)}
       onMouseUp={() => setIsPaused(false)}
     >
-      <div className="flex gap-1 px-3 pt-3 pb-2 flex-shrink-0">
+      <div className="flex gap-1 px-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2 flex-shrink-0">
         {stories.map((_, index) => (
           <div key={index} className="flex-1 h-0.5 bg-zinc-600 rounded-full overflow-hidden">
             <div
@@ -284,22 +382,21 @@ function StoryViewer({
         ))}
       </div>
 
-      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0 min-w-0">
         <button
           onClick={handleAvatarClick}
           className="flex items-center gap-3 hover:opacity-80 transition group min-w-0"
         >
           <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden border-2 border-white flex-shrink-0">
-            {salonLogo ? (
-              <img src={salonLogo} alt={salonName} className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                <Scissors className="w-4 h-4 text-white" />
-              </div>
-            )}
+            <SafeImage
+              src={salonLogo}
+              alt={salonName}
+              className="w-full h-full object-cover"
+              fallback={<Scissors className="w-4 h-4 text-white" />}
+            />
           </div>
           <div className="text-left min-w-0">
-            <p className="text-white font-semibold text-sm truncate">{salonName}</p>
+            <p className="text-white font-semibold text-sm truncate max-w-[45vw]">{salonName}</p>
             <div className="flex items-center gap-2 text-xs text-zinc-400">
               <span>{new Date(currentStory.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
               <span className="flex items-center gap-0.5">
@@ -309,32 +406,47 @@ function StoryViewer({
             </div>
           </div>
         </button>
-        <button onClick={onClose} className="text-white/70 hover:text-white transition p-1 flex-shrink-0">
-          <X className="w-6 h-6" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {isVideo && (
+            <button onClick={toggleSound} className="text-white/80 hover:text-white transition p-1.5">
+              {soundOn ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+            </button>
+          )}
+          <button onClick={onClose} className="text-white/70 hover:text-white transition p-1">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 flex items-center justify-center px-2 py-1 min-h-0 relative">
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
+          <div className="absolute inset-0 flex items-center justify-center z-10">
+            <div className="w-10 h-10 border-[3px] border-zinc-600 border-t-white rounded-full animate-spin" />
           </div>
         )}
 
         <div className="relative w-full h-full flex items-center justify-center">
           {isVideo ? (
             <video
+              key={currentStory.id}
               ref={videoRef}
               src={currentStory.image_url}
-              className="w-full h-full object-contain rounded-lg"
+              className={`w-full h-full object-contain rounded-lg transition-opacity duration-300 ${isImageLoaded ? 'opacity-100' : 'opacity-0'}`}
               playsInline
-              muted={isPaused}
-              onLoadedData={handleVideoLoad}
+              autoPlay
+              preload="auto"
+              muted={!soundOn}
+              onLoadedData={handleVideoLoadedData}
+              onTimeUpdate={handleVideoTimeUpdate}
+              onEnded={handleVideoEnded}
+              onWaiting={handleVideoWaiting}
+              onPlaying={handleVideoPlaying}
               onError={handleImageError}
               style={{ backgroundColor: 'black' }}
             />
           ) : (
             <img
+              key={currentStory.id}
               src={currentStory.image_url}
               alt=""
               className={`w-full h-full object-contain rounded-lg transition-opacity duration-300 ${
@@ -347,24 +459,28 @@ function StoryViewer({
         </div>
       </div>
 
-      <div className="absolute bottom-20 left-0 right-0 flex justify-center px-4 flex-shrink-0">
+      <div className="absolute bottom-[max(1.5rem,env(safe-area-inset-bottom))] left-0 right-0 flex items-center justify-center gap-6 px-4 flex-shrink-0">
+        {/* ❌ Compteur de likes supprimé — seul le cœur reste */}
         <button
           onClick={handleLikeClick}
-          className="flex items-center gap-2 text-white/80 hover:text-white transition"
+          className="flex items-center gap-2 text-white/80 hover:text-white transition active:scale-95"
         >
-          <Heart className={`w-8 h-8 ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
-          <span className="text-sm font-medium">{currentStory.like_count || 0}</span>
+          <Heart className={`w-8 h-8 transition-colors ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
         </button>
+        <div className="flex items-center gap-2 text-white/60">
+          <Eye className="w-6 h-6" />
+          <span className="text-sm font-medium tabular-nums">{currentStory.view_count || 0}</span>
+        </div>
       </div>
 
       <button
-        onClick={() => currentIndex > 0 && setCurrentIndex((p) => p - 1)}
+        onClick={goToPrev}
         className="absolute left-0 top-1/2 -translate-y-1/2 w-12 h-24 flex items-center justify-start pl-2 text-white/30 hover:text-white/60 transition"
       >
         <ChevronLeft className="w-8 h-8" />
       </button>
       <button
-        onClick={() => currentIndex < stories.length - 1 && setCurrentIndex((p) => p + 1)}
+        onClick={goToNext}
         className="absolute right-0 top-1/2 -translate-y-1/2 w-12 h-24 flex items-center justify-end pr-2 text-white/30 hover:text-white/60 transition"
       >
         <ChevronRight className="w-8 h-8" />
@@ -462,11 +578,48 @@ export default function PublicHomePage({
     }
   }, [salons]);
 
-  const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
+  // ─── VUES : on enregistre une ligne dans la table `views` À CHAQUE OUVERTURE ───
+  // (contrairement au like qui est un simple ON/OFF, une vue est comptée à chaque fois,
+  // exactement comme demandé — un même utilisateur qui revoit la story ajoute une vue).
+  const logStoryView = useCallback(async (storyId: string, profileId: string) => {
+    // Mise à jour optimiste immédiate du compteur affiché
+    setStories(prev => prev.map(s =>
+      s.id === storyId ? { ...s, view_count: (s.view_count || 0) + 1 } : s
+    ));
+
     try {
       const deviceId = getDeviceId();
+      const insertData: any = {
+        target_type: 'story',
+        target_id: storyId,
+        device_id: deviceId,
+        created_at: new Date().toISOString(),
+      };
+      if (isAuthenticated && currentUserId) {
+        insertData.profile_id = currentUserId;
+      }
+      const { error } = await supabase.from('views').insert(insertData);
+      if (error) {
+        console.error('Erreur enregistrement vue:', error);
+      }
+    } catch (err) {
+      console.error('Erreur enregistrement vue:', err);
+    }
+  }, [isAuthenticated, currentUserId]);
 
-      let existing = null;
+  const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
+    const wasLiked = userLikes.has(storyId);
+
+    // ✅ Mise à jour optimiste du cœur uniquement (plus de compteur, plus de toast)
+    setUserLikes(prev => {
+      const next = new Set(prev);
+      if (wasLiked) next.delete(storyId); else next.add(storyId);
+      return next;
+    });
+
+    try {
+      const deviceId = getDeviceId();
+      let existing: { id: string } | null = null;
 
       if (isAuthenticated && currentUserId) {
         const { data } = await supabase
@@ -488,46 +641,32 @@ export default function PublicHomePage({
         existing = data;
       }
 
-      if (existing) {
-        await supabase.from('likes').delete().eq('id', existing.id);
-        showToast('Like retiré');
-
-        setUserLikes(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(storyId);
-          return newSet;
-        });
-        setStories(prev => prev.map(s =>
-          s.id === storyId ? { ...s, like_count: (s.like_count || 0) - 1 } : s
-        ));
-      } else {
+      if (wasLiked) {
+        if (existing) {
+          await supabase.from('likes').delete().eq('id', existing.id);
+        }
+      } else if (!existing) {
         const insertData: any = {
           target_type: 'story',
           target_id: storyId,
-          device_id: deviceId
+          device_id: deviceId,
         };
-
         if (isAuthenticated && currentUserId) {
           insertData.profile_id = currentUserId;
         }
-
-        await supabase.from('likes').insert(insertData);
-        showToast('Like ajouté ❤️');
-
-        setUserLikes(prev => new Set(prev).add(storyId));
-        setStories(prev => prev.map(s =>
-          s.id === storyId ? { ...s, like_count: (s.like_count || 0) + 1 } : s
-        ));
+        const { error } = await supabase.from('likes').insert(insertData);
+        if (error && error.code !== '23505') throw error;
       }
     } catch (err: any) {
       console.error('Erreur like:', err);
-      if (err.code === '23505') {
-        showToast('Vous avez déjà liké cette story');
-      } else {
-        showToast('Erreur lors de l\'opération');
-      }
+      // ❌ Échec réseau : on annule proprement la mise à jour optimiste du cœur
+      setUserLikes(prev => {
+        const next = new Set(prev);
+        if (wasLiked) next.add(storyId); else next.delete(storyId);
+        return next;
+      });
     }
-  }, [isAuthenticated, currentUserId, showToast]);
+  }, [isAuthenticated, currentUserId, userLikes]);
 
   const loadUserLikes = useCallback(async () => {
     try {
@@ -644,7 +783,7 @@ export default function PublicHomePage({
           console.error('Erreur mise à jour note:', updateError);
           throw updateError;
         }
-        showToast(`Note mise à jour : ${rating} ⭐`);
+        showToast(` : ${rating} ⭐`);
       } else {
         const insertData: any = {
           profile_id: salonId,
@@ -665,7 +804,7 @@ export default function PublicHomePage({
           console.error('Erreur insertion note:', insertError);
           throw insertError;
         }
-        showToast(`Note ajoutée : ${rating} ⭐`);
+        showToast(` : ${rating} ⭐`); 
       }
 
       const { data: allReviews, error: fetchError } = await supabase
@@ -1094,6 +1233,31 @@ export default function PublicHomePage({
         .gte('expires_at', new Date().toISOString())
         .order('created_at', { ascending: false });
 
+      // ── VUES : le compteur affiché vient du nombre réel de lignes dans la table `views`,
+      // exactement comme les notes viennent de la table `reviews` ──
+      const storyIds = (storiesData || []).map((s: any) => s.id);
+      let viewCountMap: Record<string, number> = {};
+      if (storyIds.length > 0) {
+        const { data: viewsData, error: viewsError } = await supabase
+          .from('views')
+          .select('target_id')
+          .eq('target_type', 'story')
+          .in('target_id', storyIds);
+
+        if (viewsError) {
+          console.error('Erreur chargement vues:', viewsError);
+        } else {
+          viewsData?.forEach((v: any) => {
+            viewCountMap[v.target_id] = (viewCountMap[v.target_id] || 0) + 1;
+          });
+        }
+      }
+
+      const storiesWithViewCounts: Story[] = (storiesData || []).map((s: any) => ({
+        ...s,
+        view_count: viewCountMap[s.id] ?? (s.view_count || 0),
+      }));
+
       const salonsWithStats = (profiles || []).map((p) => {
         const isFollowed = userFollowingIds.has(p.id) || guestFollowingIdsSet.has(p.id);
         const isOwnProfile = isAuthenticated && currentUserId === p.user_id;
@@ -1131,7 +1295,7 @@ export default function PublicHomePage({
 
       setSalons(salonsWithStats);
       setSubscriptionSalons(followedSalons);
-      setStories(storiesData || []);
+      setStories(storiesWithViewCounts);
 
       await loadUserLikes();
       await loadUserRatings();
@@ -1409,7 +1573,7 @@ export default function PublicHomePage({
 
     if (isOwnProfile) {
       return (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <div className="flex gap-0.5 opacity-50">
             {[1, 2, 3, 4, 5].map((star) => (
               <Star key={star} className="w-5 h-5 text-zinc-600 fill-zinc-600" />
@@ -1421,7 +1585,7 @@ export default function PublicHomePage({
     }
 
     return (
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <div className="flex gap-0.5">
           {[1, 2, 3, 4, 5].map((star) => (
             <button
@@ -1456,6 +1620,29 @@ export default function PublicHomePage({
     );
   };
 
+  // Classes statiques (Tailwind ne peut pas interpréter des noms de classes générées
+  // dynamiquement comme `max-w-[${x}px]` — c'était la cause du débordement des profils).
+  const AVATAR_SIZE_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
+    sm: 'w-12 h-12',
+    md: 'w-16 h-16',
+    lg: 'w-20 h-20',
+  };
+  const AVATAR_TEXT_SIZE_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
+    sm: 'text-[8px]',
+    md: 'text-[10px]',
+    lg: 'text-xs',
+  };
+  const AVATAR_NAME_MAXWIDTH_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
+    sm: 'max-w-[48px]',
+    md: 'max-w-[64px]',
+    lg: 'max-w-[80px]',
+  };
+  const AVATAR_ICON_SIZE_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
+    sm: 'w-5 h-5',
+    md: 'w-6 h-6',
+    lg: 'w-9 h-9',
+  };
+
   const StoryAvatar = ({
     salon,
     onClick,
@@ -1468,18 +1655,6 @@ export default function PublicHomePage({
     const { hasStories, allViewed, hasUnviewed } = getStoryStatusForSalon(salon.id);
     const displayName = getSalonDisplayName(salon);
     const isOwnProfile = isAuthenticated && currentUserId === salon.user_id;
-
-    const sizeClasses = {
-      sm: 'w-12 h-12',
-      md: 'w-16 h-16',
-      lg: 'w-20 h-20'
-    };
-
-    const textSize = {
-      sm: 'text-[8px]',
-      md: 'text-[10px]',
-      lg: 'text-xs'
-    };
 
     let circleColor = 'border-zinc-600';
 
@@ -1499,22 +1674,22 @@ export default function PublicHomePage({
       <button
         onClick={onClick}
         className="flex flex-col items-center gap-1 group flex-shrink-0"
+        style={{ width: size === 'sm' ? 56 : size === 'md' ? 72 : 88 }}
       >
         <div
-          className={`${sizeClasses[size]} rounded-full ${hasStories ? 'p-0.5' : ''} ${circleColor} group-hover:scale-105 transition`}
+          className={`${AVATAR_SIZE_CLASSES[size]} rounded-full ${hasStories ? 'p-0.5' : ''} ${circleColor} group-hover:scale-105 transition flex-shrink-0`}
           style={hasStories && hasUnviewed ? { background: 'linear-gradient(to top right, #facc15, #ec4899)' } : {}}
         >
-          <div className={`w-full h-full rounded-full overflow-hidden bg-zinc-800 border-2 border-black ${sizeClasses[size]}`}>
-            {salon.avatar_url ? (
-              <img src={salon.avatar_url} alt={displayName} className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                <Scissors className={`${size === 'sm' ? 'w-5 h-5' : size === 'md' ? 'w-6 h-6' : 'w-9 h-9'} text-white`} />
-              </div>
-            )}
+          <div className={`w-full h-full rounded-full overflow-hidden bg-zinc-800 border-2 border-black ${AVATAR_SIZE_CLASSES[size]}`}>
+            <SafeImage
+              src={salon.avatar_url}
+              alt={displayName}
+              className="w-full h-full object-cover"
+              fallback={<Scissors className={`${AVATAR_ICON_SIZE_CLASSES[size]} text-white`} />}
+            />
           </div>
         </div>
-        <p className={`text-zinc-400 ${textSize[size]} truncate max-w-[${size === 'sm' ? '48' : '64'}px]`}>
+        <p className={`text-zinc-400 ${AVATAR_TEXT_SIZE_CLASSES[size]} truncate ${AVATAR_NAME_MAXWIDTH_CLASSES[size]} text-center`}>
           {displayName}
         </p>
       </button>
@@ -1524,9 +1699,12 @@ export default function PublicHomePage({
   const renderFollowedSection = (): React.ReactElement | null => {
     const allFollowed = [...subscriptionSalons];
 
+    // ✅ Le profil de l'utilisateur connecté est toujours affiché en premier
     if (isAuthenticated && currentUserId) {
       const ownProfile = salons.find((s) => s.user_id === currentUserId);
-      if (ownProfile && !allFollowed.find((s) => s.id === ownProfile.id)) {
+      if (ownProfile) {
+        const idx = allFollowed.findIndex((s) => s.id === ownProfile.id);
+        if (idx > -1) allFollowed.splice(idx, 1);
         allFollowed.unshift(ownProfile);
       }
     }
@@ -1590,7 +1768,7 @@ export default function PublicHomePage({
         }
       >
         <div className="border-b border-zinc-800 bg-zinc-950/60 backdrop-blur-sm">
-          <div className="flex items-center justify-between p-3">
+          <div className="flex items-center justify-between p-3 gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <div className="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center flex-shrink-0">
                 <MapPin className="w-4.5 h-4.5 text-emerald-400" />
@@ -1599,12 +1777,12 @@ export default function PublicHomePage({
                 <h3 className="text-white font-semibold text-sm leading-tight truncate">
                   {routeInfo ? `Itinéraire vers ${getSalonDisplayName(routeInfo.salon)}` : 'Salons à proximité'}
                 </h3>
-                <p className="text-zinc-500 text-[10px] leading-tight">
+                <p className="text-zinc-500 text-[10px] leading-tight truncate">
                   {routeInfo ? 'Trajet en voiture' : `${mapSalons.length} résultat${mapSalons.length > 1 ? 's' : ''}`}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 flex-shrink-0">
               <button
                 onClick={centerOnUser}
                 disabled={!userLocation}
@@ -1648,7 +1826,7 @@ export default function PublicHomePage({
           {locationError && !routeInfo && (
             <div className="flex items-center gap-1.5 px-3 pb-2 text-amber-400">
               <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-              <p className="text-[10px] flex-1">{locationError}</p>
+              <p className="text-[10px] flex-1 min-w-0">{locationError}</p>
               {geoStatus === 'denied' && (
                 <button
                   onClick={startGeolocation}
@@ -1783,27 +1961,28 @@ export default function PublicHomePage({
                       }`}
                     >
                       <div className="w-7 h-7 rounded-full bg-zinc-700 overflow-hidden flex items-center justify-center flex-shrink-0">
-                        {salon.avatar_url ? (
-                          <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
-                        ) : (
-                          <Scissors className={`w-3.5 h-3.5 ${isActive ? 'text-black' : 'text-zinc-400'}`} />
-                        )}
+                        <SafeImage
+                          src={salon.avatar_url}
+                          alt=""
+                          className="w-full h-full object-cover"
+                          fallback={<Scissors className={`w-3.5 h-3.5 ${isActive ? 'text-black' : 'text-zinc-400'}`} />}
+                        />
                       </div>
                       <span className={`text-[11px] truncate max-w-[90px] font-medium ${isActive ? 'text-black' : 'text-white'}`}>
                         {displayName}
                       </span>
-                      <div className="flex items-center gap-0.5">
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
                         <Star className={`w-3 h-3 ${isActive ? 'text-yellow-600 fill-yellow-600' : 'text-yellow-400 fill-yellow-400'}`} />
                         <span className={`text-[10px] font-bold ${isActive ? 'text-black' : 'text-white'}`}>
                           {salon.rating?.toFixed(1) || '0.0'}
                         </span>
                       </div>
                       {distance !== null && (
-                        <span className={`text-[10px] font-bold ${isActive ? 'text-emerald-700' : 'text-emerald-400'}`}>
+                        <span className={`text-[10px] font-bold flex-shrink-0 ${isActive ? 'text-emerald-700' : 'text-emerald-400'}`}>
                           {distance.toFixed(1)} km
                         </span>
                       )}
-                      {salon.has_active_subscription && <span className="text-[9px]">⭐</span>}
+                      {salon.has_active_subscription && <span className="text-[9px] flex-shrink-0">⭐</span>}
                     </button>
                   );
                 })}
@@ -1817,13 +1996,12 @@ export default function PublicHomePage({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-12 h-12 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border-2 border-emerald-400">
-                      {routeInfo.salon.avatar_url ? (
-                        <img src={routeInfo.salon.avatar_url} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                          <Scissors className="w-5 h-5 text-white" />
-                        </div>
-                      )}
+                      <SafeImage
+                        src={routeInfo.salon.avatar_url}
+                        alt=""
+                        className="w-full h-full object-cover"
+                        fallback={<Scissors className="w-5 h-5 text-white" />}
+                      />
                     </div>
                     <div className="min-w-0">
                       <p className="text-white font-semibold text-sm truncate">{getSalonDisplayName(routeInfo.salon)}</p>
@@ -1900,32 +2078,31 @@ export default function PublicHomePage({
                       onClick={() => setSelectedSalon(salon)}
                     >
                       <div className="w-11 h-11 rounded-full bg-zinc-700 overflow-hidden flex-shrink-0 border-2 border-zinc-600">
-                        {salon.avatar_url ? (
-                          <img src={salon.avatar_url} alt={displayName} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                            <Scissors className="w-5 h-5 text-white" />
-                          </div>
-                        )}
+                        <SafeImage
+                          src={salon.avatar_url}
+                          alt={displayName}
+                          className="w-full h-full object-cover"
+                          fallback={<Scissors className="w-5 h-5 text-white" />}
+                        />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <p className="text-white font-semibold text-sm truncate">{displayName}</p>
-                          {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐</span>}
+                          {salon.has_active_subscription && <span className="text-yellow-400 text-[10px] flex-shrink-0">⭐</span>}
                         </div>
                         <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
-                          <span className="flex items-center gap-0.5">
+                          <span className="flex items-center gap-0.5 flex-shrink-0">
                             <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
                             {salon.rating?.toFixed(1) || '0.0'}
                           </span>
-                          <span className="flex items-center gap-0.5">
+                          <span className="flex items-center gap-0.5 flex-shrink-0">
                             <User className="w-3 h-3 text-emerald-400" />
                             {salon.followers_count || 0}
                           </span>
                           {distance !== null && (
                             <>
-                              <span>•</span>
-                              <span className="text-emerald-400">{distance.toFixed(1)} km</span>
+                              <span className="flex-shrink-0">•</span>
+                              <span className="text-emerald-400 flex-shrink-0">{distance.toFixed(1)} km</span>
                             </>
                           )}
                         </div>
@@ -2031,7 +2208,7 @@ export default function PublicHomePage({
                 }}
               >
                 <div className="flex items-center p-3 gap-3">
-                  <div className="relative">
+                  <div className="relative flex-shrink-0">
                     {hasStories && (
                       <div
                         className={`absolute -inset-0.5 rounded-full ${
@@ -2042,36 +2219,35 @@ export default function PublicHomePage({
                       />
                     )}
                     <div className="w-14 h-14 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border-2 border-zinc-900 relative z-10">
-                      {salon.avatar_url ? (
-                        <img src={salon.avatar_url} alt={displayName} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                          <Scissors className="w-6 h-6 text-white" />
-                        </div>
-                      )}
+                      <SafeImage
+                        src={salon.avatar_url}
+                        alt={displayName}
+                        className="w-full h-full object-cover"
+                        fallback={<Scissors className="w-6 h-6 text-white" />}
+                      />
                     </div>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
                       <p className="text-white font-semibold text-sm truncate">{displayName}</p>
-                      {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐ Abonné</span>}
+                      {salon.has_active_subscription && <span className="text-yellow-400 text-[10px] flex-shrink-0 whitespace-nowrap">⭐ Abonné</span>}
                       {hasStories && hasUnviewed && (
                         <div className="w-2.5 h-2.5 rounded-full bg-gradient-to-tr from-yellow-400 to-pink-500 flex-shrink-0" />
                       )}
                     </div>
                     <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
-                      <span className="flex items-center gap-0.5">
+                      <span className="flex items-center gap-0.5 flex-shrink-0">
                         <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
                         {salon.rating?.toFixed(1) || '0.0'}
                       </span>
-                      <span className="flex items-center gap-0.5">
+                      <span className="flex items-center gap-0.5 flex-shrink-0">
                         <User className="w-3 h-3 text-emerald-400" />
                         {salon.followers_count ?? 0}
                       </span>
                       {distance !== null && (
                         <>
-                          <span>•</span>
-                          <span className="text-emerald-400">{distance.toFixed(1)} km</span>
+                          <span className="flex-shrink-0">•</span>
+                          <span className="text-emerald-400 flex-shrink-0">{distance.toFixed(1)} km</span>
                         </>
                       )}
                     </div>
@@ -2136,9 +2312,15 @@ export default function PublicHomePage({
           className="bg-zinc-900 rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto border border-zinc-700 shadow-2xl"
           onClick={(e) => e.stopPropagation()}
         >
-          <div className="relative h-48 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-t-2xl">
+          <div className="relative h-48 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-t-2xl overflow-hidden">
             {selectedSalon.cover_image && (
-              <img src={selectedSalon.cover_image} alt="" className="w-full h-full object-cover rounded-t-2xl" />
+              <img
+                src={selectedSalon.cover_image}
+                alt=""
+                className="w-full h-full object-cover"
+                loading="lazy"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+              />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent rounded-t-2xl" />
             <button onClick={() => setSelectedSalon(null)} className="absolute top-4 right-4 text-white/80 hover:text-white transition bg-black/30 rounded-full p-1.5">
@@ -2147,25 +2329,24 @@ export default function PublicHomePage({
           </div>
 
           <div className="p-5 -mt-12 relative">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 min-w-0">
               <div className="w-20 h-20 rounded-full bg-zinc-800 border-4 border-zinc-900 overflow-hidden flex-shrink-0">
-                {selectedSalon.avatar_url ? (
-                  <img src={selectedSalon.avatar_url} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-indigo-600">
-                    <Scissors className="w-9 h-9 text-white" />
-                  </div>
-                )}
+                <SafeImage
+                  src={selectedSalon.avatar_url}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  fallback={<Scissors className="w-9 h-9 text-white" />}
+                />
               </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-white font-bold text-xl">{displayName}</h3>
-                  {selectedSalon.has_active_subscription && <span className="text-yellow-400 text-xs">⭐</span>}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h3 className="text-white font-bold text-xl truncate">{displayName}</h3>
+                  {selectedSalon.has_active_subscription && <span className="text-yellow-400 text-xs flex-shrink-0">⭐</span>}
                 </div>
                 {selectedSalon.address && (
-                  <p className="text-zinc-400 text-sm flex items-center gap-1">
-                    <MapPin className="w-3.5 h-3.5" />
-                    {shortAddress(selectedSalon.address)}
+                  <p className="text-zinc-400 text-sm flex items-center gap-1 truncate">
+                    <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
+                    <span className="truncate">{shortAddress(selectedSalon.address)}</span>
                   </p>
                 )}
               </div>
@@ -2197,14 +2378,14 @@ export default function PublicHomePage({
             {selectedSalon.description && (
               <div className="mt-3">
                 <p className="text-zinc-400 text-xs mb-1">Description</p>
-                <p className="text-white text-sm">{selectedSalon.description}</p>
+                <p className="text-white text-sm break-words">{selectedSalon.description}</p>
               </div>
             )}
 
             {distance !== null && (
               <div className="mt-3 flex items-center gap-2 text-zinc-400 text-xs bg-zinc-800/30 rounded-xl py-2 px-3">
-                <Navigation className="w-3.5 h-3.5 text-emerald-400" />
-                <span>{distance.toFixed(1)} km de votre position</span>
+                <Navigation className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                <span className="truncate">{distance.toFixed(1)} km de votre position</span>
               </div>
             )}
 
@@ -2218,10 +2399,10 @@ export default function PublicHomePage({
                 {selectedSalon.slug ? 'Réserver' : 'Réservation indisponible'}
               </button>
 
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap sm:flex-nowrap">
                 <button
                   onClick={() => startItinerary(selectedSalon)}
-                  className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                  className="flex-1 min-w-[100px] flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
                 >
                   <RouteIcon className="w-4 h-4" /> Itinéraire
                 </button>
@@ -2229,7 +2410,7 @@ export default function PublicHomePage({
                 {selectedSalon.phone && (
                   <a
                     href={`tel:${selectedSalon.phone}`}
-                    className="flex-1 flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                    className="flex-1 min-w-[100px] flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
                   >
                     <Phone className="w-4 h-4" /> Appeler
                   </a>
@@ -2239,7 +2420,7 @@ export default function PublicHomePage({
                   <button
                     onClick={() => toggleFollow(selectedSalon.id)}
                     disabled={isLoading}
-                    className={`flex-1 flex items-center justify-center gap-2 font-semibold py-2.5 rounded-xl text-sm transition disabled:opacity-50 ${
+                    className={`flex-1 min-w-[100px] flex items-center justify-center gap-2 font-semibold py-2.5 rounded-xl text-sm transition disabled:opacity-50 ${
                       isFollowing
                         ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
                         : 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -2281,7 +2462,7 @@ export default function PublicHomePage({
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-zinc-950 pb-20 animate-pulse">
+      <div className="min-h-screen bg-zinc-950 pb-20 animate-pulse overflow-x-hidden">
         <div className="h-14 bg-black/90 border-b border-zinc-800" />
         <div className="max-w-lg mx-auto pt-4 px-4 space-y-4">
           <div className="h-10 bg-zinc-900 rounded-xl w-40" />
@@ -2311,18 +2492,18 @@ export default function PublicHomePage({
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white pb-20">
-      <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 py-2">
-        <div className="flex items-center justify-between max-w-lg mx-auto gap-2">
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center">
+    <div className="min-h-screen bg-zinc-950 text-white pb-20 overflow-x-hidden">
+      <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2">
+        <div className="flex items-center justify-between max-w-lg md:max-w-2xl mx-auto gap-2">
+          <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
+            <div className="w-8 h-8 bg-white rounded-lg flex items-center justify-center flex-shrink-0">
               <Scissors className="w-5 h-5 text-black" />
             </div>
-            <h1 className="text-white font-black text-lg tracking-tight hidden sm:block">LE COUPE</h1>
+            <h1 className="text-white font-black text-lg tracking-tight hidden sm:block truncate">LE COUPE</h1>
           </div>
 
-          <div className="flex items-center gap-2 flex-1 justify-end">
-            <div className="relative flex-1 max-w-[200px]">
+          <div className="flex items-center gap-2 flex-1 justify-end min-w-0">
+            <div className="relative flex-1 max-w-[140px] sm:max-w-[240px] min-w-0">
               <input
                 type="text"
                 placeholder="Rechercher..."
@@ -2330,7 +2511,7 @@ export default function PublicHomePage({
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-zinc-800/80 border border-zinc-700 rounded-full px-4 py-1.5 pr-9 text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-white transition"
               />
-              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
             </div>
 
             {/* ✅ Bouton History (LOCAL) */}
@@ -2347,7 +2528,7 @@ export default function PublicHomePage({
         </div>
       </header>
 
-      <div className="max-w-lg mx-auto pt-3">
+      <div className="max-w-lg md:max-w-2xl mx-auto pt-3">
         {renderFollowedSection()}
         {renderMap()}
         {!mapFullscreen && renderAllSalons()}
@@ -2369,7 +2550,7 @@ export default function PublicHomePage({
 
       {!mapFullscreen && (
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
-          <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
+          <div className="flex items-center justify-around px-2 py-2 max-w-lg md:max-w-2xl mx-auto">
             <button
               onClick={() => { if (onNavigateToPage) onNavigateToPage('publicHome'); }}
               className="flex flex-col items-center gap-0.5 px-2 py-1 group"
@@ -2432,6 +2613,7 @@ export default function PublicHomePage({
           salonId={selectedStory.salonId}
           onViewProfile={viewProfile}
           onStoryViewed={markStoryAsViewed}
+          onStoryOpened={logStoryView}
           onLikeStory={toggleLikeStory}
           userLikes={userLikes}
         />
@@ -2440,7 +2622,7 @@ export default function PublicHomePage({
       {renderSalonModal()}
 
       {toast && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[110] bg-zinc-800 border border-zinc-700 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-2xl">
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[110] bg-zinc-800 border border-zinc-700 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">
           {toast}
         </div>
       )}

@@ -41,7 +41,6 @@ function generateTimeSlots(open: string, close: string, intervalMinutes: number,
   return slots;
 }
 
-// ✅ device_id pour identifier l'utilisateur même sans compte
 function getDeviceId(): string {
   let deviceId = localStorage.getItem('device_id');
   if (!deviceId) {
@@ -53,7 +52,7 @@ function getDeviceId(): string {
 
 const POLL_MS = 15000;
 const PAYMENT_POLL_MS = 3000;
-const MAX_PAYMENT_ATTEMPTS = 30; // 30 × 3s = 90s max
+const MAX_PAYMENT_ATTEMPTS = 30;
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const paydunyaMasterKey = import.meta.env.VITE_PAYDUNYA_MASTER_KEY as string | undefined;
 const paydunyaPrivateKey = import.meta.env.VITE_PAYDUNYA_PRIVATE_KEY as string | undefined;
@@ -114,12 +113,10 @@ export function BookingPage({ slug }: BookingPageProps) {
     load();
   }, [slug]);
 
-  // ✅ Reprise après paiement
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const resumeReq = params.get('request_id');
     if (!resumeReq) return;
-    console.log('🔄 Reprise après paiement, request_id:', resumeReq);
     setRequestId(resumeReq);
     setStep('waiting');
   }, []);
@@ -161,56 +158,33 @@ export function BookingPage({ slug }: BookingPageProps) {
     return () => clearInterval(id);
   }, [form.date, settings, loadingSlots, refreshSlots]);
 
-  // ✅ FONCTION CENTRALE : vérifier le statut du paiement (bookings OU booking_requests)
   const checkBookingStatus = useCallback(async (reqId: string): Promise<{ found: boolean; data?: any }> => {
     try {
       const { data: finalBooking, error: bookingsError } = await supabase
-        .from('bookings')
-        .select('*')
-        .eq('request_id', reqId)
-        .maybeSingle();
+        .from('bookings').select('*').eq('request_id', reqId).maybeSingle();
 
-      if (bookingsError) {
-        console.warn('⚠️ Erreur check bookings:', bookingsError.message);
-      }
+      if (bookingsError) console.warn('⚠️ Erreur check bookings:', bookingsError.message);
 
-      if (finalBooking) {
-        console.log('✅ Booking final trouvé:', finalBooking.id);
-        return { found: true, data: finalBooking };
-      }
+      if (finalBooking) return { found: true, data: finalBooking };
 
       const { data: request, error: requestError } = await supabase
-        .from('booking_requests')
-        .select('*')
-        .eq('id', reqId)
-        .maybeSingle();
+        .from('booking_requests').select('*').eq('id', reqId).maybeSingle();
 
-      if (requestError) {
-        console.warn('⚠️ Erreur check booking_requests:', requestError.message);
-      }
+      if (requestError) console.warn('⚠️ Erreur check booking_requests:', requestError.message);
 
       if (request) {
-        console.log('📋 Statut demande:', request.request_status, '| paiement:', request.payment_status);
-
         if (
           request.payment_status === 'paid' ||
           request.request_status === 'confirmed' ||
           request.request_status === 'paid'
         ) {
-          console.log('💳 Demande payée, tentative de récupération du booking final...');
           await new Promise(resolve => setTimeout(resolve, 2000));
 
           const { data: finalRetry } = await supabase
-            .from('bookings')
-            .select('*')
-            .eq('request_id', reqId)
-            .maybeSingle();
+            .from('bookings').select('*').eq('request_id', reqId).maybeSingle();
 
-          if (finalRetry) {
-            return { found: true, data: finalRetry };
-          }
+          if (finalRetry) return { found: true, data: finalRetry };
 
-          console.log('⚠️ Booking final non créé, utilisation de la demande comme fallback');
           return {
             found: true,
             data: {
@@ -238,12 +212,10 @@ export function BookingPage({ slug }: BookingPageProps) {
     }
   }, []);
 
-  // ✅ ENREGISTRER dans l'historique (accessible par device_id)
   const saveToHistory = useCallback(async (booking: any, qrData: string) => {
     try {
       const deviceId = getDeviceId();
       const { data: { session } } = await supabase.auth.getSession();
-
       const ticketNumber = booking.ticket_number || `LC-${Date.now().toString().slice(-8)}`;
 
       const { error } = await supabase
@@ -266,21 +238,9 @@ export function BookingPage({ slug }: BookingPageProps) {
           ticket_number: ticketNumber,
           qr_code_data: qrData,
           payment_status: 'paid',
-        }, {
-          onConflict: 'request_id',
-          ignoreDuplicates: false,
-        });
+        }, { onConflict: 'request_id', ignoreDuplicates: false });
 
-      if (error) {
-        console.error('⚠️ Erreur sauvegarde historique:', {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-      } else {
-        console.log('✅ Réservation sauvegardée dans l\'historique');
-      }
+      if (error) console.error('⚠️ Erreur sauvegarde historique:', error);
     } catch (err) {
       console.error('❌ Erreur saveToHistory:', err);
     }
@@ -314,18 +274,14 @@ export function BookingPage({ slug }: BookingPageProps) {
     };
 
     setBookingData(enrichedBooking);
-
     await saveToHistory(enrichedBooking, qrData);
-
     setStep('success');
     window.history.replaceState({}, '', window.location.pathname);
   }, [settings, saveToHistory]);
 
-  // ✅ Polling pour détecter la fin du paiement
   useEffect(() => {
     if (step !== 'waiting' || !requestId) return;
 
-    console.log('⏳ Démarrage du polling pour:', requestId);
     let attempts = 0;
     let isCancelled = false;
 
@@ -333,12 +289,10 @@ export function BookingPage({ slug }: BookingPageProps) {
       if (isCancelled) return;
       attempts++;
       setPaymentAttempts(attempts);
-      console.log(`🔄 Tentative ${attempts}/${MAX_PAYMENT_ATTEMPTS}`);
 
       const result = await checkBookingStatus(requestId);
 
       if (result.found && result.data) {
-        console.log('✅ Réservation confirmée !');
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
@@ -348,7 +302,6 @@ export function BookingPage({ slug }: BookingPageProps) {
       }
 
       if (attempts >= MAX_PAYMENT_ATTEMPTS) {
-        console.log('⏰ Timeout du polling');
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
@@ -463,11 +416,9 @@ export function BookingPage({ slug }: BookingPageProps) {
         .single();
 
       if (error || !reqRow) {
-        console.error('Erreur création demande:', error);
         throw new Error(error?.message || 'Erreur création de la demande');
       }
 
-      console.log('✅ Demande de réservation créée:', reqRow.id);
       setRequestId(reqRow.id);
 
       const res = await fetch(FUNCTION_URL, {
@@ -490,7 +441,6 @@ export function BookingPage({ slug }: BookingPageProps) {
 
       if (!res.ok) {
         const errorText = await res.text();
-        console.error('❌ Erreur fonction Edge:', errorText);
         throw new Error(`Erreur serveur: ${res.status} - ${errorText}`);
       }
 
@@ -535,7 +485,6 @@ export function BookingPage({ slug }: BookingPageProps) {
 
   const forceCheckNow = async () => {
     if (!requestId) return;
-    console.log('🔄 Vérification manuelle demandée');
     setSubmitError('');
     const result = await checkBookingStatus(requestId);
     if (result.found && result.data) {
@@ -575,11 +524,11 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ✅ ÉTAPE ATTENTE
+  // ── Attente paiement
   if (step === 'waiting') {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
-        <div className="text-center max-w-sm">
+        <div className="text-center max-w-sm w-full">
           <Loader className="w-12 h-12 text-white mx-auto mb-6 animate-spin" />
           <h2 className="text-white text-2xl font-bold mb-3">Paiement en attente</h2>
           <p className="text-zinc-400 text-sm leading-relaxed mb-4">
@@ -617,49 +566,52 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
+  // ── Succès
   if (step === 'success' && bookingData) {
-    const dateFmt = new Date(bookingData.booking_date).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const dateFmt = new Date(bookingData.booking_date).toLocaleDateString('fr-FR', {
+      weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
+    });
 
-    // ✅ Taux passé à 15 %
     const netAmount = bookingData.net_amount ?? Math.round(bookingData.service_price * 0.85);
 
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-3 sm:p-4">
         <div className="max-w-sm w-full">
           <div className="bg-white rounded-2xl overflow-hidden shadow-2xl">
-            <div className="bg-black text-white text-center py-6 px-4">
-              <div className="text-2xl font-black tracking-widest">LE COUPE</div>
-              <div className="text-xs text-zinc-400 tracking-widest mt-1">{bookingData.salon_name}</div>
-              <div className="inline-block mt-3 border-2 border-white px-4 py-2 text-lg font-black tracking-widest">
+            <div className="bg-black text-white text-center py-5 sm:py-6 px-4">
+              <div className="text-xl sm:text-2xl font-black tracking-widest">LE COUPE</div>
+              <div className="text-[10px] sm:text-xs text-zinc-400 tracking-widest mt-1 break-words">
+                {bookingData.salon_name}
+              </div>
+              <div className="inline-block mt-3 border-2 border-white px-3 sm:px-4 py-1.5 sm:py-2 text-base sm:text-lg font-black tracking-widest">
                 {bookingData.ticket_number}
               </div>
             </div>
-            <div className="px-6 py-5 space-y-4">
-              <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
-                <p className="text-green-700 text-lg font-semibold mb-1">✅ Paiement confirmé</p>
-                <p className="text-green-600 text-sm">Votre réservation est validée automatiquement</p>
+            <div className="px-4 sm:px-6 py-4 sm:py-5 space-y-4">
+              <div className="bg-green-50 border border-green-200 rounded-xl p-3 sm:p-4 text-center">
+                <p className="text-green-700 text-base sm:text-lg font-semibold mb-1">✅ Paiement confirmé</p>
+                <p className="text-green-600 text-xs sm:text-sm">Votre réservation est validée automatiquement</p>
               </div>
 
               {qrCodeUrl && (
-                <div className="bg-white rounded-xl p-4 text-center border-2 border-blue-300 shadow-lg">
+                <div className="bg-white rounded-xl p-3 sm:p-4 text-center border-2 border-blue-300 shadow-lg">
                   <div className="flex items-center justify-center gap-2 mb-2">
                     <QrCode className="w-5 h-5 text-blue-600" />
-                    <p className="text-xs font-semibold text-blue-600">QR Code à présenter au salon</p>
+                    <p className="text-[10px] sm:text-xs font-semibold text-blue-600">QR Code à présenter au salon fait un capture d'écran</p>
                   </div>
-                  <img src={qrCodeUrl} alt="QR Code" className="w-48 h-48 mx-auto border-2 border-blue-300 rounded-lg" />
+                  <img
+                    src={qrCodeUrl}
+                    alt="QR Code"
+                    className="w-40 h-40 sm:w-48 sm:h-48 mx-auto border-2 border-blue-300 rounded-lg"
+                  />
 
-                  <div className="mt-3 bg-zinc-50 border border-zinc-200 rounded-lg py-2">
+                  <div className="mt-3 bg-zinc-50 border border-zinc-200 rounded-lg py-2 px-2">
                     <p className="text-[10px] text-zinc-500 uppercase tracking-wide">Montant reçu par le salon</p>
-                    <p className="text-black font-black text-xl">{formatCFA(netAmount)}</p>
+                    <p className="text-black font-black text-lg sm:text-xl break-words">{formatCFA(netAmount)}</p>
                     <p className="text-zinc-400 text-[10px]">(après 15% de frais de service)</p>
                   </div>
 
-                  <button
-                    onClick={downloadQR}
-                    className="w-full mt-3 flex items-center justify-center gap-2 bg-blue-600 text-white font-bold py-2.5 rounded-xl text-sm hover:bg-blue-700 transition"
-                  >
-                    <Download className="w-4 h-4" /> Télécharger le QR code
-                  </button>
+                 
                 </div>
               )}
 
@@ -667,35 +619,35 @@ export function BookingPage({ slug }: BookingPageProps) {
 
               <div>
                 <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Service</p>
-                <p className="font-black text-base mt-0.5">{bookingData.service_name}</p>
+                <p className="font-black text-base mt-0.5 break-words">{bookingData.service_name}</p>
                 <p className="text-zinc-500 text-sm">{bookingData.service_price?.toLocaleString()} CFA</p>
               </div>
 
               {bookingData.barber_name && (
                 <div>
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Coiffeur</p>
-                  <p className="font-bold text-sm mt-0.5">{bookingData.barber_name}</p>
+                  <p className="font-bold text-sm mt-0.5 break-words">{bookingData.barber_name}</p>
                 </div>
               )}
 
               <hr className="border-dashed border-zinc-300" />
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
+              <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                <div className="min-w-0">
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Date</p>
-                  <p className="font-bold text-sm mt-0.5">{dateFmt}</p>
+                  <p className="font-bold text-xs sm:text-sm mt-0.5 break-words">{dateFmt}</p>
                 </div>
                 <div>
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Heure</p>
-                  <p className="font-black text-xl mt-0.5">{bookingData.booking_time?.slice(0, 5)}</p>
+                  <p className="font-black text-lg sm:text-xl mt-0.5">{bookingData.booking_time?.slice(0, 5)}</p>
                 </div>
               </div>
             </div>
 
-            <div className="bg-zinc-100 p-4 border-t-2 border-dashed border-zinc-300">
+            <div className="bg-zinc-100 p-3 sm:p-4 border-t-2 border-dashed border-zinc-300">
               <button
                 onClick={resetForm}
-                className="w-full bg-black text-white font-bold py-3 rounded-xl text-sm hover:bg-zinc-800 transition"
+                className="w-full bg-black text-white font-bold py-3 rounded-xl text-xs sm:text-sm hover:bg-zinc-800 transition"
               >
                 Nouvelle réservation
               </button>
@@ -706,15 +658,20 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
+  // ── Paiement
   if (step === 'pay' && settings && form.eventService) {
     const price = form.eventService.price;
 
     return (
       <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
         <div className="max-w-sm w-full">
-          <button onClick={() => setStep('form')} className="text-zinc-400 mb-6 text-sm">← Retour</button>
+          <button onClick={() => setStep('form')} className="text-zinc-400 mb-6 text-sm">
+            ← Retour
+          </button>
           <h2 className="text-2xl font-bold mb-2">Paiement</h2>
-          <p className="text-zinc-400 text-sm mb-6">Réservation {form.eventService.name} — {formatCFA(price)}</p>
+          <p className="text-zinc-400 text-sm mb-6 break-words">
+            Réservation {form.eventService.name} — {formatCFA(price)}
+          </p>
 
           <div className="grid grid-cols-2 gap-3 mb-6">
             {[
@@ -724,7 +681,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               <button
                 key={m.id}
                 onClick={() => setForm(prev => ({ ...prev, paymentMethod: m.id as any }))}
-                className={`border-2 rounded-xl p-4 font-bold transition ${
+                className={`border-2 rounded-xl p-4 font-bold transition text-sm ${
                   form.paymentMethod === m.id ? 'border-white text-white' : 'border-zinc-700 text-zinc-400'
                 }`}
               >
@@ -734,12 +691,16 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
 
           {submitError && (
-            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mb-4 text-red-300 text-sm">{submitError}</div>
+            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mb-4 text-red-300 text-sm break-words">
+              {submitError}
+            </div>
           )}
 
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 mb-6 flex justify-between items-center">
-            <span className="text-zinc-400 text-sm">Total à payer</span>
-            <span className="text-white text-xl font-bold">{formatCFA(price)}</span>
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 mb-6 flex justify-between items-center gap-3">
+            <span className="text-zinc-400 text-sm shrink-0">Total à payer</span>
+            <span className="text-white text-lg sm:text-xl font-bold text-right break-words">
+              {formatCFA(price)}
+            </span>
           </div>
 
           <button
@@ -748,7 +709,9 @@ export function BookingPage({ slug }: BookingPageProps) {
             className="w-full bg-white text-black py-4 rounded-xl font-bold hover:bg-zinc-200 transition disabled:opacity-50"
           >
             {submitting ? (
-              <span className="flex items-center justify-center gap-2"><Loader className="w-4 h-4 animate-spin" /> Traitement...</span>
+              <span className="flex items-center justify-center gap-2">
+                <Loader className="w-4 h-4 animate-spin" /> Traitement...
+              </span>
             ) : `Payer ${formatCFA(price)}`}
           </button>
         </div>
@@ -759,39 +722,52 @@ export function BookingPage({ slug }: BookingPageProps) {
   // ── Formulaire
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="bg-black border-b border-zinc-800 px-4 py-4 sticky top-0 z-10">
-        <div className="flex items-center gap-3">
+      <div className="bg-black border-b border-zinc-800 px-3 sm:px-4 py-3 sm:py-4 sticky top-0 z-10">
+        <div className="flex items-center gap-3 max-w-lg mx-auto">
           {settings.logo_url ? (
-            <img src={settings.logo_url} alt="Logo" className="w-12 h-12 rounded-2xl object-cover border border-zinc-700" />
+            <img
+              src={settings.logo_url}
+              alt="Logo"
+              className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl object-cover border border-zinc-700 shrink-0"
+            />
           ) : (
-            <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shrink-0">
-              <Scissors className="w-6 h-6 text-black" />
+            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white rounded-2xl flex items-center justify-center shrink-0">
+              <Scissors className="w-5 h-5 sm:w-6 sm:h-6 text-black" />
             </div>
           )}
           <div className="flex-1 min-w-0">
-            <h1 className="text-white font-black text-lg tracking-tight truncate">{settings.salon_name}</h1>
-            <p className="text-zinc-400 text-xs truncate">{settings.welcome_message || 'Réservez votre coupe'}</p>
+            <h1 className="text-white font-black text-base sm:text-lg tracking-tight truncate">
+              {settings.salon_name}
+            </h1>
+            <p className="text-zinc-400 text-[11px] sm:text-xs truncate">
+              {settings.welcome_message || 'Réservez votre coupe'}
+            </p>
           </div>
         </div>
       </div>
 
-      <div className="px-4 py-6 space-y-5 max-w-lg mx-auto">
+      <div className="px-3 sm:px-4 py-5 sm:py-6 space-y-4 sm:space-y-5 max-w-lg mx-auto overflow-x-hidden">
         {submitError && (
-          <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 flex items-start gap-3">
+          <div className="bg-red-500/20 border border-red-500 rounded-xl p-3 sm:p-4 flex items-start gap-3">
             <XCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-            <p className="text-red-300 text-sm font-medium">{submitError}</p>
+            <p className="text-red-300 text-sm font-medium break-words">{submitError}</p>
           </div>
         )}
 
         {!settings.event_services?.length ? (
           <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-6 text-center">
             <AlertCircle className="w-12 h-12 text-yellow-400 mx-auto mb-3" />
-            <p className="text-yellow-400 font-semibold text-sm">Aucun service disponible pour le moment</p>
+            <p className="text-yellow-400 font-semibold text-sm">
+              Aucun service disponible pour le moment
+            </p>
           </div>
         ) : (
           <div className="space-y-4">
+            {/* ── SERVICES : cercle avec image à l'intérieur, texte en dessous ── */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-3">Service <span className="text-red-400">*</span></label>
+              <label className="block text-sm font-semibold text-zinc-300 mb-3">
+                Service <span className="text-red-400">*</span>
+              </label>
               <div className="flex flex-wrap gap-3 justify-center">
                 {settings.event_services.map((s) => {
                   const isSelected = form.eventService?.id === s.id;
@@ -800,29 +776,65 @@ export function BookingPage({ slug }: BookingPageProps) {
                       key={s.id}
                       type="button"
                       onClick={() => {
-                        setForm(prev => ({ ...prev, eventService: prev.eventService?.id === s.id ? null : s, time: '' }));
+                        setForm(prev => ({
+                          ...prev,
+                          eventService: prev.eventService?.id === s.id ? null : s,
+                          time: '',
+                        }));
                         setErrors(prev => ({ ...prev, eventService: undefined }));
                       }}
-                      className={`flex flex-col items-center gap-1 p-3 rounded-full w-24 h-24 border-2 transition relative ${
-                        isSelected ? 'border-green-500 bg-green-500/20' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-                      }`}
+                      className="flex flex-col items-center gap-2 shrink-0"
+                      style={{ width: 88 }}
                     >
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isSelected ? 'bg-green-500/30' : 'bg-zinc-800'}`}>
-                        <Sparkles className={`w-5 h-5 ${isSelected ? 'text-green-400' : 'text-zinc-400'}`} />
+                      {/* Cercle : l'icône remplit tout le cercle */}
+                      <div
+                        className={`relative w-20 h-20 rounded-full flex items-center justify-center overflow-hidden border-2 transition ${
+                          isSelected
+                            ? 'border-green-500 bg-green-500/20'
+                            : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                        }`}
+                      >
+                        <Sparkles
+                          className={`w-full h-full p-5 ${
+                            isSelected ? 'text-green-400' : 'text-zinc-400'
+                          }`}
+                        />
+                        {isSelected && (
+                          <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center">
+                            <Check className="w-3 h-3 text-black" strokeWidth={3} />
+                          </div>
+                        )}
                       </div>
-                      <p className={`text-[10px] font-semibold text-center leading-tight ${isSelected ? 'text-green-400' : 'text-white'}`}>{s.name}</p>
-                      <p className={`text-[9px] font-bold ${isSelected ? 'text-green-400' : 'text-zinc-400'}`}>{s.price.toLocaleString()} CFA</p>
-                      {isSelected && <Check className="w-3 h-3 text-green-400 absolute -top-1 -right-1" />}
+                      {/* Texte EN DESSOUS du cercle */}
+                      <p
+                        className={`text-[11px] font-semibold text-center leading-tight w-full ${
+                          isSelected ? 'text-green-400' : 'text-white'
+                        }`}
+                      >
+                        {s.name}
+                      </p>
+                      <p
+                        className={`text-[10px] font-bold w-full text-center ${
+                          isSelected ? 'text-green-400' : 'text-zinc-400'
+                        }`}
+                      >
+                        {s.price.toLocaleString()} CFA
+                      </p>
                     </button>
                   );
                 })}
               </div>
-              {errors.eventService && <p className="text-red-400 text-xs mt-2 text-center">{errors.eventService}</p>}
+              {errors.eventService && (
+                <p className="text-red-400 text-xs mt-2 text-center">{errors.eventService}</p>
+              )}
             </div>
 
+            {/* ── COIFFEURS : cercle avec image à l'intérieur, texte en dessous ── */}
             {barbers.length > 0 && (
               <div>
-                <label className="block text-sm font-semibold text-zinc-300 mb-3">Coiffeur <span className="text-red-400">*</span></label>
+                <label className="block text-sm font-semibold text-zinc-300 mb-3">
+                  Coiffeur <span className="text-red-400">*</span>
+                </label>
                 <div className="flex flex-wrap gap-3 justify-center">
                   {barbers.map((b) => {
                     const isSelected = form.barberId === b.id;
@@ -835,63 +847,133 @@ export function BookingPage({ slug }: BookingPageProps) {
                           else setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name }));
                           setErrors(prev => ({ ...prev, barberId: undefined }));
                         }}
-                        className={`flex flex-col items-center gap-1 p-2 rounded-full w-20 h-20 border-2 transition relative ${
-                          isSelected ? 'border-green-500 bg-green-500/20' : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-                        }`}
+                        className="flex flex-col items-center gap-2 shrink-0"
+                        style={{ width: 88 }}
                       >
-                        <div className="w-14 h-14 rounded-full overflow-hidden bg-zinc-700 border-2 border-zinc-600">
+                        {/* Cercle : l'image remplit tout le cercle */}
+                        <div
+                          className={`relative w-20 h-20 rounded-full overflow-hidden border-2 transition ${
+                            isSelected
+                              ? 'border-green-500 bg-green-500/20'
+                              : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                          }`}
+                        >
                           {b.photo?.trim() ? (
-                            <img src={b.photo} alt={b.name} className="w-full h-full object-cover" />
+                            <img
+                              src={b.photo}
+                              alt={b.name}
+                              className="w-full h-full object-cover"
+                            />
                           ) : (
-                            <div className="w-full h-full flex items-center justify-center text-2xl">💈</div>
+                            <div className="w-full h-full flex items-center justify-center text-3xl">
+                              💈
+                            </div>
+                          )}
+                          {isSelected && (
+                            <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center">
+                              <Check className="w-3 h-3 text-black" strokeWidth={3} />
+                            </div>
                           )}
                         </div>
-                        <p className={`text-[10px] font-semibold text-center ${isSelected ? 'text-green-400' : 'text-white'}`}>{b.name}</p>
-                        {isSelected && <Check className="w-3 h-3 text-green-400 absolute -top-1 -right-1" />}
+                        {/* Texte EN DESSOUS du cercle */}
+                        <p
+                          className={`text-[11px] font-semibold text-center leading-tight w-full truncate ${
+                            isSelected ? 'text-green-400' : 'text-white'
+                          }`}
+                        >
+                          {b.name}
+                        </p>
                       </button>
                     );
                   })}
                 </div>
-                {errors.barberId && <p className="text-red-400 text-xs mt-2 text-center">{errors.barberId}</p>}
+                {errors.barberId && (
+                  <p className="text-red-400 text-xs mt-2 text-center">{errors.barberId}</p>
+                )}
               </div>
             )}
 
+            {/* Nom */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">Nom complet <span className="text-red-400">*</span></label>
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">
+                Nom complet <span className="text-red-400">*</span>
+              </label>
               <input
-                type="text" placeholder="Votre nom" value={form.client_name}
-                onChange={e => { setForm(prev => ({ ...prev, client_name: e.target.value })); setErrors(prev => ({ ...prev, client_name: undefined })); }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${errors.client_name ? 'border-red-500' : 'border-zinc-700 focus:border-white'}`}
+                type="text"
+                placeholder="Votre nom"
+                value={form.client_name}
+                onChange={e => {
+                  setForm(prev => ({ ...prev, client_name: e.target.value }));
+                  setErrors(prev => ({ ...prev, client_name: undefined }));
+                }}
+                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${
+                  errors.client_name ? 'border-red-500' : 'border-zinc-700 focus:border-white'
+                }`}
               />
-              {errors.client_name && <p className="text-red-400 text-xs mt-1">{errors.client_name}</p>}
+              {errors.client_name && (
+                <p className="text-red-400 text-xs mt-1">{errors.client_name}</p>
+              )}
             </div>
 
+            {/* Téléphone */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">Téléphone <span className="text-red-400">*</span></label>
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">
+                Téléphone <span className="text-red-400">*</span>
+              </label>
               <input
-                type="tel" placeholder="77 000 00 00" value={form.client_phone}
-                onChange={e => { setForm(prev => ({ ...prev, client_phone: e.target.value })); setErrors(prev => ({ ...prev, client_phone: undefined })); }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${errors.client_phone ? 'border-red-500' : 'border-zinc-700 focus:border-white'}`}
+                type="tel"
+                inputMode="numeric"
+                placeholder="77 000 00 00"
+                value={form.client_phone}
+                onChange={e => {
+                  setForm(prev => ({ ...prev, client_phone: e.target.value }));
+                  setErrors(prev => ({ ...prev, client_phone: undefined }));
+                }}
+                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${
+                  errors.client_phone ? 'border-red-500' : 'border-zinc-700 focus:border-white'
+                }`}
               />
-              {errors.client_phone && <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>}
+              {errors.client_phone && (
+                <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>
+              )}
             </div>
 
-            <div className="w-full">
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">Date <span className="text-red-400">*</span></label>
+            {/* ── DATE : ligne corrigée pour ne plus dépasser ── */}
+            <div className="w-full min-w-0">
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">
+                Date <span className="text-red-400">*</span>
+              </label>
               <input
-                type="date" min={todayISO} max={maxDateISO} value={form.date}
-                onChange={e => { setForm(prev => ({ ...prev, date: e.target.value, time: '' })); setErrors(prev => ({ ...prev, date: undefined })); }}
-                className="w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base [color-scheme:dark] border-zinc-700 focus:border-white"
+                type="date"
+                min={todayISO}
+                max={maxDateISO}
+                value={form.date}
+                onChange={e => {
+                  setForm(prev => ({ ...prev, date: e.target.value, time: '' }));
+                  setErrors(prev => ({ ...prev, date: undefined }));
+                }}
+                className="w-full max-w-full min-w-0 px-3 sm:px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-sm sm:text-base [color-scheme:dark] border-zinc-700 focus:border-white"
               />
-              {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
+              {errors.date && (
+                <p className="text-red-400 text-xs mt-1">{errors.date}</p>
+              )}
             </div>
 
+            {/* Heures */}
             {form.date && (
-              <div className="w-full">
+              <div className="w-full min-w-0">
                 <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                  <label className="text-sm font-semibold text-zinc-300">Heure <span className="text-red-400">*</span></label>
-                  <button type="button" onClick={() => refreshSlots(false)} disabled={loadingSlots} className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition px-2 py-1 rounded-lg bg-zinc-800/50">
-                    <RefreshCw className={`w-3 h-3 ${loadingSlots ? 'animate-spin' : ''}`} /> Actualiser
+                  <label className="text-sm font-semibold text-zinc-300">
+                    Heure <span className="text-red-400">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => refreshSlots(false)}
+                    disabled={loadingSlots}
+                    className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition px-2 py-1 rounded-lg bg-zinc-800/50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loadingSlots ? 'animate-spin' : ''}`} />
+                    Actualiser
                   </button>
                 </div>
 
@@ -901,58 +983,110 @@ export function BookingPage({ slug }: BookingPageProps) {
                   </div>
                 ) : allSlots.length === 0 ? (
                   <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
-                    <p className="text-yellow-400 text-sm">Aucun créneau disponible ce jour</p>
+                    <p className="text-yellow-400 text-sm">
+                      Aucun créneau disponible ce jour
+                    </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                     {allSlots.map((slot) => {
                       const isBooked = bookedSlots.includes(slot);
                       const isSelected = form.time === slot;
                       return (
                         <button
-                          key={slot} type="button"
-                          onClick={() => { if (!isBooked) { setForm(prev => ({ ...prev, time: slot })); setErrors(prev => ({ ...prev, time: undefined })); } }}
+                          key={slot}
+                          type="button"
+                          onClick={() => {
+                            if (!isBooked) {
+                              setForm(prev => ({ ...prev, time: slot }));
+                              setErrors(prev => ({ ...prev, time: undefined }));
+                            }
+                          }}
                           disabled={isBooked}
-                          className={`w-full py-3 px-2 rounded-xl text-sm font-medium transition-all duration-150 ${
-                            isSelected ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
-                            : isBooked ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
-                            : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
+                          className={`w-full py-2.5 px-1 rounded-xl text-xs sm:text-sm font-medium transition-all duration-150 ${
+                            isSelected
+                              ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
+                              : isBooked
+                              ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
+                              : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
                           }`}
                         >
                           <span className="block">{slot}</span>
-                          {isBooked && <span className="block text-[10px] mt-0.5">indisponible</span>}
+                          {isBooked && (
+                            <span className="block text-[9px] mt-0.5">indispo.</span>
+                          )}
                         </button>
                       );
                     })}
                   </div>
                 )}
-                {errors.time && <p className="text-red-400 text-xs mt-2">{errors.time}</p>}
+                {errors.time && (
+                  <p className="text-red-400 text-xs mt-2">{errors.time}</p>
+                )}
               </div>
             )}
 
+            {/* Note */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">Note (optionnelle)</label>
-              <textarea rows={3} placeholder="Précisions..." value={form.note}
+              <label className="block text-sm font-semibold text-zinc-300 mb-2">
+                Note (optionnelle)
+              </label>
+              <textarea
+                rows={3}
+                placeholder="Précisions..."
+                value={form.note}
                 onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))}
-                className="w-full px-4 py-3 bg-zinc-900 border border-zinc-700 focus:border-white rounded-xl text-white focus:outline-none transition resize-none text-base" />
+                className="w-full px-4 py-3 bg-zinc-900 border border-zinc-700 focus:border-white rounded-xl text-white focus:outline-none transition resize-none text-base"
+              />
             </div>
 
+            {/* Résumé */}
             {form.eventService && form.date && form.time && (barbers.length === 0 || form.barberName) && (
               <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 rounded-2xl p-4 mt-2">
-                <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">Résumé</p>
+                <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">
+                  Résumé
+                </p>
                 <div className="space-y-2 text-sm">
-                  <div className="flex justify-between"><span className="text-zinc-400">Service</span><span className="text-white font-semibold">{form.eventService.name}</span></div>
-                  {form.barberName && <div className="flex justify-between"><span className="text-zinc-400">Coiffeur</span><span className="text-white">{form.barberName}</span></div>}
-                  <div className="flex justify-between"><span className="text-zinc-400">Date</span><span className="text-white">{new Date(form.date).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}</span></div>
-                  <div className="flex justify-between"><span className="text-zinc-400">Heure</span><span className="text-green-400 font-bold">{form.time}</span></div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-zinc-400 shrink-0">Service</span>
+                    <span className="text-white font-semibold text-right break-words">
+                      {form.eventService.name}
+                    </span>
+                  </div>
+                  {form.barberName && (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-zinc-400 shrink-0">Coiffeur</span>
+                      <span className="text-white text-right break-words">{form.barberName}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between gap-2">
+                    <span className="text-zinc-400 shrink-0">Date</span>
+                    <span className="text-white text-right">
+                      {new Date(form.date).toLocaleDateString('fr-FR', {
+                        day: 'numeric',
+                        month: 'long',
+                      })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-zinc-400 shrink-0">Heure</span>
+                    <span className="text-green-400 font-bold">{form.time}</span>
+                  </div>
                   <div className="border-t border-zinc-700 my-2"></div>
-                  <div className="flex justify-between text-base"><span className="text-zinc-300 font-semibold">Total à payer</span><span className="text-white font-black text-lg">{form.eventService.price.toLocaleString()} CFA</span></div>
+                  <div className="flex justify-between gap-2 text-base">
+                    <span className="text-zinc-300 font-semibold shrink-0">Total à payer</span>
+                    <span className="text-white font-black text-base sm:text-lg text-right">
+                      {form.eventService.price.toLocaleString()} CFA
+                    </span>
+                  </div>
                 </div>
               </div>
             )}
 
             <button
-              type="button" onClick={goToPayment} disabled={!!isDisabled}
+              type="button"
+              onClick={goToPayment}
+              disabled={!!isDisabled}
               className="w-full bg-white text-black font-bold py-4 rounded-2xl text-base hover:bg-zinc-200 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-4"
             >
               Continuer vers le paiement <Check className="w-5 h-5" />

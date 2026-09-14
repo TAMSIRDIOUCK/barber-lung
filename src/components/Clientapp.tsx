@@ -10,7 +10,6 @@ import PublicHomePage from './PublicHomePage';
 
 type AppState = 'loading' | 'publicHome' | 'landing' | 'auth' | 'subscribe' | 'app';
 
-// ✅ EXPORTER le type AuthUser pour qu'il soit accessible depuis App.tsx
 export interface AuthUser {
   id: string;
   email: string;
@@ -65,93 +64,74 @@ export function ClientApp() {
   const [user, setUser] = useState<User | null>(null);
   const [activeSub, setActiveSub] = useState<AuthUser['subscription'] | null>(null);
   const initLock = useRef(false);
-  const [AppComponent, setAppComponent] = useState<React.ComponentType<{ 
-    authUser: AuthUser; 
-    onLogout: () => void; 
-    isAuthenticated: boolean; 
-    onNavigateToAuth: (page: 'login' | 'register') => void 
+  const [AppComponent, setAppComponent] = useState<React.ComponentType<{
+    authUser: AuthUser;
+    onLogout: () => void;
+    isAuthenticated: boolean;
+    onNavigateToAuth: (page: 'login' | 'register') => void;
+    onNavigateToPublicHome: () => void;
   }> | null>(null);
   const [authScreen, setAuthScreen] = useState<'login' | 'register' | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  // ✅ Vérifier le retour de paiement
+  // ✅ Callback pour revenir à l'accueil public depuis App.tsx
+  const handleNavigateToPublicHome = useCallback(() => {
+    console.log('🏠 Retour à l\'accueil public');
+    setAppState('publicHome');
+  }, []);
+
   useEffect(() => {
     const handlePaymentReturn = async () => {
       const params = new URLSearchParams(window.location.search);
       const isSuccess = params.get('payment_success') === 'true';
       const isCancelled = params.get('payment_cancelled') === 'true';
-      
-      console.log('🔍 Vérification retour paiement:', {
-        isSuccess,
-        isCancelled,
-        url: window.location.href,
-        search: window.location.search
-      });
-      
+
       const paymentToken = sessionStorage.getItem('payment_token');
       const subscriptionId = sessionStorage.getItem('payment_subscription_id');
       const paymentStatus = sessionStorage.getItem('payment_status');
-      
-      console.log('📦 SessionStorage:', {
-        hasToken: !!paymentToken,
-        subscriptionId,
-        paymentStatus
-      });
-      
+
       if (paymentToken) {
-        console.log('🔑 Token de paiement trouvé, restauration...');
-        
         try {
           const { data, error } = await supabase.auth.setSession({
             access_token: paymentToken,
             refresh_token: ''
           });
-          
+
           if (error) {
-            console.warn('⚠️ Erreur restauration:', error);
             sessionStorage.removeItem('payment_token');
             sessionStorage.removeItem('payment_subscription_id');
             sessionStorage.removeItem('payment_status');
           } else if (data.session) {
-            console.log('✅ Session restaurée avec succès');
-            console.log('👤 Utilisateur:', data.session.user?.email);
-            
             sessionStorage.removeItem('payment_token');
             sessionStorage.removeItem('payment_subscription_id');
-            
+
             if (subscriptionId) {
               await checkSubscriptionStatus(subscriptionId);
             } else if (data.session.user) {
               await initUser(data.session.user);
             }
-            
+
             window.history.replaceState({}, document.title, '/');
             return;
           }
-        } catch (err) {
-          console.warn('⚠️ Erreur restauration:', err);
+        } catch {
           sessionStorage.removeItem('payment_token');
           sessionStorage.removeItem('payment_subscription_id');
           sessionStorage.removeItem('payment_status');
         }
       }
-      
+
       if (paymentStatus === 'success' || paymentStatus === 'cancelled') {
-        console.log('🔄 Statut de paiement trouvé:', paymentStatus);
-        
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
-          console.log('👤 Utilisateur déjà connecté:', session.user.email);
           await initUser(session.user);
         }
-        
         sessionStorage.removeItem('payment_status');
         window.history.replaceState({}, document.title, '/');
         return;
       }
-      
+
       if (isSuccess || isCancelled) {
-        console.log('🔄 Retour de paiement détecté, rechargement...');
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
           await initUser(session.user);
@@ -161,77 +141,50 @@ export function ClientApp() {
     };
 
     handlePaymentReturn();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ Vérifier le statut de l'abonnement après paiement
   const checkSubscriptionStatus = async (subscriptionId: string) => {
     try {
       let attempts = 0;
       const maxAttempts = 15;
-      
-      console.log(`🔄 Vérification abonnement ${subscriptionId}...`);
-      
+
       const checkInterval = setInterval(async () => {
         attempts++;
-        console.log(`🔄 Tentative ${attempts}/${maxAttempts}`);
-        
+
         try {
-          const { data: subscription, error } = await supabase
+          const { data: subscription } = await supabase
             .from('subscriptions')
             .select('status')
             .eq('id', parseInt(subscriptionId))
             .maybeSingle();
 
-          if (error) {
-            console.error('Erreur requête:', error);
-          }
-
-          console.log('📊 Statut abonnement:', subscription?.status);
-
           if (subscription?.status === 'active') {
             clearInterval(checkInterval);
-            console.log('✅ Abonnement actif, rechargement...');
             const { data: { session } } = await supabase.auth.getSession();
-            if (session?.user) {
-              await initUser(session.user);
-            }
+            if (session?.user) await initUser(session.user);
           } else if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
-            console.log('⏰ Délai dépassé, rechargement forcé...');
             const { data: { session } } = await supabase.auth.getSession();
-            if (session?.user) {
-              await initUser(session.user);
-            }
+            if (session?.user) await initUser(session.user);
           }
-        } catch (err) {
-          console.error('Erreur vérification:', err);
+        } catch {
           if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
             const { data: { session } } = await supabase.auth.getSession();
-            if (session?.user) {
-              await initUser(session.user);
-            }
+            if (session?.user) await initUser(session.user);
           }
         }
       }, 2000);
 
       return () => clearInterval(checkInterval);
-    } catch (err) {
-      console.error('Erreur:', err);
-    }
+    } catch {}
   };
 
-  // ────────────────────────────────────────────────────────────────
-  // ✅ initUser ne force plus la page d'abonnement quand il n'y a pas
-  // d'abonnement actif. L'utilisateur entre dans l'app ('app'), et
-  // c'est App.tsx qui gère le paywall page par page (Services = gratuit,
-  // le reste = payant). Se connecter suffit pour accéder à Services.
-  // ────────────────────────────────────────────────────────────────
   const initUser = useCallback(async (u: User) => {
     if (initLock.current) return;
     initLock.current = true;
 
-    console.log('👤 Initialisation utilisateur:', u.id, u.email);
     setUser(u);
     setIsAuthenticated(true);
 
@@ -248,7 +201,6 @@ export function ClientApp() {
       );
 
       if (error) {
-        console.error('Erreur chargement abonnement:', error.message);
         setActiveSub(null);
         setAppState('app');
         return;
@@ -265,14 +217,12 @@ export function ClientApp() {
       });
 
       if (validSubs.length === 0) {
-        console.log('📭 Aucun abonnement actif');
         setActiveSub(null);
         setAppState('app');
         return;
       }
 
       const s = validSubs[0];
-      console.log('📋 Abonnement trouvé:', s.id, s.status);
 
       let planName = 'Mensuel';
       let planPrice: number = 5000;
@@ -296,9 +246,7 @@ export function ClientApp() {
                 ? p.price
                 : parseFloat(p.price) || 5000;
           }
-        } catch {
-          console.warn('Plan fetch failed');
-        }
+        } catch {}
       }
 
       setActiveSub({
@@ -312,9 +260,7 @@ export function ClientApp() {
       });
 
       setAppState('app');
-      console.log('✅ App prête');
-    } catch (err) {
-      console.error('Erreur initUser:', err);
+    } catch {
       setActiveSub(null);
       setAppState('app');
     } finally {
@@ -328,8 +274,6 @@ export function ClientApp() {
     const {
       data: { subscription: authSub },
     } = supabase.auth.onAuthStateChange(async (event, session: Session | null) => {
-      console.log('🔐 Auth event:', event);
-      
       if (event === 'INITIAL_SESSION') {
         handled = true;
         if (session?.user) {
@@ -356,12 +300,6 @@ export function ClientApp() {
         setAppState('publicHome');
         setAuthScreen(null);
       }
-
-      if (event === 'TOKEN_REFRESHED') {
-        if (session?.user) {
-          console.log('🔄 Token rafraîchi');
-        }
-      }
     });
 
     return () => authSub.unsubscribe();
@@ -377,7 +315,6 @@ export function ClientApp() {
   const handleSubscribed = useCallback(async () => {
     if (!user) return;
     initLock.current = false;
-    console.log('🔄 Abonnement souscrit, rechargement...');
     await initUser(user);
   }, [user, initUser]);
 
@@ -390,59 +327,42 @@ export function ClientApp() {
     setAuthScreen(null);
   }, [initUser]);
 
-  // Navigation depuis la page publique vers l'authentification
   const handleNavigateToAuth = useCallback((page: 'login' | 'register') => {
     setAuthScreen(page);
     setAppState('landing');
   }, []);
 
-  // Navigation vers la réservation d'un salon
   const handleNavigateToBooking = useCallback((slug: string) => {
-    console.log(`📅 Navigation vers la réservation du salon: ${slug}`);
     window.location.href = `/booking/${slug}`;
   }, []);
 
-  // ────────────────────────────────────────────────────────────────
-  // ✅ CORRECTION : "history" est accessible à TOUS (connectés ou invités).
-  // On ne redirige vers login que pour les pages de l'app (home, revenue,
-  // expenses, bookings).
-  // ────────────────────────────────────────────────────────────────
+  // ✅ Navigation : on accepte 'history' mais on le laisse gérer à PublicHomePage
   const handleNavigateToPage = useCallback((page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings' | 'history') => {
-    console.log(`📱 Navigation vers: ${page}`);
-    
     if (page === 'publicHome') {
       setAppState('publicHome');
       return;
     }
 
-    // ✅ HISTORY : accessible sans connexion, on laisse PublicHomePage gérer
     if (page === 'history') {
-      // PublicHomePage gère déjà l'affichage de l'historique en interne via onNavigateToPage
-      // On retourne simplement sans changer d'état global (le parent ne doit pas interférer)
       return;
     }
-    
-    // Il faut être connecté pour toute autre page de l'application
+
     if (!isAuthenticated || !user) {
       handleNavigateToAuth('login');
       return;
     }
-    
-    // Si on est sur la page d'accueil publique et qu'on veut aller vers une page de l'app
+
     if (appState === 'publicHome') {
       const isPaidPage = page === 'revenue' || page === 'expenses' || page === 'bookings';
 
       if (isPaidPage && !activeSub) {
-        // Uniquement les pages payantes nécessitent un abonnement actif
         setAppState('subscribe');
       } else {
-        // "home" (Services) est accessible dès qu'on est connecté
         setAppState('app');
       }
     }
   }, [isAuthenticated, user, activeSub, appState, handleNavigateToAuth]);
 
-  // Importer App dynamiquement
   useEffect(() => {
     if (appState === 'app') {
       import('../App').then(module => {
@@ -451,9 +371,6 @@ export function ClientApp() {
     }
   }, [appState]);
 
-  // ── UI ──
-
-  // Chargement
   if (appState === 'loading') {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -467,7 +384,6 @@ export function ClientApp() {
     );
   }
 
-  // 👉 PAGE D'ACCUEIL PUBLIQUE
   if (appState === 'publicHome') {
     return (
       <PublicHomePage
@@ -481,10 +397,9 @@ export function ClientApp() {
     );
   }
 
-  // 👉 LANDING PAGE
   if (appState === 'landing') {
     return (
-      <LandingPage 
+      <LandingPage
         onGetStarted={() => {
           setAuthScreen('login');
           setAppState('auth');
@@ -498,7 +413,6 @@ export function ClientApp() {
     );
   }
 
-  // Page d'authentification
   if (appState === 'auth') {
     return (
       <AuthPage
@@ -511,7 +425,6 @@ export function ClientApp() {
     );
   }
 
-  // Page d'abonnement
   if (appState === 'subscribe' && user) {
     return (
       <SubscribePage
@@ -526,13 +439,6 @@ export function ClientApp() {
     );
   }
 
-  // ────────────────────────────────────────────────────────────────
-  // ✅ On n'exige plus `activeSub` pour afficher l'app.
-  // Un utilisateur connecté sans abonnement actif reçoit un
-  // `authUser.subscription` "inactive" par défaut ; c'est App.tsx qui
-  // verrouille les pages payantes (revenue/expenses/bookings) et
-  // laisse Services librement accessible.
-  // ────────────────────────────────────────────────────────────────
   if (appState === 'app' && user && AppComponent) {
     const authUser: AuthUser = {
       id: user.id,
@@ -547,16 +453,16 @@ export function ClientApp() {
       },
     };
     return (
-      <AppComponent 
-        authUser={authUser} 
+      <AppComponent
+        authUser={authUser}
         onLogout={handleLogout}
         isAuthenticated={isAuthenticated}
         onNavigateToAuth={handleNavigateToAuth}
+        onNavigateToPublicHome={handleNavigateToPublicHome}
       />
     );
   }
 
-  // Fallback
   return (
     <div className="min-h-screen bg-black flex items-center justify-center">
       <div className="text-center space-y-4">
