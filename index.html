@@ -1,13 +1,110 @@
 <!doctype html>
-<html lang="en">
+<html lang="fr" translate="no" class="notranslate">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+
+    <!-- 🖼️ Favicon & icônes -->
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#10b981" />
+    <meta name="description" content="Logiciel de gestion pour salons de coiffure" />
+
     <title>LE COUPE POS Software</title>
+
+    <!-- 🛡️ Bloque Google Translate -->
+    <meta name="google" content="notranslate" />
+    <meta http-equiv="Content-Language" content="fr" />
+    <meta name="robots" content="notranslate" />
   </head>
-  <body>
+  <body class="notranslate" translate="no">
     <div id="root"></div>
+
+    <!-- 🛡️ Script défensif anti-Google-Translate (garde celui d'avant) -->
+    <script>
+      (function () {
+        function cleanTranslatedClass() {
+          if (!document.documentElement) return;
+          document.documentElement.classList.remove('translated-ltr', 'translated-rtl');
+          document.documentElement.classList.add('notranslate');
+        }
+        cleanTranslatedClass();
+
+        function removeGoogleNodes(root) {
+          if (!root || !root.querySelectorAll) return;
+          try {
+            root
+              .querySelectorAll(
+                '#goog-gt-vt, #goog-gt-tt, .goog-te-banner-frame, .goog-te-balloon-frame, .skiptranslate'
+              )
+              .forEach(function (el) {
+                try { el.remove(); } catch (e) {}
+              });
+            root.querySelectorAll('font.google-src-text').forEach(function (font) {
+              var parent = font.parentNode;
+              if (!parent) return;
+              try {
+                while (font.firstChild) parent.insertBefore(font.firstChild, font);
+                parent.removeChild(font);
+              } catch (e) {}
+            });
+          } catch (e) {}
+        }
+
+        var observer = new MutationObserver(function (mutations) {
+          cleanTranslatedClass();
+          mutations.forEach(function (m) {
+            m.addedNodes.forEach(function (node) {
+              if (node && node.nodeType === 1) {
+                var id = node.id || '';
+                var cls = (node.className || '').toString();
+                if (
+                  id === 'goog-gt-vt' ||
+                  id === 'goog-gt-tt' ||
+                  cls.indexOf('goog-te-banner-frame') !== -1 ||
+                  cls.indexOf('skiptranslate') !== -1
+                ) {
+                  try { node.remove(); } catch (e) {}
+                } else {
+                  removeGoogleNodes(node);
+                }
+              }
+            });
+          });
+        });
+
+        function startObserver() {
+          if (!document.body) {
+            setTimeout(startObserver, 50);
+            return;
+          }
+          observer.observe(document.body, { childList: true, subtree: true });
+          removeGoogleNodes(document.body);
+        }
+        startObserver();
+
+        var origAppendChild = Node.prototype.appendChild;
+        Node.prototype.appendChild = function (child) {
+          if (child && child.nodeType === 1) {
+            var id = child.id || '';
+            var cls = (child.className || '').toString();
+            if (
+              id.indexOf('goog-gt') === 0 ||
+              (id.indexOf('goog') === 0 && id.indexOf('translate') !== -1) ||
+              cls.indexOf('skiptranslate') !== -1 ||
+              cls.indexOf('goog-te') !== -1
+            ) {
+              return child;
+            }
+          }
+          return origAppendChild.call(this, child);
+        };
+      })();
+    </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
