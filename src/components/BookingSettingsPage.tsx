@@ -29,6 +29,7 @@ interface BookingSettings {
   primary_color: string;
   default_payout_mode: string | null;
   default_payout_account: string | null;
+  salon_phone: string | null;
 }
 
 interface Booking {
@@ -169,6 +170,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [advanceDays, setAdvanceDays] = useState(30);
   const [defaultPayoutMode, setDefaultPayoutMode] = useState(PAYOUT_MODES[0].value);
   const [defaultPayoutAccount, setDefaultPayoutAccount] = useState('');
+  const [salonPhone, setSalonPhone] = useState('');
 
   const bookingUrl = `${window.location.origin}/booking/${settings?.slug || ''}`;
 
@@ -236,6 +238,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         if (s.opening_hours) setOpeningHours(s.opening_hours);
         if (s.default_payout_mode) setDefaultPayoutMode(s.default_payout_mode);
         if (s.default_payout_account) setDefaultPayoutAccount(s.default_payout_account);
+        if (s.salon_phone) setSalonPhone(s.salon_phone);
       } else {
         setSettings(null);
         const defaultSlug = `salon-${userId.slice(0, 8)}`;
@@ -519,6 +522,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         booking_type: 'event',
         default_payout_mode: defaultPayoutMode,
         default_payout_account: defaultPayoutAccount.replace(/\D/g, ''),
+        salon_phone: salonPhone.replace(/\D/g, ''),
         updated_at: new Date().toISOString(),
       };
 
@@ -755,6 +759,23 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 rows={3}
                 placeholder="Bienvenue dans notre salon..."
               />
+            </div>
+
+            <div>
+              <label className="text-zinc-400 text-xs block mb-1">
+                Téléphone du salon (pour recevoir vos SMS de réservation)
+              </label>
+              <input
+                type="tel"
+                inputMode="numeric"
+                value={salonPhone}
+                onChange={(e) => setSalonPhone(e.target.value.replace(/\D/g, ''))}
+                placeholder="771234567"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-3 py-2.5 text-white text-sm focus:outline-none focus:border-white"
+              />
+              <p className="text-zinc-500 text-[11px] mt-1">
+                Sans indicatif pays (221) — c'est le numéro qui recevra un SMS à chaque nouvelle réservation.
+              </p>
             </div>
           </div>
 

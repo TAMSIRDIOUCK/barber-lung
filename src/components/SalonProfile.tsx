@@ -1,13 +1,12 @@
 // src/components/SalonProfile.tsx
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  Edit2, Camera, MapPin, Star, Users, Heart as HeartIcon,
-  UserPlus, Plus, X, Upload, Save, AlertCircle, Check, ChevronLeft,
-  ChevronRight, Scissors, Trash2, Play, Loader2, Eye, Heart, Navigation,
-  Clock
+import {
+  Edit2, Camera, MapPin, Star, Plus, X, Upload, Save, AlertCircle, ChevronLeft,
+  ChevronRight, Scissors, Trash2, Play, Loader2, Eye, Heart, Navigation, Clock
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { SalonLocationEditor } from './SalonLocationEditor';
+import { ErrorBoundary } from './ErrorBoundary';
 
 interface SalonProfileProps {
   userId: string;
@@ -47,65 +46,109 @@ interface Story {
   media_type?: 'image' | 'video';
 }
 
-// ── Fonction pour générer un device_id unique ──
-function getDeviceId(): string {
-  let deviceId = localStorage.getItem('device_id');
-  if (!deviceId) {
-    deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
-    localStorage.setItem('device_id', deviceId);
-  }
-  return deviceId;
+// ── Validation des coordonnées (remplace isValidCoords) ──
+function isValidCoords(lat?: number | null, lng?: number | null): boolean {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return false;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+  if (lat < -90 || lat > 90) return false;
+  if (lng < -180 || lng > 180) return false;
+  // (0,0) = position par défaut non renseignée → considérée invalide
+  if (lat === 0 && lng === 0) return false;
+  return true;
 }
 
-// ── Fonction pour supprimer les stories expirées (plus de 48h) ──
+// ── Chemin de stockage à partir de l'URL publique ──
+function storagePathFromUrl(url: string): string | null {
+  const marker = '/public-media/';
+  const i = url.indexOf(marker);
+  if (i === -1) return null;
+  return decodeURIComponent(url.slice(i + marker.length).split('?')[0]);
+}
+
+// ── Accès profil, hors composant ──
+async function fetchProfileRow(uid: string) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('user_id', uid)
+    .order('created_at', { ascending: true })
+    .limit(1);
+
+  if (error) {
+    console.error('❌ Erreur récupération profil:', error);
+    return null;
+  }
+  return data && data.length > 0 ? data[0] : null;
+}
+
+async function insertProfileRow(uid: string) {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('profiles')
+    .insert({
+      user_id: uid,
+      full_name: 'Mon Salon',
+      salon_name: 'Mon Salon',
+      description: '',
+      address: '',
+      phone: '',
+      latitude: 0,
+      longitude: 0,
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (error.code !== '23505') console.error('❌ Erreur création profil:', error);
+    return null;
+  }
+  return data;
+}
+
+// ── Suppression des stories expirées (plus de 48h) ──
 async function deleteExpiredStories() {
   try {
-    const now = new Date();
-    const expiryDate = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+    const expiryDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
 
     const { data: expiredStories, error: fetchError } = await supabase
       .from('stories')
-      .select('id, image_url, profile_id')
+      .select('id, image_url')
       .lt('created_at', expiryDate.toISOString());
 
     if (fetchError) {
       console.error('❌ Erreur récupération stories expirées:', fetchError);
       return;
     }
-
     if (!expiredStories || expiredStories.length === 0) return;
 
-    for (const story of expiredStories) {
-      try {
-        const path = story.image_url.split('/').pop();
-        if (path) {
-          const userId = story.profile_id;
-          await supabase.storage
-            .from('public-media')
-            .remove([`stories/${userId}/${path}`]);
-        }
-      } catch (storageErr) {
-        console.warn('⚠️ Erreur suppression fichier:', storageErr);
-      }
+    const paths = expiredStories
+      .map((s) => storagePathFromUrl(s.image_url))
+      .filter((p): p is string => !!p);
+
+    if (paths.length > 0) {
+      const { error: storageErr } = await supabase.storage.from('public-media').remove(paths);
+      if (storageErr) console.warn('⚠️ Erreur suppression fichiers:', storageErr);
     }
 
-    const storyIds = expiredStories.map(s => s.id);
-    await supabase.from('stories').delete().in('id', storyIds);
+    await supabase.from('stories').delete().in('id', expiredStories.map((s) => s.id));
   } catch (err) {
     console.error('❌ Erreur suppression stories expirées:', err);
   }
 }
 
-// ── Composant StoryViewer (inchangé) ──
-function StoryViewer({ 
-  stories, 
+// ── Visionneuse de stories ──
+function StoryViewer({
+  stories,
   onClose,
   currentIndex = 0,
   onStoryDeleted,
   userId,
   onRefreshStories
-}: { 
-  stories: Story[]; 
+}: {
+  stories: Story[];
   onClose: () => void;
   currentIndex?: number;
   onStoryDeleted?: (storyId: string) => void;
@@ -119,14 +162,13 @@ function StoryViewer({
   const [isLoading, setIsLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const viewCountedRef = useRef<Set<string>>(new Set());
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const getTimeRemaining = (createdAt: string) => {
     const created = new Date(createdAt);
-    const now = new Date();
-    const diff = 48 * 60 * 60 * 1000 - (now.getTime() - created.getTime());
+    const diff = 48 * 60 * 60 * 1000 - (Date.now() - created.getTime());
     if (diff <= 0) return 'Expirée';
     const hours = Math.floor(diff / (60 * 60 * 1000));
     const minutes = Math.floor((diff % (60 * 60 * 1000)) / (60 * 1000));
@@ -135,32 +177,21 @@ function StoryViewer({
   };
 
   useEffect(() => {
-    const nextIndex = index + 1;
-    if (nextIndex < stories.length) {
-      const nextStory = stories[nextIndex];
-      if (nextStory) {
-        const img = new Image();
-        img.src = nextStory.image_url;
-      }
+    const nextStory = stories[index + 1];
+    if (nextStory) {
+      const img = new Image();
+      img.src = nextStory.image_url;
     }
   }, [index, stories]);
 
-  useEffect(() => {
-    const currentStory = stories[index];
-    if (currentStory && currentStory.id && !viewCountedRef.current.has(currentStory.id)) {
-      viewCountedRef.current.add(currentStory.id);
-      incrementViewCount(currentStory.id);
-    }
-  }, [index, stories]);
-
-  const incrementViewCount = async (storyId: string) => {
+  const incrementViewCount = useCallback(async (storyId: string) => {
     try {
       const { data: current } = await supabase
         .from('stories')
         .select('view_count')
         .eq('id', storyId)
         .single();
-      
+
       if (current) {
         await supabase
           .from('stories')
@@ -170,7 +201,15 @@ function StoryViewer({
     } catch (err) {
       console.error('Erreur incrémentation vues:', err);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const currentStory = stories[index];
+    if (currentStory && currentStory.id && !viewCountedRef.current.has(currentStory.id)) {
+      viewCountedRef.current.add(currentStory.id);
+      incrementViewCount(currentStory.id);
+    }
+  }, [index, stories, incrementViewCount]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -180,7 +219,7 @@ function StoryViewer({
 
   useEffect(() => {
     if (isPaused || !isImageLoaded) return;
-    
+
     timerRef.current = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
@@ -209,7 +248,7 @@ function StoryViewer({
 
   const handleDeleteStory = async () => {
     if (!currentStory || !userId || isDeleting) return;
-    
+
     setIsDeleting(true);
     try {
       const { error: deleteError } = await supabase
@@ -220,11 +259,9 @@ function StoryViewer({
       if (deleteError) throw deleteError;
 
       try {
-        const path = currentStory.image_url.split('/').pop();
+        const path = storagePathFromUrl(currentStory.image_url);
         if (path) {
-          await supabase.storage
-            .from('public-media')
-            .remove([`stories/${userId}/${path}`]);
+          await supabase.storage.from('public-media').remove([path]);
         }
       } catch (storageErr) {
         console.warn('⚠️ Erreur suppression fichier:', storageErr);
@@ -233,7 +270,7 @@ function StoryViewer({
       onClose();
       if (onStoryDeleted) onStoryDeleted(currentStory.id);
       if (onRefreshStories) await onRefreshStories();
-      
+
       setShowDeleteConfirm(false);
     } catch (err) {
       console.error('❌ Erreur suppression story:', err);
@@ -306,15 +343,15 @@ function StoryViewer({
               <span>{new Date(currentStory.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
               <span className="flex items-center gap-0.5">
                 <Clock className="w-3 h-3" />
-                {timeRemaining}
+                <span>{timeRemaining}</span>
               </span>
               <span className="flex items-center gap-0.5">
                 <Eye className="w-3 h-3" />
-                {currentStory.view_count || 0}
+                <span>{currentStory.view_count || 0}</span>
               </span>
               <span className="flex items-center gap-0.5">
                 <Heart className="w-3 h-3" />
-                {currentStory.like_count || 0}
+                <span>{currentStory.like_count || 0}</span>
               </span>
             </div>
           </div>
@@ -339,7 +376,7 @@ function StoryViewer({
             <div className="w-10 h-10 border-3 border-zinc-600 border-t-white rounded-full animate-spin" />
           </div>
         )}
-        
+
         <div className="relative w-full h-full flex items-center justify-center">
           {isVideo ? (
             <video
@@ -393,10 +430,10 @@ function StoryViewer({
                 {isDeleting ? (
                   <>
                     <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
-                    Suppression...
+                    <span>Suppression...</span>
                   </>
                 ) : (
-                  'Supprimer'
+                  <span>Supprimer</span>
                 )}
               </button>
               <button
@@ -413,6 +450,7 @@ function StoryViewer({
   );
 }
 
+// ── Composant principal ──
 export default function SalonProfile({ userId }: SalonProfileProps) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
@@ -442,7 +480,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
   const [editAvatarFile, setEditAvatarFile] = useState<File | null>(null);
   const [editAvatarPreview, setEditAvatarPreview] = useState<string | null>(null);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [profileImageError, setProfileImageError] = useState(false);
+  const [, setProfileImageError] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const [showLocationEditor, setShowLocationEditor] = useState(false);
@@ -450,75 +488,37 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
   const MAX_STORIES = 10;
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
-  const hasLocation = profile?.latitude && profile?.longitude && profile?.latitude !== 0 && profile?.longitude !== 0;
+  const hasLocation = isValidCoords(profile?.latitude, profile?.longitude);
 
-  const getProfile = useCallback(async (userId: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('user_id', userId);
+  // ── Un seul chargement/création de profil par utilisateur ──
+  const profilePromiseRef = useRef<{ userId: string; promise: Promise<any | null> } | null>(null);
 
-      if (error) {
-        console.error('❌ Erreur récupération profil:', error);
-        return null;
-      }
-
-      if (data && data.length > 0) {
-        return data[0];
-      }
-      return null;
-    } catch (err) {
-      console.error('❌ Erreur récupération profil:', err);
-      return null;
+  const ensureProfile = useCallback((uid: string): Promise<any | null> => {
+    if (profilePromiseRef.current?.userId === uid) {
+      return profilePromiseRef.current.promise;
     }
+
+    const promise = (async () => {
+      const existing = await fetchProfileRow(uid);
+      if (existing) return existing;
+
+      const created = await insertProfileRow(uid);
+      if (created) return created;
+
+      return await fetchProfileRow(uid);
+    })().then((p) => {
+      if (!p && profilePromiseRef.current?.userId === uid) profilePromiseRef.current = null;
+      return p;
+    });
+
+    profilePromiseRef.current = { userId: uid, promise };
+    return promise;
   }, []);
 
-  const createProfile = useCallback(async (userId: string) => {
-    try {
-      const defaultProfile = {
-        user_id: userId,
-        full_name: 'Mon Salon',
-        salon_name: 'Mon Salon',
-        description: '',
-        address: '',
-        phone: '',
-        latitude: 0,
-        longitude: 0,
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-
-      const { data, error } = await supabase
-        .from('profiles')
-        .insert(defaultProfile)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('❌ Erreur création profil:', error);
-        return null;
-      }
-      return data;
-    } catch (err) {
-      console.error('❌ Erreur création profil:', err);
-      return null;
-    }
-  }, []);
-
-  const getProfileId = useCallback(async (userId: string): Promise<string | null> => {
-    try {
-      let profile = await getProfile(userId);
-      if (!profile) {
-        profile = await createProfile(userId);
-      }
-      return profile?.id || null;
-    } catch (err) {
-      console.error('❌ Erreur récupération profile_id:', err);
-      return null;
-    }
-  }, [getProfile, createProfile]);
+  const getProfileId = useCallback(async (uid: string): Promise<string | null> => {
+    const p = await ensureProfile(uid);
+    return p?.id || null;
+  }, [ensureProfile]);
 
   const loadProfile = useCallback(async () => {
     if (!userId) {
@@ -527,11 +527,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     }
 
     try {
-      let profileData = await getProfile(userId);
-      
-      if (!profileData) {
-        profileData = await createProfile(userId);
-      }
+      const profileData = await ensureProfile(userId);
 
       if (profileData) {
         setProfile({
@@ -550,28 +546,14 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         setEditName(profileData.full_name || 'Mon Salon');
         setEditDescription(profileData.description || '');
       } else {
-        setProfile({
-          id: userId,
-          user_id: userId,
-          full_name: 'Mon Salon',
-          salon_name: 'Mon Salon',
-          avatar_url: null,
-          cover_image: null,
-          description: '',
-          address: '',
-          latitude: 0,
-          longitude: 0,
-          phone: ''
-        });
-        setEditName('Mon Salon');
-        setEditDescription('');
+        setProfile(null);
       }
     } catch (err) {
       console.error('❌ Erreur chargement profil:', err);
     } finally {
       setProfileLoading(false);
     }
-  }, [userId, getProfile, createProfile]);
+  }, [userId, ensureProfile]);
 
   const loadStories = useCallback(async () => {
     if (!userId) return;
@@ -601,18 +583,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     await loadStories();
   }, [loadStories]);
 
-  // ────────────────────────────────────────────────────────────────
-  // ✅ CHARGEMENT DES STATS — CORRIGÉ POUR LES LIKES
-  // ────────────────────────────────────────────────────────────────
-  // Dans ta table `likes`, la structure est :
-  //   - profile_id  = celui qui a liké (peut être NULL pour invité)
-  //   - target_type = 'story' (uniquement)
-  //   - target_id   = l'ID de la story likée
-  //
-  // Donc pour compter les likes d'un salon, on doit :
-  //   1. Récupérer toutes les stories du salon
-  //   2. Compter les lignes de `likes` où target_id ∈ ces stories
-  // ────────────────────────────────────────────────────────────────
   const loadStats = useCallback(async () => {
     if (!userId) return;
 
@@ -620,22 +590,18 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       const profileId = await getProfileId(userId);
       if (!profileId) return;
 
-      // Followers
       const { count: followersCount } = await supabase
         .from('followers')
         .select('*', { count: 'exact', head: true })
         .eq('following_id', profileId)
         .eq('status', 'active');
 
-      // Following
       const { count: followingCount } = await supabase
         .from('followers')
         .select('*', { count: 'exact', head: true })
         .eq('follower_id', profileId)
         .eq('status', 'active');
 
-      // ✅ Récupérer TOUTES les stories du salon (actives ET expirées si tu veux tout compter)
-      // Ici on prend TOUTES les stories liées au profil, peu importe l'expiration
       const { data: myStoryIdsData } = await supabase
         .from('stories')
         .select('id')
@@ -643,7 +609,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
       const myStoryIds = (myStoryIdsData || []).map((s: any) => s.id);
 
-      // ✅ Compter les likes dont target_id ∈ myStoryIds ET target_type = 'story'
       let totalLikesCount = 0;
       if (myStoryIds.length > 0) {
         const { count, error: likesError } = await supabase
@@ -659,7 +624,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         }
       }
 
-      // Reviews
       const { data: reviews } = await supabase
         .from('reviews')
         .select('rating')
@@ -676,7 +640,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         totalReviews: reviews?.length || 0,
         averageRating: avgRating
       });
-
     } catch (err) {
       console.error('Erreur chargement stats:', err);
     }
@@ -697,11 +660,11 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
     try {
       const totalFiles = selectedFiles.length;
-      
+
       const uploadPromises = selectedFiles.map(async (file, i) => {
         const fileExt = file.name.split('.').pop();
         const fileName = `stories/${userId}/${Date.now()}_${i}.${fileExt}`;
-        
+
         const { error: uploadError } = await supabase.storage
           .from('public-media')
           .upload(fileName, file, {
@@ -733,7 +696,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       });
 
       setUploadStatus(`Upload de ${totalFiles} fichiers...`);
-      
+
       const storyData = await Promise.all(uploadPromises);
       setUploadProgress(50);
 
@@ -745,6 +708,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       if (insertError) throw insertError;
 
       setUploadProgress(100);
+      filePreviews.forEach((p) => URL.revokeObjectURL(p.preview));
       setSelectedFiles([]);
       setFilePreviews([]);
       setShowPreviewModal(false);
@@ -758,7 +722,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         setUploadProgress(0);
         setUploadStatus('');
       }, 1500);
-
     } catch (err) {
       console.error('Erreur upload stories:', err);
       setUploadStatus('❌ Erreur');
@@ -769,12 +732,12 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         setUploadStatus('');
       }, 2000);
     }
-  }, [selectedFiles, userId, getProfileId, refreshStories, loadStats]);
+  }, [selectedFiles, filePreviews, userId, getProfileId, refreshStories, loadStats]);
 
   const handleSaveProfile = async () => {
     if (!userId || !profile) return;
 
-    if (!profile.latitude || !profile.longitude || profile.latitude === 0 || profile.longitude === 0) {
+    if (!isValidCoords(profile.latitude, profile.longitude)) {
       alert('⚠️ Veuillez partager votre position avant de sauvegarder.');
       return;
     }
@@ -783,7 +746,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     try {
       const newName = editName.trim() || profile.full_name;
       const newDescription = editDescription.trim() || profile.description;
-      
+
       const updateData: Record<string, any> = {
         full_name: newName,
         salon_name: newName,
@@ -797,7 +760,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         const timestamp = Date.now();
         const randomStr = Math.random().toString(36).substring(2, 8);
         const fileName = `profiles/${userId}/avatar_${timestamp}_${randomStr}.${fileExt}`;
-        
+
         const { error: uploadError } = await supabase.storage
           .from('public-media')
           .upload(fileName, editAvatarFile, {
@@ -810,17 +773,21 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         const { data: urlData } = supabase.storage
           .from('public-media')
           .getPublicUrl(fileName);
-        
+
         avatarUrl = urlData.publicUrl;
         updateData.avatar_url = avatarUrl;
       }
 
-      const { error: updateError } = await supabase
+      const { data: updated, error: updateError } = await supabase
         .from('profiles')
         .update(updateData)
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .select('id');
 
       if (updateError) throw updateError;
+      if (!updated || updated.length === 0) {
+        throw new Error('Aucun profil modifié (vérifiez la politique RLS).');
+      }
 
       setProfile({
         ...profile,
@@ -834,7 +801,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       setEditAvatarFile(null);
       setEditAvatarPreview(null);
       alert('Profil mis à jour avec succès !');
-
     } catch (err) {
       console.error('❌ Erreur sauvegarde profil:', err);
       alert('Erreur lors de la sauvegarde du profil');
@@ -890,8 +856,19 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
   };
 
   const removePreviewFile = (index: number) => {
-    setFilePreviews(prev => prev.filter((_, idx) => idx !== index));
+    setFilePreviews(prev => {
+      const removed = prev[index];
+      if (removed) URL.revokeObjectURL(removed.preview);
+      return prev.filter((_, idx) => idx !== index);
+    });
     setSelectedFiles(prev => prev.filter((_, idx) => idx !== index));
+  };
+
+  const cancelPreview = () => {
+    filePreviews.forEach((p) => URL.revokeObjectURL(p.preview));
+    setShowPreviewModal(false);
+    setFilePreviews([]);
+    setSelectedFiles([]);
   };
 
   const handleStoryDeleted = async () => {
@@ -903,17 +880,18 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
   const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+
     if (!file.type.startsWith('image/')) {
       alert('Veuillez sélectionner une image');
       return;
     }
-    
+
     if (file.size > 5 * 1024 * 1024) {
-      alert('L\'image ne doit pas dépasser 5 Mo');
+      alert("L'image ne doit pas dépasser 5 Mo");
       return;
     }
 
+    if (editAvatarPreview) URL.revokeObjectURL(editAvatarPreview);
     setEditAvatarFile(file);
     setEditAvatarPreview(URL.createObjectURL(file));
   };
@@ -930,9 +908,13 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
   };
 
   const openGallery = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
+    fileInputRef.current?.click();
+  };
+
+  const closeEditing = () => {
+    setIsEditing(false);
+    setEditAvatarFile(null);
+    setEditAvatarPreview(null);
   };
 
   useEffect(() => {
@@ -953,6 +935,25 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     }
   }, [userId, loadProfile, loadStories, loadStats]);
 
+  // ── Éditeur de position protégé par ErrorBoundary ──
+  const locationEditorNode =
+    showLocationEditor && profile ? (
+      <ErrorBoundary>
+        <SalonLocationEditor
+          userId={userId}
+          initialLatitude={profile.latitude}
+          initialLongitude={profile.longitude}
+          initialAddress={profile.address}
+          onClose={() => setShowLocationEditor(false)}
+          onSaved={(lat: number, lng: number, address?: string) => {
+            setProfile((prev) =>
+              prev ? { ...prev, latitude: lat, longitude: lng, address: address || prev.address } : prev
+            );
+          }}
+        />
+      </ErrorBoundary>
+    ) : null;
+
   if (profileLoading) {
     return (
       <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 mb-6">
@@ -971,11 +972,11 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     return (
       <div className="bg-zinc-900 border border-zinc-700 rounded-2xl p-6 mb-6 text-center">
         <p className="text-zinc-400 text-sm">Aucun profil trouvé.</p>
-        <button 
+        <button
           onClick={async () => {
+            profilePromiseRef.current = null;
             setProfileLoading(true);
             await loadProfile();
-            setProfileLoading(false);
           }}
           className="mt-3 bg-white text-black text-sm font-semibold px-4 py-2 rounded-lg hover:bg-zinc-200 transition"
         >
@@ -987,16 +988,9 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
   if (isEditing) {
     return (
-      <div className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden mb-6">
+      <div translate="no" className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden mb-6">
         <div className="p-4 border-b border-zinc-800 flex items-center gap-3">
-          <button
-            onClick={() => {
-              setIsEditing(false);
-              setEditAvatarFile(null);
-              setEditAvatarPreview(null);
-            }}
-            className="text-zinc-400 hover:text-white transition"
-          >
+          <button onClick={closeEditing} className="text-zinc-400 hover:text-white transition">
             <ChevronLeft className="w-6 h-6" />
           </button>
           <h2 className="text-white font-bold text-lg">Modifier le profil</h2>
@@ -1009,8 +1003,8 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                 {editAvatarPreview ? (
                   <img src={editAvatarPreview} alt="Nouvel avatar" className="w-full h-full object-cover" />
                 ) : profile.avatar_url ? (
-                  <img 
-                    src={profile.avatar_url} 
+                  <img
+                    src={profile.avatar_url}
                     alt={profile.salon_name || profile.full_name}
                     className="w-full h-full object-cover"
                     onError={() => setProfileImageError(true)}
@@ -1023,11 +1017,11 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                   </div>
                 )}
               </div>
-              
+
               <div className="absolute bottom-0 right-0 bg-emerald-500 rounded-full p-1.5 border-2 border-zinc-900 shadow-lg">
                 <Camera className="w-4 h-4 text-white" />
               </div>
-              
+
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40 rounded-full">
                 <div className="flex flex-col items-center">
                   <Camera className="w-8 h-8 text-white" />
@@ -1070,21 +1064,25 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
             <div>
               <label className="block text-zinc-400 text-xs mb-1.5">
-                Position <span className="text-red-400">*</span>
+                <span>Position</span> <span className="text-red-400">*</span>
               </label>
-              
+
               <button
                 type="button"
                 onClick={() => setShowLocationEditor(true)}
                 className={`w-full flex items-center justify-center gap-2 bg-zinc-800 border rounded-xl px-4 py-3 text-sm transition ${
-                  hasLocation 
-                    ? 'border-emerald-500 text-emerald-400 hover:bg-emerald-500/10' 
+                  hasLocation
+                    ? 'border-emerald-500 text-emerald-400 hover:bg-emerald-500/10'
                     : 'border-red-500 text-red-400 hover:bg-red-500/10'
                 }`}
               >
                 <MapPin className="w-4 h-4" />
-                {hasLocation ? 'Position partagée ✓' : 'Partager ma position'}
+                <span>{hasLocation ? 'Position partagée ✓ (modifier)' : 'Définir la position du salon'}</span>
               </button>
+
+              {hasLocation && profile.address && (
+                <p className="text-zinc-500 text-xs mt-1.5 break-words">{profile.address}</p>
+              )}
             </div>
           </div>
 
@@ -1093,29 +1091,25 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
               onClick={handleSaveProfile}
               disabled={savingProfile || !hasLocation}
               className={`flex-1 font-semibold py-3 rounded-xl transition flex items-center justify-center gap-2 ${
-                hasLocation 
-                  ? 'bg-white text-black hover:bg-zinc-200' 
+                hasLocation
+                  ? 'bg-white text-black hover:bg-zinc-200'
                   : 'bg-zinc-700 text-zinc-400 cursor-not-allowed'
               }`}
             >
               {savingProfile ? (
                 <>
                   <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-black" />
-                  Sauvegarde...
+                  <span>Sauvegarde...</span>
                 </>
               ) : (
                 <>
                   <Save className="w-4 h-4" />
-                  Sauvegarder
+                  <span>Sauvegarder</span>
                 </>
               )}
             </button>
             <button
-              onClick={() => {
-                setIsEditing(false);
-                setEditAvatarFile(null);
-                setEditAvatarPreview(null);
-              }}
+              onClick={closeEditing}
               className="flex-1 bg-zinc-800 text-white font-semibold py-3 rounded-xl transition"
             >
               Annuler
@@ -1123,42 +1117,31 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
           </div>
         </div>
 
-        {showLocationEditor && (
-          <SalonLocationEditor
-            userId={userId}
-            initialLatitude={profile.latitude}
-            initialLongitude={profile.longitude}
-            initialAddress={profile.address}
-            onClose={() => setShowLocationEditor(false)}
-            onSaved={(lat: number, lng: number, address?: string) => {
-              setProfile((prev) => prev ? { ...prev, latitude: lat, longitude: lng, address: address || prev.address } : prev);
-            }}
-          />
-        )}
+        {locationEditorNode}
       </div>
     );
   }
 
   return (
-    <div className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden mb-6">
+    <div translate="no" className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden mb-6">
       <div className="relative h-32 bg-gradient-to-r from-indigo-600 to-purple-600">
         {profile.cover_image && (
           <img src={profile.cover_image} alt="Cover" className="w-full h-full object-cover" />
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent" />
-        
+
         <button
           onClick={() => setIsEditing(true)}
           className="absolute top-3 right-3 flex items-center gap-1.5 bg-white/20 backdrop-blur-sm hover:bg-white/30 text-white text-xs font-medium px-3 py-1.5 rounded-full transition border border-white/20"
         >
           <Edit2 className="w-3.5 h-3.5" />
-          Modifier
+          <span>Modifier</span>
         </button>
       </div>
 
       <div className="px-4 pb-4 -mt-10 relative">
         <div className="flex items-end gap-4">
-          <div 
+          <div
             className="relative cursor-pointer group"
             onClick={() => {
               if (stories.length > 0) {
@@ -1167,14 +1150,14 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             }}
           >
             <div className={`w-20 h-20 rounded-full p-0.5 ${
-              stories.length > 0 || isUploadingFromGallery 
-                ? 'bg-gradient-to-tr from-yellow-400 to-pink-500' 
+              stories.length > 0 || isUploadingFromGallery
+                ? 'bg-gradient-to-tr from-yellow-400 to-pink-500'
                 : 'bg-transparent'
             } group-hover:scale-105 transition`}>
               <div className="w-full h-full rounded-full bg-zinc-800 border-4 border-zinc-900 overflow-hidden shadow-lg">
                 {profile.avatar_url ? (
-                  <img 
-                    src={profile.avatar_url} 
+                  <img
+                    src={profile.avatar_url}
                     alt={profile.salon_name || profile.full_name}
                     className="w-full h-full object-cover"
                     onError={() => setProfileImageError(true)}
@@ -1188,14 +1171,14 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                 )}
               </div>
             </div>
-            
+
             {isUploadingFromGallery && (
               <div className="absolute -top-1 -right-1 w-6 h-6 bg-emerald-500 rounded-full flex items-center justify-center border-2 border-zinc-900 animate-pulse">
                 <Loader2 className="w-3.5 h-3.5 text-white animate-spin" />
               </div>
             )}
-            
-            <div 
+
+            <div
               onClick={(e) => {
                 e.stopPropagation();
                 openGallery();
@@ -1204,7 +1187,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             >
               <Plus className="w-3.5 h-3.5 text-white" />
             </div>
-            
+
             {stories.length > 0 && (
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40 rounded-full">
                 <span className="text-white text-xs font-medium">Voir</span>
@@ -1222,7 +1205,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             {profile.description && (
               <p className="text-zinc-400 text-xs truncate mt-0.5">{profile.description}</p>
             )}
-            
+
             <button
               onClick={() => setShowLocationEditor(true)}
               className="flex items-center gap-2 mt-0.5 hover:opacity-80 transition"
@@ -1230,12 +1213,12 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
               {hasLocation ? (
                 <span className="flex items-center gap-1 text-emerald-400 text-[10px]">
                   <MapPin className="w-3 h-3" />
-                  Position partagée
+                  <span>Position partagée</span>
                 </span>
               ) : (
                 <span className="flex items-center gap-1 text-red-400 text-[10px]">
                   <AlertCircle className="w-3 h-3" />
-                  Position requise
+                  <span>Position requise</span>
                 </span>
               )}
             </button>
@@ -1243,7 +1226,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
           <button className="bg-yellow-500/20 text-yellow-400 font-semibold text-sm px-6 py-2 rounded-full hover:bg-yellow-500/30 transition flex-shrink-0 flex items-center gap-1.5">
             <Star className="w-4 h-4 fill-yellow-400" />
-            {salonStats.averageRating.toFixed(1)}
+            <span>{salonStats.averageRating.toFixed(1)}</span>
           </button>
         </div>
 
@@ -1258,7 +1241,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             </div>
             <span className="text-red-400 text-sm font-medium flex items-center gap-1.5">
               <Navigation className="w-4 h-4" />
-              Partager
+              <span>Partager</span>
             </span>
           </button>
         )}
@@ -1303,27 +1286,23 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-white font-bold text-lg">Aperçu</h3>
               <button
-                onClick={() => {
-                  setShowPreviewModal(false);
-                  setFilePreviews([]);
-                  setSelectedFiles([]);
-                }}
+                onClick={cancelPreview}
                 className="text-zinc-400 hover:text-white transition p-1 rounded-full hover:bg-zinc-800"
               >
                 <X className="w-6 h-6" />
               </button>
             </div>
-            
+
             <div className="grid grid-cols-3 gap-3">
               {filePreviews.map((item, i) => (
-                <div key={i} className="relative aspect-square bg-zinc-800 rounded-lg overflow-hidden group">
+                <div key={item.preview} className="relative aspect-square bg-zinc-800 rounded-lg overflow-hidden group">
                   {item.type === 'video' ? (
                     <video src={item.preview} className="w-full h-full object-cover" muted />
                   ) : (
                     <img src={item.preview} alt="" className="w-full h-full object-cover" />
                   )}
                   <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                    <button 
+                    <button
                       onClick={() => removePreviewFile(i)}
                       className="bg-red-600 hover:bg-red-700 rounded-full p-2 transition"
                     >
@@ -1333,27 +1312,23 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                   {item.type === 'video' && (
                     <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1">
                       <Play className="w-3 h-3 fill-white" />
-                      Vidéo
+                      <span>Vidéo</span>
                     </div>
                   )}
                 </div>
               ))}
             </div>
-            
+
             <div className="flex gap-3 mt-4">
               <button
                 onClick={confirmUpload}
                 className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-3 rounded-xl transition flex items-center justify-center gap-2"
               >
                 <Upload className="w-4 h-4" />
-                Publier {filePreviews.length} story{filePreviews.length > 1 ? 's' : ''}
+                <span>Publier {filePreviews.length} story{filePreviews.length > 1 ? 's' : ''}</span>
               </button>
               <button
-                onClick={() => {
-                  setShowPreviewModal(false);
-                  setFilePreviews([]);
-                  setSelectedFiles([]);
-                }}
+                onClick={cancelPreview}
                 className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-3 rounded-xl transition"
               >
                 Annuler
@@ -1366,9 +1341,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       {showStoryViewer && stories.length > 0 && (
         <StoryViewer
           stories={stories}
-          onClose={() => {
-            setShowStoryViewer(false);
-          }}
+          onClose={() => setShowStoryViewer(false)}
           currentIndex={storyViewerIndex}
           onStoryDeleted={handleStoryDeleted}
           userId={userId}
@@ -1387,12 +1360,12 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                   <Upload className="w-6 h-6 text-emerald-400" />
                 </div>
               </div>
-              
+
               <h3 className="text-white font-bold text-lg mb-1">Publication</h3>
               <p className="text-zinc-400 text-sm mb-3">{uploadStatus || 'Téléchargement...'}</p>
-              
+
               <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
-                <div 
+                <div
                   className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-300"
                   style={{ width: `${uploadProgress}%` }}
                 />
@@ -1403,18 +1376,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         </div>
       )}
 
-      {showLocationEditor && (
-        <SalonLocationEditor
-          userId={userId}
-          initialLatitude={profile.latitude}
-          initialLongitude={profile.longitude}
-          initialAddress={profile.address}
-          onClose={() => setShowLocationEditor(false)}
-          onSaved={(lat: number, lng: number, address?: string) => {
-            setProfile((prev) => prev ? { ...prev, latitude: lat, longitude: lng, address: address || prev.address } : prev);
-          }}
-        />
-      )}
+      {locationEditorNode}
     </div>
   );
 }
