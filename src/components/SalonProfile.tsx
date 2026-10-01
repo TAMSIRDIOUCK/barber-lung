@@ -2,7 +2,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Edit2, Camera, MapPin, Star, Plus, X, Upload, Save, AlertCircle, ChevronLeft,
-  ChevronRight, Scissors, Trash2, Play, Loader2, Eye, Heart, Navigation, Clock
+  ChevronRight, Scissors, Trash2, Play, Loader2, Eye, Heart, Navigation, Clock,
+  Grid3x3, Image as ImageIcon
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { SalonLocationEditor } from './SalonLocationEditor';
@@ -46,13 +47,24 @@ interface Story {
   media_type?: 'image' | 'video';
 }
 
-// ── Validation des coordonnées (remplace isValidCoords) ──
+interface PortfolioPost {
+  id: string;
+  profile_id: string;
+  user_id: string;
+  image_url: string;
+  caption: string;
+  media_type: 'image' | 'video';
+  like_count: number;
+  view_count: number;
+  created_at: string;
+}
+
+// ── Validation des coordonnées ──
 function isValidCoords(lat?: number | null, lng?: number | null): boolean {
   if (typeof lat !== 'number' || typeof lng !== 'number') return false;
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
   if (lat < -90 || lat > 90) return false;
   if (lng < -180 || lng > 180) return false;
-  // (0,0) = position par défaut non renseignée → considérée invalide
   if (lat === 0 && lng === 0) return false;
   return true;
 }
@@ -307,6 +319,7 @@ function StoryViewer({
 
   return (
     <div
+      translate="no"
       className="fixed inset-0 z-[100] bg-black flex flex-col"
       onTouchStart={() => setIsPaused(true)}
       onTouchEnd={() => setIsPaused(false)}
@@ -485,12 +498,18 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
   const [showLocationEditor, setShowLocationEditor] = useState(false);
 
+  // ── PORTFOLIO (photos de coiffures permanentes) ──
+  const [portfolioPosts, setPortfolioPosts] = useState<PortfolioPost[]>([]);
+  const [uploadingPortfolio, setUploadingPortfolio] = useState(false);
+  const [showPortfolioManager, setShowPortfolioManager] = useState(false);
+  const [portfolioDeleteConfirm, setPortfolioDeleteConfirm] = useState<string | null>(null);
+  const portfolioInputRef = useRef<HTMLInputElement>(null);
+
   const MAX_STORIES = 10;
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
   const hasLocation = isValidCoords(profile?.latitude, profile?.longitude);
 
-  // ── Un seul chargement/création de profil par utilisateur ──
   const profilePromiseRef = useRef<{ userId: string; promise: Promise<any | null> } | null>(null);
 
   const ensureProfile = useCallback((uid: string): Promise<any | null> => {
@@ -644,6 +663,116 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       console.error('Erreur chargement stats:', err);
     }
   }, [userId, getProfileId]);
+
+  // ── PORTFOLIO : charger ──
+  const loadPortfolio = useCallback(async () => {
+    if (!userId) return;
+    const profileId = await getProfileId(userId);
+    if (!profileId) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('portfolio_posts')
+        .select('*')
+        .eq('profile_id', profileId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Erreur chargement portfolio:', error);
+        return;
+      }
+      setPortfolioPosts(data || []);
+    } catch (err) {
+      console.error('Erreur chargement portfolio:', err);
+    }
+  }, [userId, getProfileId]);
+
+  // ── PORTFOLIO : upload ──
+  const handlePortfolioUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0 || !userId) return;
+
+    const profileId = await getProfileId(userId);
+    if (!profileId) {
+      alert('Profil introuvable');
+      return;
+    }
+
+    setUploadingPortfolio(true);
+    try {
+      const uploaded: any[] = [];
+
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) continue;
+        if (file.size > 50 * 1024 * 1024) {
+          alert(`${file.name} dépasse 50 Mo`);
+          continue;
+        }
+
+        const ext = file.name.split('.').pop();
+        const fileName = `portfolio/${userId}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+        const { error: upErr } = await supabase.storage
+          .from('public-media')
+          .upload(fileName, file, { cacheControl: '3600', upsert: false });
+
+        if (upErr) throw upErr;
+
+        const { data: urlData } = supabase.storage
+          .from('public-media')
+          .getPublicUrl(fileName);
+
+        uploaded.push({
+          profile_id: profileId,
+          user_id: userId,
+          image_url: urlData.publicUrl,
+          media_type: file.type.startsWith('video/') ? 'video' : 'image',
+          caption: '',
+        });
+      }
+
+      if (uploaded.length > 0) {
+        const { error: insertError } = await supabase
+          .from('portfolio_posts')
+          .insert(uploaded);
+
+        if (insertError) throw insertError;
+
+        await loadPortfolio();
+        alert(`✅ ${uploaded.length} publication${uploaded.length > 1 ? 's' : ''} ajoutée${uploaded.length > 1 ? 's' : ''} !`);
+      }
+    } catch (err) {
+      console.error('Erreur upload portfolio:', err);
+      alert('Erreur lors de l\'upload');
+    } finally {
+      setUploadingPortfolio(false);
+      if (e.target) e.target.value = '';
+    }
+  }, [userId, getProfileId, loadPortfolio]);
+
+  // ── PORTFOLIO : supprimer ──
+  const handleDeletePortfolioPost = useCallback(async (postId: string, imageUrl: string) => {
+    try {
+      const { error } = await supabase
+        .from('portfolio_posts')
+        .delete()
+        .eq('id', postId);
+
+      if (error) throw error;
+
+      const path = storagePathFromUrl(imageUrl);
+      if (path) {
+        await supabase.storage.from('public-media').remove([path]).catch(() => {});
+      }
+
+      setPortfolioPosts((prev) => prev.filter((p) => p.id !== postId));
+      setPortfolioDeleteConfirm(null);
+    } catch (err) {
+      console.error('Erreur suppression:', err);
+      alert('Erreur lors de la suppression');
+    }
+  }, []);
 
   const uploadSelectedStories = useCallback(async () => {
     if (selectedFiles.length === 0 || !userId) return;
@@ -930,12 +1059,12 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       loadProfile();
       loadStories();
       loadStats();
+      loadPortfolio();
     } else {
       setProfileLoading(false);
     }
-  }, [userId, loadProfile, loadStories, loadStats]);
+  }, [userId, loadProfile, loadStories, loadStats, loadPortfolio]);
 
-  // ── Éditeur de position protégé par ErrorBoundary ──
   const locationEditorNode =
     showLocationEditor && profile ? (
       <ErrorBoundary>
@@ -1122,6 +1251,9 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     );
   }
 
+  // 🔥 LOGIQUE DU CERCLE : story active → dégradé Insta | pas de story → gris
+  const hasActiveStories = stories.length > 0;
+
   return (
     <div translate="no" className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden mb-6">
       <div className="relative h-32 bg-gradient-to-r from-indigo-600 to-purple-600">
@@ -1144,17 +1276,25 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
           <div
             className="relative cursor-pointer group"
             onClick={() => {
-              if (stories.length > 0) {
+              if (hasActiveStories) {
                 openStoryViewer(0);
               }
             }}
           >
-            <div className={`w-20 h-20 rounded-full p-0.5 ${
-              stories.length > 0 || isUploadingFromGallery
-                ? 'bg-gradient-to-tr from-yellow-400 to-pink-500'
-                : 'bg-transparent'
-            } group-hover:scale-105 transition`}>
-              <div className="w-full h-full rounded-full bg-zinc-800 border-4 border-zinc-900 overflow-hidden shadow-lg">
+            {/* 🔥 CERCLE : gris si pas de story, dégradé Insta sinon */}
+            <div
+              className={`w-20 h-20 rounded-full p-[3px] group-hover:scale-105 transition ${
+                hasActiveStories
+                  ? 'bg-gradient-to-tr from-yellow-400 via-pink-500 to-purple-600'
+                  : 'bg-zinc-600'
+              }`}
+              style={
+                hasActiveStories
+                  ? { background: 'linear-gradient(to top right, #facc15, #ec4899, #a855f7)' }
+                  : {}
+              }
+            >
+              <div className="w-full h-full rounded-full bg-zinc-800 border-[3px] border-zinc-900 overflow-hidden shadow-lg">
                 {profile.avatar_url ? (
                   <img
                     src={profile.avatar_url}
@@ -1188,7 +1328,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
               <Plus className="w-3.5 h-3.5 text-white" />
             </div>
 
-            {stories.length > 0 && (
+            {hasActiveStories && (
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition bg-black/40 rounded-full">
                 <span className="text-white text-xs font-medium">Voir</span>
               </div>
@@ -1269,6 +1409,15 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             <p className="text-zinc-500 text-[10px] uppercase tracking-wider">Note</p>
           </div>
         </div>
+
+        {/* 🔥 Bouton Mes réalisations (portfolio) */}
+        <button
+          onClick={() => setShowPortfolioManager(true)}
+          className="mt-3 w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white font-semibold py-3 rounded-xl text-sm transition shadow-lg shadow-emerald-900/30"
+        >
+          <Grid3x3 className="w-4 h-4" />
+          Mes réalisations {portfolioPosts.length > 0 && `(${portfolioPosts.length})`}
+        </button>
       </div>
 
       <input
@@ -1371,6 +1520,155 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                 />
               </div>
               <p className="text-zinc-500 text-xs mt-2">{uploadProgress}%</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔥 Modal Gestion des réalisations */}
+      {showPortfolioManager && (
+        <div
+          translate="no"
+          className="fixed inset-0 z-[130] bg-black/90 flex items-center justify-center p-3 sm:p-4"
+          onClick={() => setShowPortfolioManager(false)}
+        >
+          <div
+            className="bg-zinc-900 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col border border-zinc-700 shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-zinc-800 flex-shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <Grid3x3 className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+                <h3 className="text-white font-bold text-lg truncate">Mes réalisations</h3>
+                <span className="text-zinc-500 text-xs flex-shrink-0">
+                  {portfolioPosts.length} photo{portfolioPosts.length > 1 ? 's' : ''}
+                </span>
+              </div>
+              <button
+                onClick={() => setShowPortfolioManager(false)}
+                className="text-zinc-400 hover:text-white transition p-1 rounded-lg hover:bg-zinc-800 flex-shrink-0"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-zinc-800 flex-shrink-0">
+              <input
+                ref={portfolioInputRef}
+                type="file"
+                accept="image/*,video/*"
+                multiple
+                onChange={handlePortfolioUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => portfolioInputRef.current?.click()}
+                disabled={uploadingPortfolio}
+                className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl text-sm transition disabled:opacity-50"
+              >
+                {uploadingPortfolio ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Téléchargement...
+                  </>
+                ) : (
+                  <>
+                    <Plus className="w-4 h-4" />
+                    Ajouter des photos de mes coiffures
+                  </>
+                )}
+              </button>
+             
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-3">
+              {portfolioPosts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center px-6">
+                  <div className="w-16 h-16 rounded-full border-2 border-dashed border-zinc-700 flex items-center justify-center mb-3">
+                    <ImageIcon className="w-7 h-7 text-zinc-600" />
+                  </div>
+                  <p className="text-white font-semibold text-sm">Aucune réalisation</p>
+                  <p className="text-zinc-500 text-xs mt-1">
+                    Ajoutez vos plus belles coiffures pour les montrer à vos clients
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {portfolioPosts.map((post) => (
+                    <div
+                      key={post.id}
+                      className="relative aspect-square bg-zinc-800 rounded-xl overflow-hidden group"
+                    >
+                      {post.media_type === 'video' ? (
+                        <video
+                          src={post.image_url}
+                          className="w-full h-full object-cover"
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <img
+                          src={post.image_url}
+                          alt=""
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      )}
+
+                      {post.media_type === 'video' && (
+                        <div className="absolute top-2 left-2 bg-black/70 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <Play className="w-3 h-3 fill-white" />
+                          Vidéo
+                        </div>
+                      )}
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPortfolioDeleteConfirm(post.id);
+                        }}
+                        className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 transition opacity-0 group-hover:opacity-100 sm:opacity-100"
+                        title="Supprimer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {portfolioDeleteConfirm && (
+        <div
+          translate="no"
+          className="fixed inset-0 z-[140] bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setPortfolioDeleteConfirm(null)}
+        >
+          <div
+            className="bg-zinc-900 rounded-2xl p-6 max-w-sm w-full border border-zinc-700 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-white font-bold text-lg mb-2">Supprimer cette réalisation ?</h3>
+            <p className="text-zinc-400 text-sm mb-4">Cette action est irréversible.</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  const post = portfolioPosts.find((p) => p.id === portfolioDeleteConfirm);
+                  if (post) handleDeletePortfolioPost(post.id, post.image_url);
+                }}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl transition"
+              >
+                Supprimer
+              </button>
+              <button
+                onClick={() => setPortfolioDeleteConfirm(null)}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-2.5 rounded-xl transition"
+              >
+                Annuler
+              </button>
             </div>
           </div>
         </div>

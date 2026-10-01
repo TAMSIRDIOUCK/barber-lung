@@ -275,6 +275,12 @@ export function BookingPage({ slug }: BookingPageProps) {
 
     setBookingData(enrichedBooking);
     await saveToHistory(enrichedBooking, qrData);
+
+    // Envoi des SMS de confirmation (client + salon)
+    supabase.functions.invoke('send-booking-confirmation', {
+      body: { record: enrichedBooking },
+    }).catch((err) => console.error('Erreur envoi SMS confirmation:', err));
+
     setStep('success');
     window.history.replaceState({}, '', window.location.pathname);
   }, [settings, saveToHistory]);

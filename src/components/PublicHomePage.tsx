@@ -14,6 +14,7 @@ import {
 import { supabase } from '../lib/supabase';
 import SalonMapView, { type SalonMapHandle } from './SalonMapView';
 import { BookingHistoryPage } from './BookingHistoryPage';
+import { SalonPublicProfile } from './SalonPublicProfile';
 
 interface SalonProfile {
   id: string;
@@ -49,6 +50,15 @@ interface Story {
   view_count: number;
   like_count: number;
   media_type?: 'image' | 'video';
+}
+
+interface PortfolioPost {
+  id: string;
+  profile_id: string;
+  image_url: string;
+  media_type: 'image' | 'video';
+  like_count: number;
+  created_at: string;
 }
 
 interface RouteInfo {
@@ -490,6 +500,7 @@ export default function PublicHomePage({
 
   const [salons, setSalons] = useState<SalonProfile[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
+  const [portfolioBySalon, setPortfolioBySalon] = useState<Record<string, PortfolioPost[]>>({});
   const [loading, setLoading] = useState(true);
   const [selectedStory, setSelectedStory] = useState<{ stories: Story[]; salonName: string; salonLogo: string | null; salonId: string } | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -533,6 +544,9 @@ export default function PublicHomePage({
 
   const [showHistory, setShowHistory] = useState(false);
 
+  // 🔥 Écran plein écran du profil salon
+  const [showPublicProfile, setShowPublicProfile] = useState<string | null>(null);
+
   const showToast = useCallback((message: string) => {
     setToast(message);
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -559,11 +573,8 @@ export default function PublicHomePage({
   }, [stories, viewedStories]);
 
   const viewProfile = useCallback((salonId: string) => {
-    const salon = salons.find(s => s.id === salonId);
-    if (salon) {
-      setSelectedSalon(salon);
-    }
-  }, [salons]);
+    setShowPublicProfile(salonId);
+  }, []);
 
   const logStoryView = useCallback(async (storyId: string, profileId: string) => {
     setStories(prev => prev.map(s =>
@@ -590,7 +601,6 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId]);
 
-  // ─── LIKE : cœur uniquement, pas de compteur, pas de toast ───
   const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
     const wasLiked = userLikes.has(storyId);
 
@@ -660,7 +670,6 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId, userLikes]);
 
-  // ─── CHARGEMENT DES LIKES ───
   const loadUserLikes = useCallback(async () => {
     try {
       const deviceId = getDeviceId();
@@ -1265,6 +1274,23 @@ export default function PublicHomePage({
         view_count: viewCountMap[s.id] ?? (s.view_count || 0),
       }));
 
+      // 🔥 Charger les publications portfolio de tous les salons
+      const { data: portfolioData } = await supabase
+        .from('portfolio_posts')
+        .select('id, profile_id, image_url, media_type, like_count, created_at')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      const portfolioMap: Record<string, PortfolioPost[]> = {};
+      (portfolioData || []).forEach((p: any) => {
+        if (!portfolioMap[p.profile_id]) portfolioMap[p.profile_id] = [];
+        if (portfolioMap[p.profile_id].length < 6) {
+          portfolioMap[p.profile_id].push(p);
+        }
+      });
+      setPortfolioBySalon(portfolioMap);
+
       const salonsWithStats = (profiles || []).map((p) => {
         const isFollowed = userFollowingIds.has(p.id) || guestFollowingIdsSet.has(p.id);
         const isOwnProfile = isAuthenticated && currentUserId === p.user_id;
@@ -1452,7 +1478,6 @@ export default function PublicHomePage({
     return matchesSearch;
   });
 
-  // ─── LISTE : filtrée par rayon (utilisée sous la carte) ───
   const nearbySalons = useMemo(() => {
     let list = filteredSalons.filter((salon) => {
       if (!userLocation || radiusFilter === Infinity) return true;
@@ -1471,8 +1496,6 @@ export default function PublicHomePage({
     });
   }, [filteredSalons, userLocation, radiusFilter, sortBy, mapFilterMode]);
 
-  // ─── CARTE : TOUS les salons (sans filtre de rayon) ───
-  // Le cercle de rayon reste visuel, mais les marqueurs restent affichés partout.
   const mapSalons = useMemo(() => {
     let list = filteredSalons.filter((s) => !s.is_own_profile);
 
@@ -1754,7 +1777,7 @@ export default function PublicHomePage({
                       salonId: salon.id,
                     });
                   } else {
-                    setSelectedSalon(salon);
+                    setShowPublicProfile(salon.id);
                   }
                 }}
               />
@@ -2095,7 +2118,7 @@ export default function PublicHomePage({
                     <div
                       key={salon.id}
                       className="w-full flex items-center gap-3 p-2.5 bg-zinc-800/80 rounded-xl border border-zinc-700/50 hover:border-zinc-500 transition cursor-pointer"
-                      onClick={() => setSelectedSalon(salon)}
+                      onClick={() => setShowPublicProfile(salon.id)}
                     >
                       <div className="w-11 h-11 rounded-full bg-zinc-700 overflow-hidden flex-shrink-0 border-2 border-zinc-600">
                         <SafeImage
@@ -2188,8 +2211,8 @@ export default function PublicHomePage({
     }
 
     return (
-      <div className="px-4 mt-4">
-        <div className="flex items-center justify-between mb-3">
+      <div className="px-4 mt-4 space-y-4">
+        <div className="flex items-center justify-between">
           <h2 className="text-white text-sm font-semibold flex items-center gap-2">
             <Store className="w-4 h-4 text-blue-400" />
             Tous les salons
@@ -2197,23 +2220,26 @@ export default function PublicHomePage({
           <span className="text-zinc-500 text-xs">{sortedAll.length} salons</span>
         </div>
 
-        <div className="space-y-2">
-          {sortedAll.map((salon) => {
-            const distance = userLocation
-              ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
-              : null;
-            const isFollowing = followingIds.has(salon.id) || guestFollowingIds.has(salon.id);
-            const isLoading = followLoading[salon.id] || false;
-            const displayName = getSalonDisplayName(salon);
+        {sortedAll.map((salon) => {
+          const distance = userLocation
+            ? calculateDistance(userLocation.lat, userLocation.lng, salon.latitude || 0, salon.longitude || 0)
+            : null;
+          const isFollowing = followingIds.has(salon.id) || guestFollowingIds.has(salon.id);
+          const isLoading = followLoading[salon.id] || false;
+          const displayName = getSalonDisplayName(salon);
+          const posts = portfolioBySalon[salon.id] || [];
 
-            const salonStories = stories.filter(s => s.profile_id === salon.id);
-            const hasStories = salonStories.length > 0;
-            const { hasUnviewed } = getStoryStatusForSalon(salon.id);
+          const salonStories = stories.filter(s => s.profile_id === salon.id);
+          const hasStories = salonStories.length > 0;
+          const { hasUnviewed } = getStoryStatusForSalon(salon.id);
 
-            return (
+          return (
+            <div
+              key={salon.id}
+              className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden"
+            >
               <div
-                key={salon.id}
-                className="w-full bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden hover:border-zinc-500 transition cursor-pointer"
+                className="flex items-center gap-3 p-3 cursor-pointer"
                 onClick={() => {
                   if (hasStories) {
                     setSelectedStory({
@@ -2223,89 +2249,121 @@ export default function PublicHomePage({
                       salonId: salon.id,
                     });
                   } else {
-                    setSelectedSalon(salon);
+                    setShowPublicProfile(salon.id);
                   }
                 }}
               >
-                <div className="flex items-center p-3 gap-3">
-                  <div className="relative flex-shrink-0">
-                    {hasStories && (
-                      <div
-                        className={`absolute -inset-0.5 rounded-full ${
-                          hasUnviewed
-                            ? 'bg-gradient-to-tr from-yellow-400 to-pink-500'
-                            : 'bg-zinc-600'
-                        }`}
-                      />
-                    )}
-                    <div className="w-14 h-14 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border-2 border-zinc-900 relative z-10">
-                      <SafeImage
-                        src={salon.avatar_url}
-                        alt={displayName}
-                        className="w-full h-full object-cover"
-                        fallback={<Scissors className="w-6 h-6 text-white" />}
-                      />
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <p className="text-white font-semibold text-sm truncate">{displayName}</p>
-                      {salon.has_active_subscription && <span className="text-yellow-400 text-[10px] flex-shrink-0 whitespace-nowrap">⭐ Abonné</span>}
-                      {hasStories && hasUnviewed && (
-                        <div className="w-2.5 h-2.5 rounded-full bg-gradient-to-tr from-yellow-400 to-pink-500 flex-shrink-0" />
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
-                      <span className="flex items-center gap-0.5 flex-shrink-0">
-                        <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
-                        {salon.rating?.toFixed(1) || '0.0'}
-                      </span>
-                      <span className="flex items-center gap-0.5 flex-shrink-0">
-                        <User className="w-3 h-3 text-emerald-400" />
-                        {salon.followers_count ?? 0}
-                      </span>
-                      {distance !== null && (
-                        <>
-                          <span className="flex-shrink-0">•</span>
-                          <span className="text-emerald-400 flex-shrink-0">{distance.toFixed(1)} km</span>
-                        </>
-                      )}
-                    </div>
-                    {salon.address && <p className="text-zinc-500 text-[10px] truncate mt-0.5">{shortAddress(salon.address)}</p>}
-                  </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); startItinerary(salon); }}
-                      className="p-1.5 rounded-lg hover:bg-zinc-800 transition"
-                      title="Itinéraire"
-                    >
-                      <RouteIcon className="w-4 h-4 text-emerald-400" />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleFollow(salon.id); }}
-                      disabled={isLoading}
-                      className="p-1.5 rounded-lg hover:bg-zinc-800 transition disabled:opacity-50"
-                    >
-                      {isLoading ? (
-                        <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
-                      ) : isFollowing ? (
-                        <UserCheck className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <UserPlusIcon className="w-4 h-4 text-zinc-400" />
-                      )}
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setSelectedSalon(salon); }}
-                      className="p-1.5 rounded-lg hover:bg-zinc-800 transition"
-                    >
-                      <ChevronRight className="w-4 h-4 text-zinc-500" />
-                    </button>
+                <div className="relative flex-shrink-0">
+                  {hasStories && (
+                    <div
+                      className={`absolute -inset-0.5 rounded-full ${
+                        hasUnviewed
+                          ? 'bg-gradient-to-tr from-yellow-400 to-pink-500'
+                          : 'bg-zinc-600'
+                      }`}
+                    />
+                  )}
+                  <div className="w-12 h-12 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border-2 border-zinc-900 relative z-10">
+                    <SafeImage
+                      src={salon.avatar_url}
+                      alt={displayName}
+                      className="w-full h-full object-cover"
+                      fallback={<Scissors className="w-5 h-5 text-white" />}
+                    />
                   </div>
                 </div>
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-white font-semibold text-sm truncate">{displayName}</p>
+                    {salon.has_active_subscription && <span className="text-yellow-400 text-[10px]">⭐</span>}
+                  </div>
+                  <div className="flex items-center gap-2 text-[10px] text-zinc-400 mt-0.5">
+                    <span className="flex items-center gap-0.5">
+                      <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+                      {salon.rating?.toFixed(1) || '0.0'}
+                    </span>
+                    <span className="flex items-center gap-0.5">
+                      <User className="w-3 h-3 text-emerald-400" />
+                      {salon.followers_count ?? 0}
+                    </span>
+                    {distance !== null && (
+                      <>
+                        <span>•</span>
+                        <span className="text-emerald-400">{distance.toFixed(1)} km</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleFollow(salon.id); }}
+                  disabled={isLoading}
+                  className="p-1.5 rounded-lg hover:bg-zinc-800 transition disabled:opacity-50 flex-shrink-0"
+                >
+                  {isLoading ? (
+                    <div className="w-4 h-4 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin" />
+                  ) : isFollowing ? (
+                    <UserCheck className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <UserPlusIcon className="w-4 h-4 text-zinc-400" />
+                  )}
+                </button>
               </div>
-            );
-          })}
-        </div>
+
+              {posts.length > 0 ? (
+                <div
+                  className="grid grid-cols-3 gap-0.5 cursor-pointer"
+                  onClick={() => setShowPublicProfile(salon.id)}
+                >
+                  {posts.slice(0, 6).map((post) => (
+                    <div key={post.id} className="relative aspect-square bg-zinc-800">
+                      {post.media_type === 'video' ? (
+                        <video src={post.image_url} className="w-full h-full object-cover" muted />
+                      ) : (
+                        <img
+                          src={post.image_url}
+                          alt=""
+                          className="w-full h-full object-cover"
+                          loading="lazy"
+                        />
+                      )}
+                      {post.like_count > 0 && (
+                        <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 text-white text-xs font-semibold drop-shadow-lg">
+                          <Heart className="w-3.5 h-3.5 fill-white" />
+                          {post.like_count}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div
+                  className="py-6 text-center cursor-pointer hover:bg-zinc-800/50 transition"
+                  onClick={() => setShowPublicProfile(salon.id)}
+                >
+                  <p className="text-zinc-600 text-xs">Aucune publication pour l'instant</p>
+                </div>
+              )}
+
+              <div className="flex items-center border-t border-zinc-800">
+                <button
+                  onClick={() => setShowPublicProfile(salon.id)}
+                  className="flex-1 py-2.5 text-center text-white text-xs font-semibold hover:bg-zinc-800 transition"
+                >
+                  Voir le profil
+                </button>
+                <div className="w-px h-6 bg-zinc-800" />
+                <button
+                  onClick={() => startItinerary(salon)}
+                  className="flex-1 py-2.5 text-center text-emerald-400 text-xs font-semibold hover:bg-zinc-800 transition"
+                >
+                  Itinéraire
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -2411,6 +2469,16 @@ export default function PublicHomePage({
 
             <div className="mt-4 flex flex-col gap-2">
               <button
+                onClick={() => {
+                  setSelectedSalon(null);
+                  setShowPublicProfile(selectedSalon.id);
+                }}
+                className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl text-sm transition"
+              >
+                Voir le profil complet
+              </button>
+
+              <button
                 onClick={() => handleBooking(selectedSalon)}
                 disabled={!selectedSalon.slug}
                 className="w-full flex items-center justify-center gap-2 bg-white text-black font-semibold py-3 rounded-xl text-sm hover:bg-zinc-200 transition disabled:opacity-40 disabled:cursor-not-allowed"
@@ -2422,7 +2490,7 @@ export default function PublicHomePage({
               <div className="flex gap-2 flex-wrap sm:flex-nowrap">
                 <button
                   onClick={() => startItinerary(selectedSalon)}
-                  className="flex-1 min-w-[100px] flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
+                  className="flex-1 min-w-[100px] flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
                 >
                   <RouteIcon className="w-4 h-4" /> Itinéraire
                 </button>
@@ -2506,6 +2574,29 @@ export default function PublicHomePage({
     return (
       <BookingHistoryPage
         onBack={() => setShowHistory(false)}
+      />
+    );
+  }
+
+  // 🔥 Écran plein écran du profil salon
+  if (showPublicProfile) {
+    return (
+      <SalonPublicProfile
+        salonId={showPublicProfile}
+        isAuthenticated={isAuthenticated}
+        currentUserId={currentUserId}
+        isFollowing={
+          followingIds.has(showPublicProfile) ||
+          guestFollowingIds.has(showPublicProfile)
+        }
+        onFollowToggle={(id) => toggleFollow(id)}
+        onBack={() => setShowPublicProfile(null)}
+        onBook={(slug) => {
+          if (slug) navigate(`/booking/${slug}`);
+        }}
+        onStartItinerary={startItinerary}
+        userLocation={userLocation}
+        showToast={showToast}
       />
     );
   }
