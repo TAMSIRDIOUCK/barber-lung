@@ -2311,13 +2311,18 @@ export default function PublicHomePage({
                 </button>
               </div>
 
+              {/* 🔥 CARROUSEL HORIZONTAL DE PHOTOS (3 visibles, scroll droite) */}
               {posts.length > 0 ? (
                 <div
-                  className="grid grid-cols-3 gap-0.5 cursor-pointer"
+                  className="flex gap-0.5 overflow-x-auto snap-x snap-mandatory scrollbar-none cursor-pointer"
                   onClick={() => setShowPublicProfile(salon.id)}
                 >
-                  {posts.slice(0, 6).map((post) => (
-                    <div key={post.id} className="relative aspect-square bg-zinc-800">
+                  {posts.map((post) => (
+                    <div
+                      key={post.id}
+                      className="relative flex-shrink-0 snap-start bg-zinc-800"
+                      style={{ width: 'calc(33.333% - 2px)', aspectRatio: '1 / 1' }}
+                    >
                       {post.media_type === 'video' ? (
                         <video src={post.image_url} className="w-full h-full object-cover" muted />
                       ) : (
