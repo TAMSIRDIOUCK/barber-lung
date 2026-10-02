@@ -40,22 +40,23 @@ interface Booking {
   service_name: string;
   service_price: number;
   net_amount: number | null;
+  barber_id: string | null;
   barber_name: string | null;
   booking_date: string;
   booking_time: string;
   note: string | null;
-  status: 'confirmed' | 'done' | 'cancelled' | 'refunded';
+  status: 'confirmed' | 'done' | 'completed' | 'cancelled' | 'refunded';
   qr_code: string;
   qr_code_scanned: boolean;
   scanned_at: string | null;
   created_at: string;
   payment_status: 'paid';
-  // 🔥 Nouvelles colonnes annulation
   cancelled_at?: string | null;
   cancelled_by?: string | null;
   refund_amount?: number;
   refund_status?: string | null;
   refund_at?: string | null;
+  request_id?: string | null;
 }
 
 type PayoutStatus = 'created' | 'pending' | 'processing' | 'success' | 'failed';
@@ -81,6 +82,7 @@ interface BookingSettingsPageProps {
 const STATUS_LABELS: Record<string, string> = {
   confirmed: 'En attente',
   done: 'Terminé',
+  completed: 'Terminé',
   cancelled: 'Annulé',
   refunded: 'Remboursé',
 };
@@ -88,6 +90,7 @@ const STATUS_LABELS: Record<string, string> = {
 const STATUS_COLORS: Record<string, string> = {
   confirmed: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   done: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  completed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   cancelled: 'bg-red-500/15 text-red-400 border-red-500/30',
   refunded: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
 };
@@ -184,11 +187,11 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   const bookingUrl = `${window.location.origin}/booking/${settings?.slug || ''}`;
 
-  // 🔥 Filtrer : on ne compte QUE les bookings qui rapportent de l'argent
-  // Les annulés / remboursés NE comptent PAS dans le solde
+  const isCompleted = (status?: string) => status === 'done' || status === 'completed';
+
   const totalNetRevenue = useMemo(() => {
     return bookings
-      .filter(b => b.status === 'done')
+      .filter(b => isCompleted(b.status))
       .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
   }, [bookings]);
 
@@ -198,7 +201,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
       .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
   }, [bookings]);
 
-  // 🔥 Total des annulations (info pour le salon)
   const totalRefunded = useMemo(() => {
     return bookings
       .filter(b => b.status === 'cancelled' || b.status === 'refunded')
@@ -312,6 +314,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     };
   }, []);
 
+  // 🔥 Validation + sync booking_history
   const validateAndCompleteBooking = async (qrCodeValue: string) => {
     if (!qrCodeValue || processing) return;
 
@@ -362,7 +365,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         return;
       }
 
-      // 🔥 Refuser les réservations annulées
       if (booking.status === 'cancelled' || booking.status === 'refunded') {
         setScanError('❌ Ce ticket a été annulé par le client');
         setProcessing(false);
@@ -375,25 +377,55 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
         return;
       }
 
-      if (booking.status === 'done') {
+      if (isCompleted(booking.status)) {
         setScanError(`❌ Ticket déjà terminé`);
         setProcessing(false);
         return;
       }
 
+      const now = new Date().toISOString();
+
+      // 🔥 1. Mettre à jour bookings avec status 'completed'
       const { error: updateError } = await supabase
         .from('bookings')
-        .update({ qr_code_scanned: true, scanned_at: new Date().toISOString(), status: 'done' })
+        .update({
+          qr_code_scanned: true,
+          scanned_at: now,
+          status: 'completed',
+        })
         .eq('id', booking.id);
 
       if (updateError) {
+        console.error('Erreur update bookings:', updateError);
         setScanError('❌ Erreur validation');
         setProcessing(false);
         return;
       }
 
+      // 🔥 2. Synchroniser booking_history pour que le client voie "Terminé"
+      try {
+        const { error: histError } = await supabase
+          .from('booking_history')
+          .update({
+            status: 'completed',
+            updated_at: now,
+          })
+          .or(`booking_id.eq.${booking.id},request_id.eq.${booking.request_id || booking.id}`);
+
+        if (histError) {
+          console.warn('⚠️ Sync booking_history:', histError.message);
+        } else {
+          console.log('✅ booking_history synchronisé pour', booking.ticket_number);
+        }
+      } catch (err) {
+        console.warn('⚠️ Exception sync booking_history:', err);
+      }
+
+      // 🔥 3. Mise à jour locale
       setBookings(prev => prev.map(b =>
-        b.id === booking!.id ? { ...b, qr_code_scanned: true, scanned_at: new Date().toISOString(), status: 'done' } : b
+        b.id === booking!.id
+          ? { ...b, qr_code_scanned: true, scanned_at: now, status: 'completed' }
+          : b
       ));
 
       setScanSuccess(`✅ Ticket ${booking.ticket_number} validé ! Paiement débloqué (${booking.client_name})`);
@@ -702,12 +734,14 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     ? bookings
     : filter === 'cancelled'
       ? bookings.filter(b => b.status === 'cancelled' || b.status === 'refunded')
-      : bookings.filter(b => b.status === filter);
+      : filter === 'done'
+        ? bookings.filter(b => isCompleted(b.status))
+        : bookings.filter(b => b.status === filter);
 
   const counts = {
     all: bookings.length,
     confirmed: bookings.filter(b => b.status === 'confirmed').length,
-    done: bookings.filter(b => b.status === 'done').length,
+    done: bookings.filter(b => isCompleted(b.status)).length,
     cancelled: bookings.filter(b => b.status === 'cancelled' || b.status === 'refunded').length,
   };
 
@@ -1055,7 +1089,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               <span>+ {pendingRevenue.toLocaleString('fr-FR')} F en attente — scannez le ticket du client pour débloquer</span>
             </p>
           )}
-          {/* 🔥 Info annulations */}
           {totalRefunded > 0 && (
             <p className="text-red-300/70 text-[11px] mt-1 flex items-center justify-center gap-1 px-2 flex-wrap">
               <RotateCcw className="w-3 h-3 shrink-0" />
@@ -1150,13 +1183,15 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl divide-y divide-zinc-800 overflow-hidden">
               {recentBookings.map((b) => {
                 const isCancelled = b.status === 'cancelled' || b.status === 'refunded';
+                const completed = isCompleted(b.status);
                 return (
                   <div key={b.id} className="px-4 py-3 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className={`text-sm font-medium truncate ${isCancelled ? 'text-zinc-500 line-through' : 'text-white'}`}>
                         {b.service_name} — {b.client_name}
                       </p>
                       <p className="text-zinc-500 text-xs truncate">
+                        {b.barber_name && <span className="text-emerald-400">💈 {b.barber_name} · </span>}
                         {new Date(b.created_at).toLocaleDateString('fr-FR')} à{' '}
                         {new Date(b.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
                       </p>
@@ -1164,7 +1199,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                     <div className="text-right shrink-0">
                       <span className={`font-bold text-sm block ${
                         isCancelled ? 'text-red-400 line-through'
-                        : b.status === 'done' ? 'text-emerald-400'
+                        : completed ? 'text-emerald-400'
                         : 'text-amber-400'
                       }`}>
                         {isCancelled ? '-' : '+'}
@@ -1172,7 +1207,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                       </span>
                       <span className="text-[10px] text-zinc-500">
                         {isCancelled ? 'remboursé'
-                          : b.status === 'done' ? 'débloqué'
+                          : completed ? 'débloqué'
                           : 'en attente'}
                       </span>
                     </div>
@@ -1214,7 +1249,9 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             <div className="space-y-2">
               {filteredBookings.map(booking => {
                 const isCancelled = booking.status === 'cancelled' || booking.status === 'refunded';
+                const completed = isCompleted(booking.status);
                 const refundAmount = booking.refund_amount || booking.service_price || 0;
+                const barberName = booking.barber_name || 'Non assigné';
 
                 return (
                   <div
@@ -1267,6 +1304,17 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                           {booking.service_price.toLocaleString()} CFA
                         </span>
                       </div>
+
+                      {/* 🔥 Coiffeur bien affiché */}
+                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                        <span className="text-zinc-600 shrink-0">💈</span>
+                        <span className="truncate">
+                          Coiffeur : <span className={`font-semibold ${isCancelled ? 'text-zinc-500 line-through' : 'text-white'}`}>
+                            {barberName}
+                          </span>
+                        </span>
+                      </div>
+
                       {booking.net_amount != null && !isCancelled && (
                         <div className="flex items-center gap-2 text-sm text-zinc-500 pl-5">
                           <span className="text-xs">Net reçu (après 15%)</span>
@@ -1285,13 +1333,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                         </span>
                       </div>
 
-                      {booking.barber_name && (
-                        <div className="flex items-center gap-2 text-sm text-zinc-400">
-                          <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                          <span className="truncate">Coiffeur: {booking.barber_name}</span>
-                        </div>
-                      )}
-
                       {booking.note && (
                         <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
                           <span className="text-zinc-600 shrink-0">📝</span>
@@ -1300,7 +1341,6 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                       )}
                     </div>
 
-                    {/* 🔥 Bloc annulation bien visible */}
                     {isCancelled && (
                       <div className="px-4 pb-4 border-t border-red-500/20 pt-3 mt-1">
                         <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 space-y-2">
@@ -1350,7 +1390,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                             </span>
                           </div>
                         )}
-                        {booking.status === 'done' && (
+                        {completed && (
                           <div className="w-full text-center text-emerald-400 text-xs sm:text-sm py-2 px-2 flex items-center justify-center gap-2 bg-emerald-500/10 rounded-xl">
                             <CheckCircle2 className="w-4 h-4 shrink-0" />
                             <span>
