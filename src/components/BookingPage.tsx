@@ -121,7 +121,7 @@ export function BookingPage({ slug }: BookingPageProps) {
     setStep('waiting');
   }, []);
 
-  // 🔥 Rafraîchir les créneaux — FILTRÉS PAR COIFFEUR
+  // 🔥 Rafraîchir les créneaux — FILTRÉS STRICTEMENT PAR COIFFEUR
   const refreshSlots = useCallback(async (silent = false) => {
     if (!form.date || !settings) return;
     if (!silent) setLoadingSlots(true);
@@ -134,24 +134,27 @@ export function BookingPage({ slug }: BookingPageProps) {
       }
       const allSlots = generateTimeSlots(hours.open, hours.close, settings.booking_interval_minutes || 90, 60);
 
-      // 🔥 Filtre par coiffeur : si un coiffeur est sélectionné,
-      // on ne récupère QUE ses réservations pour cette date
-      let query = supabase
-        .from('bookings')
-        .select('booking_time, barber_id')
-        .eq('salon_user_id', settings.user_id)
-        .eq('booking_date', form.date)
-        .not('status', 'eq', 'cancelled');
+      // 🔥 LOGIQUE :
+      // - Si un coiffeur est sélectionné → on ne récupère QUE ses résas
+      //   (les créneaux libres de ce coiffeur s'affichent)
+      // - Si aucun coiffeur sélectionné → on affiche TOUS les créneaux théoriques
+      //   (le client choisit un coiffeur pour voir les dispos)
+      let taken: string[] = [];
 
       if (form.barberId) {
-        // Le coiffeur sélectionné : on récupère ses réservations + les résas sans coiffeur spécifique
-        query = query.or(`barber_id.eq.${form.barberId},barber_id.is.null`);
+        // 🔥 Filtre STRICT par coiffeur — les résas sans coiffeur (NULL) ne bloquent PAS
+        const { data: bkgs, error } = await supabase
+          .from('bookings')
+          .select('booking_time, barber_id')
+          .eq('salon_user_id', settings.user_id)
+          .eq('booking_date', form.date)
+          .eq('barber_id', form.barberId)
+          .not('status', 'eq', 'cancelled');
+
+        if (error) console.warn('Erreur chargement créneaux:', error.message);
+        taken = (bkgs || []).map(b => normalizeTime(b.booking_time));
       }
-      // Sinon : on récupère TOUTES les résas du salon (aucun coiffeur choisi = vue globale)
 
-      const { data: bkgs } = await query;
-
-      const taken = (bkgs || []).map(b => normalizeTime(b.booking_time));
       setBookedSlots(taken);
       setAvailableSlots(allSlots.filter(s => !taken.includes(s)));
       if (form.time && taken.includes(form.time)) {
@@ -210,7 +213,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               client_name: request.client_name,
               client_phone: request.client_phone,
               barber_name: request.barber_name,
-              barber_id: form.barberId,
+              barber_id: request.barber_id || form.barberId,
               status: 'confirmed',
               is_fallback: true,
             },
@@ -225,7 +228,7 @@ export function BookingPage({ slug }: BookingPageProps) {
     }
   }, [form.barberId]);
 
-  // 🔥 Sauvegarde dans booking_history AVEC device_id + user_id (fix principal)
+  // 🔥 Sauvegarde dans booking_history AVEC device_id + user_id
   const saveToHistory = useCallback(async (booking: any, qrData: string) => {
     try {
       const deviceId = getDeviceId();
@@ -306,7 +309,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     setBookingData(enrichedBooking);
     await saveToHistory(enrichedBooking, qrData);
 
-    // Envoi des SMS
     supabase.functions.invoke('send-booking-confirmation', {
       body: { record: enrichedBooking },
     }).catch((err) => console.error('Erreur envoi SMS confirmation:', err));
@@ -417,27 +419,26 @@ export function BookingPage({ slug }: BookingPageProps) {
     setSubmitting(true);
 
     try {
-      // 🔥 Vérifier le conflit PAR COIFFEUR
-      let conflictQuery = supabase
-        .from('bookings').select('id')
-        .eq('salon_user_id', settings.user_id)
-        .eq('booking_date', form.date)
-        .eq('booking_time', form.time)
-        .not('status', 'eq', 'cancelled');
-
+      // 🔥 Vérifier le conflit STRICTEMENT PAR COIFFEUR
       if (form.barberId) {
-        conflictQuery = conflictQuery.eq('barber_id', form.barberId);
-      }
+        const { data: conflict } = await supabase
+          .from('bookings')
+          .select('id')
+          .eq('salon_user_id', settings.user_id)
+          .eq('booking_date', form.date)
+          .eq('booking_time', form.time)
+          .eq('barber_id', form.barberId)
+          .not('status', 'eq', 'cancelled')
+          .maybeSingle();
 
-      const { data: conflict } = await conflictQuery.maybeSingle();
-
-      if (conflict) {
-        if (paymentWindow) paymentWindow.close();
-        await refreshSlots(false);
-        setSubmitError(`⚠️ Le créneau ${form.time} vient d'être pris.`);
-        setForm(prev => ({ ...prev, time: '' }));
-        setStep('form');
-        return;
+        if (conflict) {
+          if (paymentWindow) paymentWindow.close();
+          await refreshSlots(false);
+          setSubmitError(`⚠️ Le créneau ${form.time} vient d'être pris pour ce coiffeur.`);
+          setForm(prev => ({ ...prev, time: '' }));
+          setStep('form');
+          return;
+        }
       }
 
       // 🔥 Créer la demande AVEC barber_id
@@ -541,7 +542,7 @@ export function BookingPage({ slug }: BookingPageProps) {
   };
 
   const allSlots = [...new Set([...availableSlots, ...bookedSlots])].sort();
-  const noSlots = !!(form.date && availableSlots.length === 0 && !loadingSlots);
+  const noSlots = !!(form.date && form.barberId && availableSlots.length === 0 && !loadingSlots);
   const isDisabled = submitting || (form.date && noSlots) || (!form.barberId && barbers.length > 0) || !form.time;
 
   const formatCFA = (v: number) => v.toLocaleString('fr-FR') + ' CFA';
@@ -1020,10 +1021,15 @@ export function BookingPage({ slug }: BookingPageProps) {
                   </button>
                 </div>
 
-                {form.barberId && (
+                {form.barberId ? (
                   <p className="text-[11px] text-zinc-500 mb-2 flex items-center gap-1.5">
                     <Clock className="w-3 h-3" />
                     Créneaux pour <span className="text-white font-semibold">{form.barberName}</span>
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-amber-400 mb-2 flex items-center gap-1.5">
+                    <AlertCircle className="w-3 h-3" />
+                    Sélectionnez un coiffeur pour voir ses disponibilités
                   </p>
                 )}
 
@@ -1040,24 +1046,27 @@ export function BookingPage({ slug }: BookingPageProps) {
                 ) : (
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                     {allSlots.map((slot) => {
-                      const isBooked = bookedSlots.includes(slot);
+                      const isBooked = form.barberId ? bookedSlots.includes(slot) : false;
                       const isSelected = form.time === slot;
+                      const isDisabledSlot = !form.barberId || isBooked;
                       return (
                         <button
                           key={slot}
                           type="button"
                           onClick={() => {
-                            if (!isBooked) {
+                            if (form.barberId && !isBooked) {
                               setForm(prev => ({ ...prev, time: slot }));
                               setErrors(prev => ({ ...prev, time: undefined }));
                             }
                           }}
-                          disabled={isBooked}
+                          disabled={isDisabledSlot}
                           className={`w-full py-2.5 px-1 rounded-xl text-xs sm:text-sm font-medium transition-all duration-150 ${
                             isSelected
                               ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
                               : isBooked
                               ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
+                              : !form.barberId
+                              ? 'bg-zinc-800/50 border border-zinc-700/50 text-zinc-500 cursor-not-allowed'
                               : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
                           }`}
                         >
