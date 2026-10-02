@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Calendar, Clock, QrCode, Download, Loader,
   ArrowLeft, Store, X, AlertCircle,
-  Ban, Wallet, CheckCircle2, RotateCcw, Zap
+  Ban, Wallet, CheckCircle2, RotateCcw, DollarSign
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import QRCode from 'qrcode';
@@ -83,7 +83,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
   const [cancelConfirm, setCancelConfirm] = useState<HistoryItem | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [cancelSuccess, setCancelSuccess] = useState<{ refund: number; instant: boolean } | null>(null);
+  const [cancelSuccess, setCancelSuccess] = useState<{ refund: number } | null>(null);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -240,7 +240,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     }
   };
 
-  // 🔥 Annulation + remboursement INSTANTANÉ
+  // 🔥 Annulation simple : libère le créneau + statut "à récupérer au salon"
   const handleCancelBooking = async (item: HistoryItem) => {
     setCancelError(null);
     setIsCancelling(true);
@@ -250,7 +250,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       const { data: { session } } = await supabase.auth.getSession();
       const userId = session?.user?.id || null;
 
-      console.log('🚀 Annulation avec remboursement instantané:', {
+      console.log('🚀 Annulation + libération créneau:', {
         booking_id: item.id,
         amount: item.service_price,
       });
@@ -270,55 +270,43 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
         const { error: updateError } = await supabase
           .from('booking_history')
           .update({
-            status: 'refunded',
+            status: 'cancelled',
             cancelled_at: now,
             cancelled_by: 'client',
             refund_amount: item.service_price,
-            refund_status: 'success',
-            refund_at: now,
-            refund_mode: 'wave-senegal',
-            refund_account: item.client_phone,
+            refund_status: 'pending_pickup',
             updated_at: now,
           })
           .eq('id', item.id);
 
         if (updateError) {
-          console.error('Erreur update direct:', updateError);
+          console.error('Erreur update booking_history:', updateError);
           setCancelError('Impossible d\'annuler la réservation. Veuillez réessayer.');
           return;
         }
 
-        // 🔥 Ajouter dans la file de remboursement — avec try/catch classique
-        try {
-          const { error: queueError } = await supabase
-            .from('refund_queue')
-            .insert({
-              booking_history_id: item.id,
-              request_id: item.request_id,
-              client_phone: item.client_phone,
-              amount: item.service_price,
-              payout_mode: 'wave-senegal',
-              status: 'pending',
-            });
+        // 🔥 Libérer le créneau dans bookings
+        await supabase
+          .from('bookings')
+          .update({
+            status: 'cancelled',
+            cancelled_at: now,
+            cancelled_by: 'client',
+            refund_amount: item.service_price,
+            refund_status: 'pending_pickup',
+            updated_at: now,
+          })
+          .eq('id', item.id);
 
-          if (queueError) {
-            console.warn('⚠️ Erreur insert refund_queue:', queueError.message);
-          } else {
-            console.log('✅ Remboursement ajouté à la file');
-          }
-        } catch (queueErr) {
-          console.warn('⚠️ Exception refund_queue:', queueErr);
-        }
-
-        setCancelSuccess({ refund: item.service_price, instant: true });
+        setCancelSuccess({ refund: item.service_price });
 
         setItems(prev => prev.map(i =>
           i.id === item.id
-            ? { ...i, status: 'refunded', cancelled_at: now, refund_amount: item.service_price, refund_status: 'success', refund_at: now }
+            ? { ...i, status: 'cancelled', cancelled_at: now, refund_amount: item.service_price, refund_status: 'pending_pickup' }
             : i
         ));
         if (selectedItem?.id === item.id) {
-          setSelectedItem(prev => prev ? { ...prev, status: 'refunded', cancelled_at: now, refund_amount: item.service_price, refund_status: 'success', refund_at: now } : null);
+          setSelectedItem(prev => prev ? { ...prev, status: 'cancelled', cancelled_at: now, refund_amount: item.service_price, refund_status: 'pending_pickup' } : null);
         }
         setTimeout(() => { setCancelConfirm(null); setCancelSuccess(null); }, 3500);
         return;
@@ -330,21 +318,18 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       }
 
       const refundAmount = data?.refund_amount || item.service_price;
-      const isInstant = data?.refund_status === 'success';
 
-      console.log('✅ Remboursement:', { refundAmount, isInstant, data });
-
-      setCancelSuccess({ refund: refundAmount, instant: isInstant });
+      setCancelSuccess({ refund: refundAmount });
 
       const now = new Date().toISOString();
       setItems(prev => prev.map(i =>
         i.id === item.id
-          ? { ...i, status: 'refunded', cancelled_at: now, refund_amount: refundAmount, refund_status: 'success', refund_at: now }
+          ? { ...i, status: 'cancelled', cancelled_at: now, refund_amount: refundAmount, refund_status: 'pending_pickup' }
           : i
       ));
 
       if (selectedItem?.id === item.id) {
-        setSelectedItem(prev => prev ? { ...prev, status: 'refunded', cancelled_at: now, refund_amount: refundAmount, refund_status: 'success', refund_at: now } : null);
+        setSelectedItem(prev => prev ? { ...prev, status: 'cancelled', cancelled_at: now, refund_amount: refundAmount, refund_status: 'pending_pickup' } : null);
       }
 
       setTimeout(() => { setCancelConfirm(null); setCancelSuccess(null); }, 3500);
@@ -359,12 +344,23 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
 
   const getStatusBadge = (item: HistoryItem) => {
     const status = item.status || 'confirmed';
+    const refundStatus = item.refund_status;
+
+    // Si annulé et à récupérer au salon
+    if (status === 'cancelled' && refundStatus === 'pending_pickup') {
+      return <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-semibold">💰 À récupérer au salon</span>;
+    }
+    if (status === 'cancelled' && refundStatus === 'success') {
+      return <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-semibold">✓ Remboursé</span>;
+    }
+
     switch (status) {
       case 'cancelled':
-        return <span className="text-[10px] bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full font-semibold">✕ Annulé</span>;
+        return <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-semibold">💰 À récupérer</span>;
       case 'refunded':
-        return <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-semibold">⚡ Remboursé</span>;
+        return <span className="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-semibold">✓ Remboursé</span>;
       case 'completed':
+      case 'done':
         return <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-semibold">✓ Terminé</span>;
       case 'no_show':
         return <span className="text-[10px] bg-zinc-500/20 text-zinc-400 px-2 py-0.5 rounded-full font-semibold">⚠ Non venu</span>;
@@ -382,11 +378,14 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     );
   }
 
+  // ── Vue détail
   if (selectedItem) {
     const qr = qrUrls[selectedItem.id];
     const canCancel = canCancelBooking(selectedItem);
     const status = selectedItem.status || 'confirmed';
-    const isCancelledOrRefunded = ['cancelled', 'refunded'].includes(status);
+    const isCancelled = status === 'cancelled' || status === 'refunded';
+    const refundStatus = selectedItem.refund_status;
+    const isPendingPickup = refundStatus === 'pending_pickup';
 
     return (
       <div className="min-h-screen bg-zinc-950 text-white p-4">
@@ -408,19 +407,31 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
             </div>
 
             <div className="px-6 py-5 space-y-4">
-              {isCancelledOrRefunded ? (
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
-                  <div className="flex items-center justify-center gap-2 mb-1">
-                    <Zap className="w-5 h-5 text-amber-600" />
-                    <p className="text-amber-700 text-lg font-semibold">Remboursement effectué</p>
+              {isCancelled ? (
+                isPendingPickup ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                    <div className="flex items-center justify-center gap-2 mb-1">
+                      <DollarSign className="w-5 h-5 text-amber-600" />
+                      <p className="text-amber-700 text-lg font-semibold">Récupérez au salon</p>
+                    </div>
+                    <p className="text-amber-600 text-sm">
+                      {selectedItem.refund_amount ? `${formatCFA(selectedItem.refund_amount)} à récupérer` : 'Montant à récupérer'}
+                    </p>
+                    <p className="text-amber-500 text-xs mt-2 leading-relaxed">
+                      💰 Présentez-vous au salon <strong>{selectedItem.salon_name}</strong> avec ce ticket pour récupérer votre argent
+                    </p>
                   </div>
-                  <p className="text-amber-600 text-sm">
-                    {selectedItem.refund_amount ? `${formatCFA(selectedItem.refund_amount)} envoyés` : 'Montant envoyé'}
-                  </p>
-                  <p className="text-amber-500 text-xs mt-1">
-                    ⚡ Vous recevrez l'argent sur {selectedItem.client_phone} dans quelques minutes
-                  </p>
-                </div>
+                ) : (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
+                    <div className="flex items-center justify-center gap-2 mb-1">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                      <p className="text-emerald-700 text-lg font-semibold">Remboursé</p>
+                    </div>
+                    <p className="text-emerald-600 text-sm">
+                      {selectedItem.refund_amount ? `${formatCFA(selectedItem.refund_amount)} remboursés` : 'Montant remboursé'}
+                    </p>
+                  </div>
+                )
               ) : (
                 <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-center">
                   <p className="text-green-700 text-lg font-semibold mb-1">✅ Réservation confirmée</p>
@@ -430,7 +441,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                 </div>
               )}
 
-              {qr && !isCancelledOrRefunded && (
+              {qr && !isCancelled && (
                 <div className="bg-white rounded-xl p-4 text-center border-2 border-blue-300 shadow-lg">
                   <div className="flex items-center justify-center gap-2 mb-2">
                     <QrCode className="w-5 h-5 text-blue-600" />
@@ -482,11 +493,11 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
               className="w-full mt-4 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-xl text-sm transition"
             >
               <Ban className="w-4 h-4" />
-              Annuler et être remboursé immédiatement
+              Annuler la réservation
             </button>
           )}
 
-          {!canCancel && !isCancelledOrRefunded && status === 'confirmed' && (
+          {!canCancel && !isCancelled && status === 'confirmed' && (
             <div className="mt-4 flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded-xl p-3">
               <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
               <p className="text-amber-400 text-xs">
@@ -496,6 +507,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
           )}
         </div>
 
+        {/* MODAL CONFIRMATION */}
         {cancelConfirm && (
           <div
             className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4"
@@ -508,21 +520,21 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
               {cancelSuccess ? (
                 <div className="flex flex-col items-center text-center">
                   <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mb-3">
-                    <Zap className="w-8 h-8 text-emerald-400" />
+                    <CheckCircle2 className="w-8 h-8 text-emerald-400" />
                   </div>
-                  <h3 className="text-white font-bold text-lg mb-2">Remboursement effectué</h3>
+                  <h3 className="text-white font-bold text-lg mb-2">Réservation annulée</h3>
                   <p className="text-zinc-400 text-sm mb-2">
-                    Votre réservation est annulée.
+                    Votre créneau est maintenant libéré.
                   </p>
-                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 w-full">
-                    <div className="flex items-center justify-center gap-2">
-                      <Wallet className="w-4 h-4 text-emerald-400" />
-                      <p className="text-emerald-400 text-sm font-semibold">
-                        {formatCFA(cancelSuccess.refund)} envoyés
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 w-full">
+                    <div className="flex items-center justify-center gap-2 mb-1">
+                      <DollarSign className="w-4 h-4 text-amber-400" />
+                      <p className="text-amber-400 text-sm font-semibold">
+                        Récupérez {formatCFA(cancelSuccess.refund)} au salon
                       </p>
                     </div>
-                    <p className="text-emerald-500/70 text-xs mt-1 text-center">
-                      ⚡ Vous recevrez l'argent sur votre numéro dans quelques minutes
+                    <p className="text-amber-500/80 text-xs text-center">
+                      💰 Présentez-vous au salon avec votre numéro de ticket
                     </p>
                   </div>
                 </div>
@@ -551,15 +563,15 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-xs pt-1 border-t border-zinc-700/50">
-                      <span className="text-zinc-500">Remboursement</span>
-                      <span className="text-emerald-400 font-bold">{formatCFA(cancelConfirm.service_price)}</span>
+                      <span className="text-zinc-500">À récupérer</span>
+                      <span className="text-amber-400 font-bold">{formatCFA(cancelConfirm.service_price)}</span>
                     </div>
                   </div>
 
-                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 mb-4 flex items-start gap-2">
-                    <Zap className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                    <p className="text-emerald-400 text-xs">
-                      ⚡ <strong>Remboursement instantané</strong> — Vous recevrez l'argent sur votre numéro {cancelConfirm.client_phone} dans quelques minutes.
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 mb-4 flex items-start gap-2">
+                    <DollarSign className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-amber-400 text-xs">
+                      💰 <strong>Récupérez votre argent au salon</strong> — Le créneau sera libéré immédiatement. Présentez-vous au salon avec votre numéro de ticket pour récupérer {formatCFA(cancelConfirm.service_price)}.
                     </p>
                   </div>
 
@@ -594,6 +606,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     );
   }
 
+  // ── Liste vide
   if (items.length === 0) {
     return (
       <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
@@ -616,6 +629,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     );
   }
 
+  // ── Liste
   return (
     <div className="min-h-screen bg-zinc-950 text-white pb-20">
       <header className="sticky top-0 z-40 bg-black border-b border-zinc-800 px-4 py-3">
@@ -636,23 +650,30 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       <div className="max-w-lg mx-auto p-4 space-y-3">
         {items.map((item) => {
           const status = item.status || 'confirmed';
-          const isCancelledOrRefunded = ['cancelled', 'refunded'].includes(status);
+          const isCancelled = status === 'cancelled' || status === 'refunded';
+          const isPendingPickup = item.refund_status === 'pending_pickup';
           const canCancel = canCancelBooking(item);
 
           return (
             <div
               key={item.id}
               className={`w-full text-left bg-zinc-900 border rounded-2xl overflow-hidden transition ${
-                isCancelledOrRefunded ? 'border-zinc-800 opacity-70' : 'border-zinc-800 hover:border-zinc-600'
+                isCancelled ? 'border-zinc-800 opacity-70' : 'border-zinc-800 hover:border-zinc-600'
               }`}
             >
               <button onClick={() => setSelectedItem(item)} className="w-full text-left p-4">
                 <div className="flex items-start gap-3">
-                  {qrUrls[item.id] && !isCancelledOrRefunded ? (
+                  {qrUrls[item.id] && !isCancelled ? (
                     <img src={qrUrls[item.id]} alt="" className="w-16 h-16 rounded-xl border border-zinc-700 bg-white p-1 flex-shrink-0" />
                   ) : (
                     <div className="w-16 h-16 rounded-xl bg-zinc-800 flex items-center justify-center flex-shrink-0">
-                      {isCancelledOrRefunded ? <RotateCcw className="w-6 h-6 text-amber-500" /> : <QrCode className="w-6 h-6 text-zinc-500" />}
+                      {isPendingPickup ? (
+                        <DollarSign className="w-6 h-6 text-amber-500" />
+                      ) : isCancelled ? (
+                        <RotateCcw className="w-6 h-6 text-zinc-500" />
+                      ) : (
+                        <QrCode className="w-6 h-6 text-zinc-500" />
+                      )}
                     </div>
                   )}
 
@@ -662,12 +683,12 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                       <p className="text-white font-semibold text-sm truncate">{item.salon_name}</p>
                     </div>
 
-                    <p className={`text-sm truncate ${isCancelledOrRefunded ? 'text-zinc-500 line-through' : 'text-zinc-300'}`}>
+                    <p className={`text-sm truncate ${isCancelled ? 'text-zinc-500 line-through' : 'text-zinc-300'}`}>
                       {item.service_name}
                     </p>
 
                     {item.barber_name && (
-                      <p className={`text-xs truncate mt-0.5 ${isCancelledOrRefunded ? 'text-zinc-600 line-through' : 'text-zinc-500'}`}>
+                      <p className={`text-xs truncate mt-0.5 ${isCancelled ? 'text-zinc-600 line-through' : 'text-zinc-500'}`}>
                         💈 {item.barber_name}
                       </p>
                     )}
@@ -681,7 +702,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                         <Clock className="w-3 h-3" />
                         {item.booking_time.slice(0, 5)}
                       </span>
-                      <span className={`font-bold ${isCancelledOrRefunded ? 'text-zinc-500 line-through' : 'text-emerald-400'}`}>
+                      <span className={`font-bold ${isCancelled ? 'text-zinc-500 line-through' : 'text-emerald-400'}`}>
                         {formatCFA(item.service_price)}
                       </span>
                     </div>
@@ -699,15 +720,33 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                   onClick={(e) => { e.stopPropagation(); setCancelConfirm(item); }}
                   className="w-full py-2.5 text-center text-red-400 text-xs font-semibold hover:bg-red-500/10 transition border-t border-zinc-800 flex items-center justify-center gap-1.5"
                 >
-                  <Zap className="w-3.5 h-3.5" />
-                  Annuler et remboursement instantané
+                  <Ban className="w-3.5 h-3.5" />
+                  Annuler la réservation
                 </button>
+              )}
+
+              {/* Indication "à récupérer" */}
+              {isPendingPickup && (
+                <div className="px-4 pb-4 border-t border-zinc-800 pt-3">
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 flex items-start gap-2">
+                    <DollarSign className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-amber-400 text-xs font-semibold">
+                        💰 À récupérer au salon
+                      </p>
+                      <p className="text-amber-500/70 text-[10px] mt-0.5">
+                        Présentez-vous avec le ticket {item.ticket_number}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           );
         })}
       </div>
 
+      {/* MODAL GLOBAL */}
       {cancelConfirm && (
         <div
           className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4"
@@ -720,18 +759,19 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
             {cancelSuccess ? (
               <div className="flex flex-col items-center text-center">
                 <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mb-3">
-                  <Zap className="w-8 h-8 text-emerald-400" />
+                  <CheckCircle2 className="w-8 h-8 text-emerald-400" />
                 </div>
-                <h3 className="text-white font-bold text-lg mb-2">Remboursement effectué</h3>
-                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 w-full mt-2">
-                  <div className="flex items-center justify-center gap-2">
-                    <Wallet className="w-4 h-4 text-emerald-400" />
-                    <p className="text-emerald-400 text-sm font-semibold">
-                      {formatCFA(cancelSuccess.refund)} envoyés
+                <h3 className="text-white font-bold text-lg mb-2">Réservation annulée</h3>
+                <p className="text-zinc-400 text-sm mb-2">Votre créneau est libéré.</p>
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 w-full mt-2">
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <DollarSign className="w-4 h-4 text-amber-400" />
+                    <p className="text-amber-400 text-sm font-semibold">
+                      Récupérez {formatCFA(cancelSuccess.refund)} au salon
                     </p>
                   </div>
-                  <p className="text-emerald-500/70 text-xs mt-1 text-center">
-                    ⚡ Vous recevrez l'argent sur votre numéro dans quelques minutes
+                  <p className="text-amber-500/70 text-xs text-center">
+                    💰 Présentez-vous avec votre numéro de ticket
                   </p>
                 </div>
               </div>
@@ -760,15 +800,15 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs pt-1 border-t border-zinc-700/50">
-                    <span className="text-zinc-500">Remboursement</span>
-                    <span className="text-emerald-400 font-bold">{formatCFA(cancelConfirm.service_price)}</span>
+                    <span className="text-zinc-500">À récupérer</span>
+                    <span className="text-amber-400 font-bold">{formatCFA(cancelConfirm.service_price)}</span>
                   </div>
                 </div>
 
-                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 mb-4 flex items-start gap-2">
-                  <Zap className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-emerald-400 text-xs">
-                    ⚡ <strong>Remboursement instantané</strong> — Vous recevrez l'argent sur votre numéro {cancelConfirm.client_phone} dans quelques minutes.
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 mb-4 flex items-start gap-2">
+                  <DollarSign className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-amber-400 text-xs">
+                    💰 <strong>Récupérez votre argent au salon</strong> — Le créneau sera libéré immédiatement. Présentez-vous au salon <strong>{cancelConfirm.salon_name}</strong> avec le ticket <strong>{cancelConfirm.ticket_number}</strong>.
                   </p>
                 </div>
 
