@@ -134,15 +134,9 @@ export function BookingPage({ slug }: BookingPageProps) {
       }
       const allSlots = generateTimeSlots(hours.open, hours.close, settings.booking_interval_minutes || 90, 60);
 
-      // 🔥 LOGIQUE :
-      // - Si un coiffeur est sélectionné → on ne récupère QUE ses résas
-      //   (les créneaux libres de ce coiffeur s'affichent)
-      // - Si aucun coiffeur sélectionné → on affiche TOUS les créneaux théoriques
-      //   (le client choisit un coiffeur pour voir les dispos)
       let taken: string[] = [];
 
       if (form.barberId) {
-        // 🔥 Filtre STRICT par coiffeur — les résas sans coiffeur (NULL) ne bloquent PAS
         const { data: bkgs, error } = await supabase
           .from('bookings')
           .select('booking_time, barber_id')
@@ -228,7 +222,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     }
   }, [form.barberId]);
 
-  // 🔥 Sauvegarde dans booking_history AVEC device_id + user_id
   const saveToHistory = useCallback(async (booking: any, qrData: string) => {
     try {
       const deviceId = getDeviceId();
@@ -441,7 +434,22 @@ export function BookingPage({ slug }: BookingPageProps) {
         }
       }
 
-      // 🔥 Créer la demande AVEC barber_id
+      // 🔥 Récupérer device_id + user_id AVANT l'insert
+      const deviceId = getDeviceId();
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id || null;
+
+      // 🔥 Sauvegarder le téléphone pour fallback dans BookingHistoryPage
+      localStorage.setItem('last_client_phone', form.client_phone);
+      localStorage.setItem('last_device_id', deviceId);
+
+      console.log('💾 Insertion booking_requests:', {
+        device_id: deviceId,
+        user_id: userId,
+        barber_id: form.barberId,
+      });
+
+      // 🔥 Créer la demande AVEC device_id + user_id + barber_id
       const { data: reqRow, error } = await supabase
         .from('booking_requests')
         .insert({
@@ -457,6 +465,8 @@ export function BookingPage({ slug }: BookingPageProps) {
           note: form.note.trim() || null,
           request_status: 'pending',
           payment_status: 'pending',
+          device_id: deviceId,      // 🔥 AJOUT CRUCIAL
+          user_id: userId,          // 🔥 AJOUT CRUCIAL
         })
         .select()
         .single();
@@ -570,7 +580,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ── Attente paiement
   if (step === 'waiting') {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
@@ -612,7 +621,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ── Succès
   if (step === 'success' && bookingData) {
     const dateFmt = new Date(bookingData.booking_date).toLocaleDateString('fr-FR', {
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
@@ -702,7 +710,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ── Paiement
   if (step === 'pay' && settings && form.eventService) {
     const price = form.eventService.price;
 
@@ -763,7 +770,6 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  // ── Formulaire
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       <div className="bg-black border-b border-zinc-800 px-3 sm:px-4 py-3 sm:py-4 sticky top-0 z-10">
@@ -807,7 +813,6 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* ── SERVICES ── */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-3">
                 Service <span className="text-red-400">*</span>
@@ -871,7 +876,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </div>
 
-            {/* ── COIFFEURS ── */}
             {barbers.length > 0 && (
               <div>
                 <label className="block text-sm font-semibold text-zinc-300 mb-3">
@@ -888,7 +892,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                           if (isSelected) {
                             setForm(prev => ({ ...prev, barberId: null, barberName: '', time: '' }));
                           } else {
-                            // 🔥 Réinitialiser le time quand on change de coiffeur
                             setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name, time: '' }));
                           }
                           setErrors(prev => ({ ...prev, barberId: undefined }));
@@ -937,7 +940,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               </div>
             )}
 
-            {/* Nom */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">
                 Nom complet <span className="text-red-400">*</span>
@@ -959,7 +961,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </div>
 
-            {/* Téléphone */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">
                 Téléphone <span className="text-red-400">*</span>
@@ -982,7 +983,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </div>
 
-            {/* Date */}
             <div className="w-full min-w-0">
               <label className="block text-sm font-semibold text-zinc-300 mb-2">
                 Date <span className="text-red-400">*</span>
@@ -1003,7 +1003,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </div>
 
-            {/* Heures */}
             {form.date && (
               <div className="w-full min-w-0">
                 <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -1085,7 +1084,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               </div>
             )}
 
-            {/* Note */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-2">
                 Note (optionnelle)
@@ -1099,7 +1097,6 @@ export function BookingPage({ slug }: BookingPageProps) {
               />
             </div>
 
-            {/* Résumé */}
             {form.eventService && form.date && form.time && (barbers.length === 0 || form.barberName) && (
               <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 rounded-2xl p-4 mt-2">
                 <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">
