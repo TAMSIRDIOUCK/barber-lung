@@ -121,6 +121,7 @@ export function BookingPage({ slug }: BookingPageProps) {
     setStep('waiting');
   }, []);
 
+  // 🔥 Rafraîchir les créneaux — FILTRÉS PAR COIFFEUR
   const refreshSlots = useCallback(async (silent = false) => {
     if (!form.date || !settings) return;
     if (!silent) setLoadingSlots(true);
@@ -133,11 +134,22 @@ export function BookingPage({ slug }: BookingPageProps) {
       }
       const allSlots = generateTimeSlots(hours.open, hours.close, settings.booking_interval_minutes || 90, 60);
 
-      const { data: bkgs } = await supabase
-        .from('bookings').select('booking_time')
+      // 🔥 Filtre par coiffeur : si un coiffeur est sélectionné,
+      // on ne récupère QUE ses réservations pour cette date
+      let query = supabase
+        .from('bookings')
+        .select('booking_time, barber_id')
         .eq('salon_user_id', settings.user_id)
         .eq('booking_date', form.date)
         .not('status', 'eq', 'cancelled');
+
+      if (form.barberId) {
+        // Le coiffeur sélectionné : on récupère ses réservations + les résas sans coiffeur spécifique
+        query = query.or(`barber_id.eq.${form.barberId},barber_id.is.null`);
+      }
+      // Sinon : on récupère TOUTES les résas du salon (aucun coiffeur choisi = vue globale)
+
+      const { data: bkgs } = await query;
 
       const taken = (bkgs || []).map(b => normalizeTime(b.booking_time));
       setBookedSlots(taken);
@@ -147,7 +159,7 @@ export function BookingPage({ slug }: BookingPageProps) {
       }
     } catch (err) { console.error(err); }
     finally { if (!silent) setLoadingSlots(false); }
-  }, [form.date, settings, form.time]);
+  }, [form.date, settings, form.time, form.barberId]);
 
   useEffect(() => { refreshSlots(); }, [refreshSlots]);
 
@@ -198,6 +210,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               client_name: request.client_name,
               client_phone: request.client_phone,
               barber_name: request.barber_name,
+              barber_id: form.barberId,
               status: 'confirmed',
               is_fallback: true,
             },
@@ -210,21 +223,30 @@ export function BookingPage({ slug }: BookingPageProps) {
       console.error('❌ Erreur checkBookingStatus:', err);
       return { found: false };
     }
-  }, []);
+  }, [form.barberId]);
 
+  // 🔥 Sauvegarde dans booking_history AVEC device_id + user_id (fix principal)
   const saveToHistory = useCallback(async (booking: any, qrData: string) => {
     try {
       const deviceId = getDeviceId();
       const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id || null;
       const ticketNumber = booking.ticket_number || `LC-${Date.now().toString().slice(-8)}`;
 
-      const { error } = await supabase
+      console.log('💾 Sauvegarde dans booking_history:', {
+        device_id: deviceId,
+        user_id: userId,
+        ticket: ticketNumber,
+        barber_id: booking.barber_id || form.barberId,
+      });
+
+      const { data, error } = await supabase
         .from('booking_history')
         .upsert({
           request_id: requestId || booking.request_id || booking.id,
           booking_id: booking.is_fallback ? null : booking.id,
           device_id: deviceId,
-          user_id: session?.user?.id || null,
+          user_id: userId,
           client_name: booking.client_name || form.client_name,
           client_phone: booking.client_phone || form.client_phone,
           salon_user_id: settings?.user_id || '',
@@ -233,14 +255,20 @@ export function BookingPage({ slug }: BookingPageProps) {
           service_name: booking.service_name,
           service_price: booking.service_price,
           barber_name: booking.barber_name || null,
+          barber_id: booking.barber_id || form.barberId || null,
           booking_date: booking.booking_date,
           booking_time: booking.booking_time,
           ticket_number: ticketNumber,
           qr_code_data: qrData,
           payment_status: 'paid',
-        }, { onConflict: 'request_id', ignoreDuplicates: false });
+        }, { onConflict: 'request_id', ignoreDuplicates: false })
+        .select();
 
-      if (error) console.error('⚠️ Erreur sauvegarde historique:', error);
+      if (error) {
+        console.error('⚠️ Erreur sauvegarde historique:', error);
+      } else {
+        console.log('✅ Historique sauvegardé:', data);
+      }
     } catch (err) {
       console.error('❌ Erreur saveToHistory:', err);
     }
@@ -271,19 +299,21 @@ export function BookingPage({ slug }: BookingPageProps) {
       ticket_number: ticketNumber,
       salon_name: settings?.salon_name,
       salon_slug: settings?.slug,
+      barber_id: booking.barber_id || form.barberId,
+      barber_name: booking.barber_name || form.barberName,
     };
 
     setBookingData(enrichedBooking);
     await saveToHistory(enrichedBooking, qrData);
 
-    // Envoi des SMS de confirmation (client + salon)
+    // Envoi des SMS
     supabase.functions.invoke('send-booking-confirmation', {
       body: { record: enrichedBooking },
     }).catch((err) => console.error('Erreur envoi SMS confirmation:', err));
 
     setStep('success');
     window.history.replaceState({}, '', window.location.pathname);
-  }, [settings, saveToHistory]);
+  }, [settings, saveToHistory, form]);
 
   useEffect(() => {
     if (step !== 'waiting' || !requestId) return;
@@ -322,6 +352,7 @@ export function BookingPage({ slug }: BookingPageProps) {
           booking_time: form.time,
           client_name: form.client_name,
           client_phone: form.client_phone,
+          barber_id: form.barberId,
           barber_name: form.barberName,
           is_fallback: true,
         };
@@ -386,13 +417,19 @@ export function BookingPage({ slug }: BookingPageProps) {
     setSubmitting(true);
 
     try {
-      const { data: conflict } = await supabase
+      // 🔥 Vérifier le conflit PAR COIFFEUR
+      let conflictQuery = supabase
         .from('bookings').select('id')
         .eq('salon_user_id', settings.user_id)
         .eq('booking_date', form.date)
         .eq('booking_time', form.time)
-        .not('status', 'eq', 'cancelled')
-        .maybeSingle();
+        .not('status', 'eq', 'cancelled');
+
+      if (form.barberId) {
+        conflictQuery = conflictQuery.eq('barber_id', form.barberId);
+      }
+
+      const { data: conflict } = await conflictQuery.maybeSingle();
 
       if (conflict) {
         if (paymentWindow) paymentWindow.close();
@@ -403,6 +440,7 @@ export function BookingPage({ slug }: BookingPageProps) {
         return;
       }
 
+      // 🔥 Créer la demande AVEC barber_id
       const { data: reqRow, error } = await supabase
         .from('booking_requests')
         .insert({
@@ -411,6 +449,7 @@ export function BookingPage({ slug }: BookingPageProps) {
           client_phone: form.client_phone.trim(),
           service_name: name,
           service_price: price,
+          barber_id: form.barberId || null,
           barber_name: form.barberName || null,
           booking_date: form.date,
           booking_time: form.time,
@@ -603,7 +642,7 @@ export function BookingPage({ slug }: BookingPageProps) {
                 <div className="bg-white rounded-xl p-3 sm:p-4 text-center border-2 border-blue-300 shadow-lg">
                   <div className="flex items-center justify-center gap-2 mb-2">
                     <QrCode className="w-5 h-5 text-blue-600" />
-                    <p className="text-[10px] sm:text-xs font-semibold text-blue-600">QR Code à présenter au salon fait un capture d'écran</p>
+                    <p className="text-[10px] sm:text-xs font-semibold text-blue-600">QR Code à présenter au salon (faites une capture)</p>
                   </div>
                   <img
                     src={qrCodeUrl}
@@ -616,8 +655,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                     <p className="text-black font-black text-lg sm:text-xl break-words">{formatCFA(netAmount)}</p>
                     <p className="text-zinc-400 text-[10px]">(après 15% de frais de service)</p>
                   </div>
-
-                 
                 </div>
               )}
 
@@ -769,7 +806,7 @@ export function BookingPage({ slug }: BookingPageProps) {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* ── SERVICES : cercle avec image à l'intérieur, texte en dessous ── */}
+            {/* ── SERVICES ── */}
             <div>
               <label className="block text-sm font-semibold text-zinc-300 mb-3">
                 Service <span className="text-red-400">*</span>
@@ -792,7 +829,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                       className="flex flex-col items-center gap-2 shrink-0"
                       style={{ width: 88 }}
                     >
-                      {/* Cercle : l'icône remplit tout le cercle */}
                       <div
                         className={`relative w-20 h-20 rounded-full flex items-center justify-center overflow-hidden border-2 transition ${
                           isSelected
@@ -811,7 +847,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                           </div>
                         )}
                       </div>
-                      {/* Texte EN DESSOUS du cercle */}
                       <p
                         className={`text-[11px] font-semibold text-center leading-tight w-full ${
                           isSelected ? 'text-green-400' : 'text-white'
@@ -835,7 +870,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </div>
 
-            {/* ── COIFFEURS : cercle avec image à l'intérieur, texte en dessous ── */}
+            {/* ── COIFFEURS ── */}
             {barbers.length > 0 && (
               <div>
                 <label className="block text-sm font-semibold text-zinc-300 mb-3">
@@ -849,14 +884,17 @@ export function BookingPage({ slug }: BookingPageProps) {
                         key={b.id}
                         type="button"
                         onClick={() => {
-                          if (isSelected) setForm(prev => ({ ...prev, barberId: null, barberName: '' }));
-                          else setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name }));
+                          if (isSelected) {
+                            setForm(prev => ({ ...prev, barberId: null, barberName: '', time: '' }));
+                          } else {
+                            // 🔥 Réinitialiser le time quand on change de coiffeur
+                            setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name, time: '' }));
+                          }
                           setErrors(prev => ({ ...prev, barberId: undefined }));
                         }}
                         className="flex flex-col items-center gap-2 shrink-0"
                         style={{ width: 88 }}
                       >
-                        {/* Cercle : l'image remplit tout le cercle */}
                         <div
                           className={`relative w-20 h-20 rounded-full overflow-hidden border-2 transition ${
                             isSelected
@@ -881,7 +919,6 @@ export function BookingPage({ slug }: BookingPageProps) {
                             </div>
                           )}
                         </div>
-                        {/* Texte EN DESSOUS du cercle */}
                         <p
                           className={`text-[11px] font-semibold text-center leading-tight w-full truncate ${
                             isSelected ? 'text-green-400' : 'text-white'
@@ -944,7 +981,7 @@ export function BookingPage({ slug }: BookingPageProps) {
               )}
             </div>
 
-            {/* ── DATE : ligne corrigée pour ne plus dépasser ── */}
+            {/* Date */}
             <div className="w-full min-w-0">
               <label className="block text-sm font-semibold text-zinc-300 mb-2">
                 Date <span className="text-red-400">*</span>
@@ -982,6 +1019,13 @@ export function BookingPage({ slug }: BookingPageProps) {
                     Actualiser
                   </button>
                 </div>
+
+                {form.barberId && (
+                  <p className="text-[11px] text-zinc-500 mb-2 flex items-center gap-1.5">
+                    <Clock className="w-3 h-3" />
+                    Créneaux pour <span className="text-white font-semibold">{form.barberName}</span>
+                  </p>
+                )}
 
                 {loadingSlots ? (
                   <div className="text-center py-8">
