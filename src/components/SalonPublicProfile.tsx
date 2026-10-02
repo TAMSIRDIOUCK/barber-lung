@@ -3,7 +3,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ChevronLeft, Star, MapPin, Phone, Scissors, Heart, X, Loader2,
   Route as RouteIcon, UserCheck, UserPlus as UserPlusIcon,
-  Grid3x3, Share2, MessageCircle, Eye, Play, Music, Check, Clock
+  Grid3x3, Share2, MessageCircle, Eye, Play, Music, Check, Clock,
+  Send, Trash2, Loader
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import SalonMapView from './SalonMapView';
@@ -15,7 +16,19 @@ interface PortfolioPost {
   caption: string;
   media_type: 'image' | 'video';
   like_count: number;
+  comment_count: number;
   view_count: number;
+  created_at: string;
+}
+
+interface Comment {
+  id: string;
+  post_id: string;
+  profile_id: string | null;
+  device_id: string | null;
+  author_name: string;
+  author_avatar: string | null;
+  content: string;
   created_at: string;
 }
 
@@ -38,6 +51,16 @@ interface RouteState {
   coords: [number, number][];
 }
 
+// 🔥 Utilitaire device_id pour les invités
+function getDeviceId(): string {
+  let deviceId = localStorage.getItem('device_id');
+  if (!deviceId) {
+    deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+    localStorage.setItem('device_id', deviceId);
+  }
+  return deviceId;
+}
+
 export function SalonPublicProfile({
   salonId,
   isAuthenticated = false,
@@ -57,7 +80,15 @@ export function SalonPublicProfile({
   const [userLikes, setUserLikes] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState<'grid' | 'reels'>('grid');
 
-  // 🔥 Itinéraire intégré (carte plein écran DANS cette page)
+  // 🔥 Commentaires
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [newComment, setNewComment] = useState('');
+  const [postingComment, setPostingComment] = useState(false);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
+  const commentsEndRef = useRef<HTMLDivElement>(null);
+
+  // 🔥 Itinéraire intégré
   const [showRouteMap, setShowRouteMap] = useState(false);
   const [routeInfo, setRouteInfo] = useState<RouteState | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
@@ -74,7 +105,6 @@ export function SalonPublicProfile({
     (async () => {
       setLoading(true);
       try {
-        // 1. Charger le profil
         const { data: profileData, error: profileError } = await supabase
           .from('profiles')
           .select('*')
@@ -93,7 +123,6 @@ export function SalonPublicProfile({
           return;
         }
 
-        // 2. 🔥 Charger le slug depuis booking_settings (colonne absente de profiles)
         let salonSlug: string | null = null;
         let followersCount: number = 0;
 
@@ -120,7 +149,6 @@ export function SalonPublicProfile({
           console.error('❌ Exception slug:', err);
         }
 
-        // 3. 🔥 Charger le nombre de followers
         try {
           const { count } = await supabase
             .from('followers')
@@ -132,7 +160,6 @@ export function SalonPublicProfile({
           console.warn('⚠️ Erreur followers:', err);
         }
 
-        // 4. 🔥 Charger la note moyenne
         let rating = 0;
         try {
           const { data: reviews } = await supabase
@@ -149,7 +176,6 @@ export function SalonPublicProfile({
 
         if (cancelled) return;
 
-        // 5. 🔥 Fusionner le slug + stats dans l'objet salon
         setSalon({
           ...profileData,
           slug: salonSlug,
@@ -165,7 +191,6 @@ export function SalonPublicProfile({
           rating,
         });
 
-        // 6. Charger le portfolio
         const { data: postsData } = await supabase
           .from('portfolio_posts')
           .select('*')
@@ -176,17 +201,8 @@ export function SalonPublicProfile({
         if (cancelled) return;
         setPosts(postsData || []);
 
-        // 7. Charger les likes de l'utilisateur
-        if (isAuthenticated && currentUserId) {
-          const { data: likes } = await supabase
-            .from('likes')
-            .select('target_id')
-            .eq('profile_id', currentUserId)
-            .eq('target_type', 'portfolio');
-          if (!cancelled && likes) {
-            setUserLikes(new Set(likes.map((l: any) => l.target_id)));
-          }
-        }
+        // 🔥 Charger les likes de l'utilisateur (connecté OU invité)
+        await loadUserLikes();
       } catch (err) {
         console.error('❌ Erreur chargement profil:', err);
       } finally {
@@ -196,7 +212,292 @@ export function SalonPublicProfile({
     return () => { cancelled = true; };
   }, [salonId, isAuthenticated, currentUserId]);
 
-  // 🔥 Calcul de l'itinéraire EN LOCAL — JAMAIS délégué au parent
+  // 🔥 Charger les likes (user connecté + invité)
+  const loadUserLikes = useCallback(async () => {
+    try {
+      const likedIds: string[] = [];
+
+      if (isAuthenticated && currentUserId) {
+        // Utilisateur connecté : likes par profile_id
+        const { data, error } = await supabase
+          .from('likes')
+          .select('target_id')
+          .eq('profile_id', currentUserId)
+          .eq('target_type', 'portfolio');
+
+        if (!error && data) {
+          likedIds.push(...data.map((l: any) => l.target_id));
+        }
+      } else {
+        // Invité : likes par device_id
+        const deviceId = getDeviceId();
+        const { data, error } = await supabase
+          .from('likes')
+          .select('target_id')
+          .eq('device_id', deviceId)
+          .eq('target_type', 'portfolio');
+
+        if (!error && data) {
+          likedIds.push(...data.map((l: any) => l.target_id));
+        } else if (error) {
+          console.warn('⚠️ Erreur likes invité:', error.message);
+        }
+      }
+
+      setUserLikes(new Set(likedIds));
+    } catch (err) {
+      console.warn('⚠️ Exception loadUserLikes:', err);
+    }
+  }, [isAuthenticated, currentUserId]);
+
+  // 🔥 Charger les commentaires d'un post
+  const loadComments = useCallback(async (postId: string) => {
+    setCommentsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('portfolio_comments')
+        .select('*')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Erreur chargement commentaires:', error);
+        setComments([]);
+      } else {
+        setComments(data || []);
+      }
+    } catch (err) {
+      console.error('Exception loadComments:', err);
+      setComments([]);
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, []);
+
+  // 🔥 Charger les commentaires quand on ouvre un post
+  useEffect(() => {
+    if (selectedPost) {
+      loadComments(selectedPost.id);
+    } else {
+      setComments([]);
+    }
+  }, [selectedPost, loadComments]);
+
+  // 🔥 Auto-scroll vers le dernier commentaire
+  useEffect(() => {
+    commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [comments.length]);
+
+  // 🔥 Ajouter un commentaire
+  const handleAddComment = useCallback(async () => {
+    if (!selectedPost || !newComment.trim() || postingComment) return;
+
+    const content = newComment.trim();
+    setPostingComment(true);
+
+    try {
+      const deviceId = getDeviceId();
+
+      // Récupérer le nom et l'avatar de l'auteur
+      let authorName = 'Anonyme';
+      let authorAvatar: string | null = null;
+
+      if (isAuthenticated && currentUserId) {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('full_name, salon_name, avatar_url')
+          .eq('user_id', currentUserId)
+          .maybeSingle();
+
+        if (profile) {
+          authorName = profile.full_name || profile.salon_name || 'Utilisateur';
+          authorAvatar = profile.avatar_url || null;
+        }
+      } else {
+        // Invité : nom générique
+        const guestNumber = localStorage.getItem('guest_number');
+        if (!guestNumber) {
+          const num = Math.floor(1000 + Math.random() * 9000);
+          localStorage.setItem('guest_number', num.toString());
+          authorName = `Invité #${num}`;
+        } else {
+          authorName = `Invité #${guestNumber}`;
+        }
+      }
+
+      const { data: inserted, error } = await supabase
+        .from('portfolio_comments')
+        .insert({
+          post_id: selectedPost.id,
+          profile_id: isAuthenticated && currentUserId ? currentUserId : null,
+          device_id: isAuthenticated ? null : deviceId,
+          author_name: authorName,
+          author_avatar: authorAvatar,
+          content: content,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Erreur insertion commentaire:', error);
+        showToast?.('Erreur lors de l\'envoi');
+        return;
+      }
+
+      // Ajouter localement
+      setComments(prev => [...prev, inserted as Comment]);
+      setNewComment('');
+
+      // Incrémenter le compteur
+      setPosts(prev => prev.map(p =>
+        p.id === selectedPost.id
+          ? { ...p, comment_count: (p.comment_count || 0) + 1 }
+          : p
+      ));
+      setSelectedPost(prev => prev ? { ...prev, comment_count: (prev.comment_count || 0) + 1 } : null);
+
+      // Met à jour le compteur en base
+      await supabase
+        .from('portfolio_posts')
+        .update({ comment_count: (selectedPost.comment_count || 0) + 1 })
+        .eq('id', selectedPost.id);
+
+    } catch (err) {
+      console.error('Exception addComment:', err);
+      showToast?.('Erreur');
+    } finally {
+      setPostingComment(false);
+    }
+  }, [selectedPost, newComment, postingComment, isAuthenticated, currentUserId, showToast]);
+
+  // 🔥 Supprimer un commentaire (seulement le sien)
+  const handleDeleteComment = useCallback(async (commentId: string) => {
+    if (!selectedPost) return;
+
+    setDeletingCommentId(commentId);
+    try {
+      const { error } = await supabase
+        .from('portfolio_comments')
+        .delete()
+        .eq('id', commentId);
+
+      if (error) {
+        console.error('Erreur suppression:', error);
+        showToast?.('Erreur');
+        return;
+      }
+
+      setComments(prev => prev.filter(c => c.id !== commentId));
+
+      // Décrémenter le compteur
+      setPosts(prev => prev.map(p =>
+        p.id === selectedPost.id
+          ? { ...p, comment_count: Math.max((p.comment_count || 1) - 1, 0) }
+          : p
+      ));
+      setSelectedPost(prev => prev ? { ...prev, comment_count: Math.max((prev.comment_count || 1) - 1, 0) } : null);
+
+      await supabase
+        .from('portfolio_posts')
+        .update({ comment_count: Math.max((selectedPost.comment_count || 1) - 1, 0) })
+        .eq('id', selectedPost.id);
+
+    } catch (err) {
+      console.error('Exception deleteComment:', err);
+      showToast?.('Erreur');
+    } finally {
+      setDeletingCommentId(null);
+    }
+  }, [selectedPost, showToast]);
+
+  // 🔥 Toggle like (connecté OU invité)
+  const toggleLike = useCallback(async (post: PortfolioPost) => {
+    const wasLiked = userLikes.has(post.id);
+
+    // Mise à jour optimiste
+    setUserLikes(prev => {
+      const next = new Set(prev);
+      if (wasLiked) next.delete(post.id); else next.add(post.id);
+      return next;
+    });
+
+    setPosts(prev => prev.map(p =>
+      p.id === post.id
+        ? { ...p, like_count: Math.max((p.like_count || 0) + (wasLiked ? -1 : 1), 0) }
+        : p
+    ));
+    setSelectedPost(prev => prev && prev.id === post.id
+      ? { ...prev, like_count: Math.max((prev.like_count || 0) + (wasLiked ? -1 : 1), 0) }
+      : prev
+    );
+
+    try {
+      const deviceId = getDeviceId();
+
+      if (isAuthenticated && currentUserId) {
+        // Utilisateur connecté : identifier par profile_id
+        if (wasLiked) {
+          await supabase
+            .from('likes')
+            .delete()
+            .eq('profile_id', currentUserId)
+            .eq('target_type', 'portfolio')
+            .eq('target_id', post.id);
+        } else {
+          await supabase.from('likes').insert({
+            profile_id: currentUserId,
+            target_type: 'portfolio',
+            target_id: post.id,
+          });
+        }
+      } else {
+        // Invité : identifier par device_id
+        const { data: existing } = await supabase
+          .from('likes')
+          .select('id')
+          .eq('device_id', deviceId)
+          .eq('target_type', 'portfolio')
+          .eq('target_id', post.id)
+          .maybeSingle();
+
+        if (wasLiked) {
+          if (existing) {
+            await supabase.from('likes').delete().eq('id', existing.id);
+          }
+        } else if (!existing) {
+          await supabase.from('likes').insert({
+            device_id: deviceId,
+            target_type: 'portfolio',
+            target_id: post.id,
+          });
+        }
+      }
+
+      // Mettre à jour le compteur en base
+      await supabase
+        .from('portfolio_posts')
+        .update({
+          like_count: Math.max((post.like_count || 0) + (wasLiked ? -1 : 1), 0)
+        })
+        .eq('id', post.id);
+
+    } catch (err) {
+      console.error('Erreur like:', err);
+      // Rollback
+      setUserLikes(prev => {
+        const next = new Set(prev);
+        if (wasLiked) next.add(post.id); else next.delete(post.id);
+        return next;
+      });
+      setPosts(prev => prev.map(p =>
+        p.id === post.id
+          ? { ...p, like_count: Math.max((p.like_count || 0) + (wasLiked ? 1 : -1), 0) }
+          : p
+      ));
+    }
+  }, [isAuthenticated, currentUserId, userLikes]);
+
+  // 🔥 Itinéraire
   const handleStartItinerary = useCallback(async () => {
     if (!salon?.latitude || !salon?.longitude) {
       showToast?.('Position du salon indisponible');
@@ -250,7 +551,6 @@ export function SalonPublicProfile({
     setRouteError(null);
   }, []);
 
-  // 🔥 Partage fonctionnel
   const handleShare = useCallback(async () => {
     const shareUrl = `${window.location.origin}/salon/${salonId}`;
     const shareData = {
@@ -286,43 +586,36 @@ export function SalonPublicProfile({
     }
   }, [salon, salonId]);
 
-  const toggleLike = useCallback(async (post: PortfolioPost) => {
-    if (!isAuthenticated || !currentUserId) return;
-    const wasLiked = userLikes.has(post.id);
-
-    setUserLikes((prev) => {
-      const next = new Set(prev);
-      if (wasLiked) next.delete(post.id); else next.add(post.id);
-      return next;
-    });
-
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id === post.id
-          ? { ...p, like_count: Math.max((p.like_count || 0) + (wasLiked ? -1 : 1), 0) }
-          : p
-      )
-    );
-
-    try {
-      if (wasLiked) {
-        await supabase
-          .from('likes')
-          .delete()
-          .eq('profile_id', currentUserId)
-          .eq('target_type', 'portfolio')
-          .eq('target_id', post.id);
-      } else {
-        await supabase.from('likes').insert({
-          profile_id: currentUserId,
-          target_type: 'portfolio',
-          target_id: post.id,
-        });
-      }
-    } catch (err) {
-      console.error('Erreur like:', err);
+  // 🔥 Helper : est-ce MON commentaire ?
+  const isMyComment = useCallback((comment: Comment): boolean => {
+    if (isAuthenticated && currentUserId && comment.profile_id === currentUserId) {
+      return true;
     }
-  }, [isAuthenticated, currentUserId, userLikes]);
+    const deviceId = getDeviceId();
+    if (!isAuthenticated && comment.device_id === deviceId) {
+      return true;
+    }
+    return false;
+  }, [isAuthenticated, currentUserId]);
+
+  // 🔥 Formater date relative (il y a X min)
+  const formatRelativeTime = (dateStr: string): string => {
+    try {
+      const diff = Date.now() - new Date(dateStr).getTime();
+      const seconds = Math.floor(diff / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      if (seconds < 60) return 'à l\'instant';
+      if (minutes < 60) return `il y a ${minutes} min`;
+      if (hours < 24) return `il y a ${hours} h`;
+      if (days < 7) return `il y a ${days} j`;
+      return new Date(dateStr).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+    } catch {
+      return '';
+    }
+  };
 
   if (loading) {
     return (
@@ -347,19 +640,10 @@ export function SalonPublicProfile({
   const gridPosts = posts.filter((p) => p.media_type === 'image');
   const reelsPosts = posts.filter((p) => p.media_type === 'video');
 
-  // 🔥 Le bouton Réserver est actif si le salon a un slug ET onBook est fourni
   const hasValidSlug = typeof salon.slug === 'string' && salon.slug.trim().length > 0;
   const canBook = hasValidSlug && !!onBook;
 
-  console.log('🎫 SalonPublicProfile — État réservation:', {
-    salon: displayName,
-    slug: salon.slug,
-    hasValidSlug,
-    hasOnBook: !!onBook,
-    canBook,
-  });
-
-  // 🔥 Affichage de la carte itinéraire plein écran — DANS cette page
+  // 🔥 Affichage carte itinéraire
   if (showRouteMap) {
     return (
       <div translate="no" className="fixed inset-0 z-[200] bg-zinc-950 flex flex-col">
@@ -557,7 +841,6 @@ export function SalonPublicProfile({
         </div>
 
         <div className="flex gap-2 mt-4">
-          {/* 🔥 BOUTON RÉSERVER : actif si le salon a un slug, inactif sinon */}
           <button
             onClick={() => {
               if (canBook) onBook?.(salon.slug);
@@ -654,12 +937,20 @@ export function SalonPublicProfile({
                     className="w-full h-full object-cover group-hover:opacity-90 transition"
                     loading="lazy"
                   />
-                  {post.like_count > 0 && (
-                    <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 text-white text-xs font-semibold drop-shadow-lg">
-                      <Heart className="w-3.5 h-3.5 fill-white" />
-                      {post.like_count}
-                    </div>
-                  )}
+                  <div className="absolute bottom-1.5 left-1.5 flex items-center gap-2 text-white text-xs font-semibold drop-shadow-lg">
+                    {post.like_count > 0 && (
+                      <span className="flex items-center gap-1">
+                        <Heart className="w-3.5 h-3.5 fill-white" />
+                        {post.like_count}
+                      </span>
+                    )}
+                    {(post.comment_count || 0) > 0 && (
+                      <span className="flex items-center gap-1">
+                        <MessageCircle className="w-3.5 h-3.5 fill-white" />
+                        {post.comment_count}
+                      </span>
+                    )}
+                  </div>
                 </button>
               ))}
             </div>
@@ -699,27 +990,31 @@ export function SalonPublicProfile({
         </div>
       )}
 
+      {/* ═══════════════════════════════════════════════════════ */}
+      {/* 🔥 MODAL POST AVEC COMMENTAIRES STYLE INSTAGRAM */}
+      {/* ═══════════════════════════════════════════════════════ */}
       {selectedPost && (
         <div
-          className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-2 sm:p-4"
+          className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-0 sm:p-4"
           onClick={() => setSelectedPost(null)}
         >
           <button
             onClick={() => setSelectedPost(null)}
-            className="absolute top-4 right-4 text-white/80 hover:text-white z-10 p-2"
+            className="absolute top-4 right-4 text-white/80 hover:text-white z-20 p-2 rounded-full bg-black/40 backdrop-blur-sm"
           >
-            <X className="w-7 h-7" />
+            <X className="w-6 h-6" />
           </button>
 
           <div
-            className="bg-zinc-900 rounded-2xl max-w-4xl w-full max-h-[92vh] overflow-hidden grid md:grid-cols-2"
+            className="bg-zinc-900 sm:rounded-2xl w-full max-w-5xl h-full sm:h-auto sm:max-h-[92vh] overflow-hidden grid md:grid-cols-2"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="bg-black flex items-center justify-center">
+            {/* ── Image / Vidéo ── */}
+            <div className="bg-black flex items-center justify-center h-[40vh] md:h-auto md:max-h-[92vh] relative">
               {selectedPost.media_type === 'video' ? (
                 <video
                   src={selectedPost.image_url}
-                  className="w-full h-full object-contain max-h-[50vh] md:max-h-[92vh]"
+                  className="w-full h-full object-contain md:max-h-[92vh]"
                   controls
                   autoPlay
                   playsInline
@@ -728,14 +1023,16 @@ export function SalonPublicProfile({
                 <img
                   src={selectedPost.image_url}
                   alt=""
-                  className="w-full h-full object-contain max-h-[50vh] md:max-h-[92vh]"
+                  className="w-full h-full object-contain md:max-h-[92vh]"
                 />
               )}
             </div>
 
-            <div className="flex flex-col bg-zinc-900 max-h-[50vh] md:max-h-[92vh]">
-              <div className="flex items-center gap-3 p-4 border-b border-zinc-800">
-                <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden flex items-center justify-center">
+            {/* ── Panneau droit : header + comments + actions ── */}
+            <div className="flex flex-col bg-zinc-900 h-[60vh] md:h-auto md:max-h-[92vh]">
+              {/* Header */}
+              <div className="flex items-center gap-3 p-4 border-b border-zinc-800 flex-shrink-0">
+                <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden flex items-center justify-center flex-shrink-0 border-2 border-zinc-700">
                   {salon.avatar_url ? (
                     <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
                   ) : (
@@ -745,22 +1042,89 @@ export function SalonPublicProfile({
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-sm truncate">{displayName}</p>
                   <p className="text-zinc-500 text-xs">
-                    {new Date(selectedPost.created_at).toLocaleDateString('fr-FR')}
+                    {new Date(selectedPost.created_at).toLocaleDateString('fr-FR', {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric'
+                    })}
                   </p>
                 </div>
               </div>
 
-              <div className="flex-1 p-4 overflow-y-auto">
-                {selectedPost.caption && (
+              {/* Caption */}
+              {selectedPost.caption && (
+                <div className="px-4 py-3 border-b border-zinc-800 flex-shrink-0">
                   <p className="text-white text-sm whitespace-pre-wrap">{selectedPost.caption}</p>
+                </div>
+              )}
+
+              {/* Commentaires */}
+              <div className="flex-1 overflow-y-auto px-4 py-3">
+                {commentsLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <Loader2 className="w-6 h-6 text-zinc-500 animate-spin" />
+                  </div>
+                ) : comments.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center">
+                    <MessageCircle className="w-12 h-12 text-zinc-700 mb-3" />
+                    <p className="text-white font-semibold text-sm">Aucun commentaire</p>
+                    <p className="text-zinc-500 text-xs mt-1">Soyez le premier à commenter</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {comments.map((comment) => {
+                      const isMine = isMyComment(comment);
+                      const isDeleting = deletingCommentId === comment.id;
+
+                      return (
+                        <div key={comment.id} className="flex items-start gap-3 group">
+                          <div className="w-8 h-8 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border border-zinc-700">
+                            {comment.author_avatar ? (
+                              <img src={comment.author_avatar} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <Scissors className="w-3.5 h-3.5 text-zinc-500" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm leading-relaxed break-words">
+                              <span className="font-semibold text-white">{comment.author_name}</span>
+                              {' '}
+                              <span className="text-zinc-200">{comment.content}</span>
+                            </p>
+                            <p className="text-[10px] text-zinc-500 mt-0.5">
+                              {formatRelativeTime(comment.created_at)}
+                            </p>
+                          </div>
+                          {isMine && (
+                            <button
+                              onClick={() => handleDeleteComment(comment.id)}
+                              disabled={isDeleting}
+                              className="text-zinc-600 hover:text-red-400 transition opacity-0 group-hover:opacity-100 p-1 flex-shrink-0 disabled:opacity-50"
+                              title="Supprimer"
+                            >
+                              {isDeleting ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div ref={commentsEndRef} />
+                  </div>
                 )}
               </div>
 
-              <div className="border-t border-zinc-800 p-3">
-                <div className="flex items-center gap-4">
+              {/* Actions (like, comment, share) */}
+              <div className="border-t border-zinc-800 p-3 flex-shrink-0">
+                <div className="flex items-center gap-4 mb-3">
                   <button
                     onClick={() => toggleLike(selectedPost)}
-                    className="flex items-center gap-1.5 text-white"
+                    className="flex items-center gap-1.5 text-white active:scale-95 transition"
                   >
                     <Heart
                       className={`w-6 h-6 transition ${
@@ -769,11 +1133,42 @@ export function SalonPublicProfile({
                     />
                     <span className="text-sm font-semibold">{selectedPost.like_count || 0}</span>
                   </button>
-                  <button className="text-white">
+                  <button className="flex items-center gap-1.5 text-white">
                     <MessageCircle className="w-6 h-6" />
+                    <span className="text-sm font-semibold">{comments.length}</span>
                   </button>
-                  <button onClick={handleShare} className="text-white ml-auto">
+                  <button onClick={handleShare} className="text-white ml-auto active:scale-95 transition">
                     <Share2 className="w-6 h-6" />
+                  </button>
+                </div>
+
+                {/* Input commentaire */}
+                <div className="flex items-center gap-2 border-t border-zinc-800 pt-3">
+                  <input
+                    type="text"
+                    placeholder="Ajouter un commentaire..."
+                    value={newComment}
+                    onChange={(e) => setNewComment(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAddComment();
+                      }
+                    }}
+                    disabled={postingComment}
+                    maxLength={500}
+                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-full px-4 py-2 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition disabled:opacity-50"
+                  />
+                  <button
+                    onClick={handleAddComment}
+                    disabled={!newComment.trim() || postingComment}
+                    className="p-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition active:scale-95"
+                  >
+                    {postingComment ? (
+                      <Loader2 className="w-4 h-4 text-white animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4 text-white" />
+                    )}
                   </button>
                 </div>
               </div>
