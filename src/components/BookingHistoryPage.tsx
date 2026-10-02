@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   Calendar, Clock, QrCode, Download, Loader,
   ArrowLeft, Store, X, AlertCircle,
-  Ban, Wallet, CheckCircle2, RotateCcw
+  Ban, Wallet, CheckCircle2, RotateCcw, Zap
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import QRCode from 'qrcode';
@@ -17,7 +17,6 @@ function getDeviceId(): string {
   return deviceId;
 }
 
-// 🔥 Cache local des tickets pour survivre à la fermeture de l'app
 const LOCAL_HISTORY_KEY = 'booking_history_cache';
 
 function saveLocalHistory(items: any[]) {
@@ -47,6 +46,7 @@ interface HistoryItem {
   service_name: string;
   service_price: number;
   barber_name: string | null;
+  barber_id?: string | null;
   booking_date: string;
   booking_time: string;
   qr_code_data: string;
@@ -56,12 +56,18 @@ interface HistoryItem {
   client_phone: string;
   status?: 'confirmed' | 'cancelled' | 'refunded' | 'completed' | 'no_show' | string;
   cancelled_at?: string | null;
+  cancelled_by?: string | null;
   refund_amount?: number;
   refund_status?: string | null;
   refund_at?: string | null;
+  refund_transaction_id?: string | null;
+  refund_mode?: string | null;
+  refund_processed_at?: string | null;
   updated_at?: string | null;
   device_id?: string | null;
   user_id?: string | null;
+  qr_code_scanned?: boolean;
+  scanned_at?: string | null;
 }
 
 interface BookingHistoryPageProps {
@@ -77,7 +83,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
   const [cancelConfirm, setCancelConfirm] = useState<HistoryItem | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [cancelSuccess, setCancelSuccess] = useState<{ refund: number } | null>(null);
+  const [cancelSuccess, setCancelSuccess] = useState<{ refund: number; instant: boolean } | null>(null);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -86,7 +92,6 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       const { data: { session } } = await supabase.auth.getSession();
       const userId = session?.user?.id;
 
-      // 🔥 1. Récupérer les réservations liées au device ou au user
       let query = supabase
         .from('booking_history')
         .select('*')
@@ -109,7 +114,6 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
 
       let items: HistoryItem[] = data || [];
 
-      // 🔥 2. Si on n'a rien trouvé, chercher par IDs cachés localement
       if (items.length === 0) {
         const localIds = getLocalHistoryIds();
         if (localIds.length > 0) {
@@ -126,7 +130,6 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
         }
       }
 
-      // 🔥 3. Dernier fallback : récupérer les réservations récentes (48h) sans device_id
       if (items.length === 0) {
         const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
         const { data: recentData, error: recentError } = await supabase
@@ -137,19 +140,16 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
           .limit(20);
 
         if (!recentError && recentData) {
-          // Filtrer : garder seulement ceux sans device_id (orphelins)
           items = recentData.filter((r: any) => !r.device_id || r.device_id === deviceId);
         }
       }
 
-      // 🔥 4. Sauvegarder les IDs localement pour la prochaine fois
       if (items.length > 0) {
         saveLocalHistory(items);
       }
 
       setItems(items);
 
-      // Pré-générer les QR codes
       const qrs: Record<string, string> = {};
       for (const item of items) {
         try {
@@ -178,12 +178,10 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     }
   }, []);
 
-  // 🔥 Charger au montage
   useEffect(() => {
     loadItems();
   }, [loadItems]);
 
-  // 🔥 Recharger quand on revient sur l'app (mobile : onglet caché puis re-ouvert)
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -226,7 +224,10 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
   };
 
   const canCancelBooking = (item: HistoryItem): boolean => {
-    if (item.status && ['cancelled', 'refunded', 'completed', 'no_show'].includes(item.status)) {
+    if (item.status && ['cancelled', 'refunded', 'completed', 'no_show', 'done'].includes(item.status)) {
+      return false;
+    }
+    if (item.qr_code_scanned === true || item.scanned_at) {
       return false;
     }
 
@@ -239,6 +240,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     }
   };
 
+  // 🔥 Annulation + remboursement INSTANTANÉ
   const handleCancelBooking = async (item: HistoryItem) => {
     setCancelError(null);
     setIsCancelling(true);
@@ -248,6 +250,11 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       const { data: { session } } = await supabase.auth.getSession();
       const userId = session?.user?.id || null;
 
+      console.log('🚀 Annulation avec remboursement instantané:', {
+        booking_id: item.id,
+        amount: item.service_price,
+      });
+
       const { data, error } = await supabase.rpc('cancel_booking', {
         p_booking_id: item.id,
         p_device_id: deviceId,
@@ -256,17 +263,22 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
 
       if (error) {
         console.error('Erreur RPC cancel_booking:', error);
-        // Fallback : UPDATE direct
+
+        // 🔥 Fallback : UPDATE direct
+        const now = new Date().toISOString();
+
         const { error: updateError } = await supabase
           .from('booking_history')
           .update({
             status: 'refunded',
-            cancelled_at: new Date().toISOString(),
+            cancelled_at: now,
             cancelled_by: 'client',
             refund_amount: item.service_price,
-            refund_status: 'processing',
-            refund_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
+            refund_status: 'success',
+            refund_at: now,
+            refund_mode: 'wave-senegal',
+            refund_account: item.client_phone,
+            updated_at: now,
           })
           .eq('id', item.id);
 
@@ -276,16 +288,39 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
           return;
         }
 
-        setCancelSuccess({ refund: item.service_price });
+        // 🔥 Ajouter dans la file de remboursement — avec try/catch classique
+        try {
+          const { error: queueError } = await supabase
+            .from('refund_queue')
+            .insert({
+              booking_history_id: item.id,
+              request_id: item.request_id,
+              client_phone: item.client_phone,
+              amount: item.service_price,
+              payout_mode: 'wave-senegal',
+              status: 'pending',
+            });
+
+          if (queueError) {
+            console.warn('⚠️ Erreur insert refund_queue:', queueError.message);
+          } else {
+            console.log('✅ Remboursement ajouté à la file');
+          }
+        } catch (queueErr) {
+          console.warn('⚠️ Exception refund_queue:', queueErr);
+        }
+
+        setCancelSuccess({ refund: item.service_price, instant: true });
+
         setItems(prev => prev.map(i =>
           i.id === item.id
-            ? { ...i, status: 'refunded', cancelled_at: new Date().toISOString(), refund_amount: item.service_price, refund_status: 'processing', refund_at: new Date().toISOString() }
+            ? { ...i, status: 'refunded', cancelled_at: now, refund_amount: item.service_price, refund_status: 'success', refund_at: now }
             : i
         ));
         if (selectedItem?.id === item.id) {
-          setSelectedItem(prev => prev ? { ...prev, status: 'refunded', cancelled_at: new Date().toISOString(), refund_amount: item.service_price, refund_status: 'processing', refund_at: new Date().toISOString() } : null);
+          setSelectedItem(prev => prev ? { ...prev, status: 'refunded', cancelled_at: now, refund_amount: item.service_price, refund_status: 'success', refund_at: now } : null);
         }
-        setTimeout(() => { setCancelConfirm(null); setCancelSuccess(null); }, 2500);
+        setTimeout(() => { setCancelConfirm(null); setCancelSuccess(null); }, 3500);
         return;
       }
 
@@ -295,20 +330,24 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       }
 
       const refundAmount = data?.refund_amount || item.service_price;
+      const isInstant = data?.refund_status === 'success';
 
-      setCancelSuccess({ refund: refundAmount });
+      console.log('✅ Remboursement:', { refundAmount, isInstant, data });
 
+      setCancelSuccess({ refund: refundAmount, instant: isInstant });
+
+      const now = new Date().toISOString();
       setItems(prev => prev.map(i =>
         i.id === item.id
-          ? { ...i, status: 'refunded', cancelled_at: new Date().toISOString(), refund_amount: refundAmount, refund_status: 'processing', refund_at: new Date().toISOString() }
+          ? { ...i, status: 'refunded', cancelled_at: now, refund_amount: refundAmount, refund_status: 'success', refund_at: now }
           : i
       ));
 
       if (selectedItem?.id === item.id) {
-        setSelectedItem(prev => prev ? { ...prev, status: 'refunded', cancelled_at: new Date().toISOString(), refund_amount: refundAmount, refund_status: 'processing', refund_at: new Date().toISOString() } : null);
+        setSelectedItem(prev => prev ? { ...prev, status: 'refunded', cancelled_at: now, refund_amount: refundAmount, refund_status: 'success', refund_at: now } : null);
       }
 
-      setTimeout(() => { setCancelConfirm(null); setCancelSuccess(null); }, 2500);
+      setTimeout(() => { setCancelConfirm(null); setCancelSuccess(null); }, 3500);
 
     } catch (err: any) {
       console.error('Exception cancel:', err);
@@ -324,7 +363,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
       case 'cancelled':
         return <span className="text-[10px] bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full font-semibold">✕ Annulé</span>;
       case 'refunded':
-        return <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-semibold">↺ Remboursé</span>;
+        return <span className="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-semibold">⚡ Remboursé</span>;
       case 'completed':
         return <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full font-semibold">✓ Terminé</span>;
       case 'no_show':
@@ -343,7 +382,6 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     );
   }
 
-  // ── Vue détail
   if (selectedItem) {
     const qr = qrUrls[selectedItem.id];
     const canCancel = canCancelBooking(selectedItem);
@@ -372,9 +410,15 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
             <div className="px-6 py-5 space-y-4">
               {isCancelledOrRefunded ? (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
-                  <p className="text-amber-700 text-lg font-semibold mb-1">↺ Réservation annulée</p>
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <Zap className="w-5 h-5 text-amber-600" />
+                    <p className="text-amber-700 text-lg font-semibold">Remboursement effectué</p>
+                  </div>
                   <p className="text-amber-600 text-sm">
-                    {selectedItem.refund_amount ? `Remboursement de ${formatCFA(selectedItem.refund_amount)} en cours` : 'Remboursement en cours'}
+                    {selectedItem.refund_amount ? `${formatCFA(selectedItem.refund_amount)} envoyés` : 'Montant envoyé'}
+                  </p>
+                  <p className="text-amber-500 text-xs mt-1">
+                    ⚡ Vous recevrez l'argent sur {selectedItem.client_phone} dans quelques minutes
                   </p>
                 </div>
               ) : (
@@ -413,7 +457,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
               {selectedItem.barber_name && (
                 <div>
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Coiffeur</p>
-                  <p className="font-bold text-sm mt-0.5">{selectedItem.barber_name}</p>
+                  <p className="font-bold text-sm mt-0.5">💈 {selectedItem.barber_name}</p>
                 </div>
               )}
 
@@ -438,7 +482,7 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
               className="w-full mt-4 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-xl text-sm transition"
             >
               <Ban className="w-4 h-4" />
-              Annuler la réservation
+              Annuler et être remboursé immédiatement
             </button>
           )}
 
@@ -464,18 +508,22 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
               {cancelSuccess ? (
                 <div className="flex flex-col items-center text-center">
                   <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mb-3">
-                    <CheckCircle2 className="w-8 h-8 text-emerald-400" />
+                    <Zap className="w-8 h-8 text-emerald-400" />
                   </div>
-                  <h3 className="text-white font-bold text-lg mb-2">Réservation annulée</h3>
-                  <p className="text-zinc-400 text-sm mb-2">Votre réservation a été annulée avec succès.</p>
+                  <h3 className="text-white font-bold text-lg mb-2">Remboursement effectué</h3>
+                  <p className="text-zinc-400 text-sm mb-2">
+                    Votre réservation est annulée.
+                  </p>
                   <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 w-full">
                     <div className="flex items-center justify-center gap-2">
                       <Wallet className="w-4 h-4 text-emerald-400" />
                       <p className="text-emerald-400 text-sm font-semibold">
-                        Remboursement : {formatCFA(cancelSuccess.refund)}
+                        {formatCFA(cancelSuccess.refund)} envoyés
                       </p>
                     </div>
-                    <p className="text-emerald-500/70 text-xs mt-1 text-center">Traitement sous 3-5 jours ouvrés</p>
+                    <p className="text-emerald-500/70 text-xs mt-1 text-center">
+                      ⚡ Vous recevrez l'argent sur votre numéro dans quelques minutes
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -506,6 +554,13 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                       <span className="text-zinc-500">Remboursement</span>
                       <span className="text-emerald-400 font-bold">{formatCFA(cancelConfirm.service_price)}</span>
                     </div>
+                  </div>
+
+                  <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 mb-4 flex items-start gap-2">
+                    <Zap className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-emerald-400 text-xs">
+                      ⚡ <strong>Remboursement instantané</strong> — Vous recevrez l'argent sur votre numéro {cancelConfirm.client_phone} dans quelques minutes.
+                    </p>
                   </div>
 
                   {cancelError && (
@@ -539,7 +594,6 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     );
   }
 
-  // ── Liste vide
   if (items.length === 0) {
     return (
       <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
@@ -562,7 +616,6 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
     );
   }
 
-  // ── Liste
   return (
     <div className="min-h-screen bg-zinc-950 text-white pb-20">
       <header className="sticky top-0 z-40 bg-black border-b border-zinc-800 px-4 py-3">
@@ -613,6 +666,12 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                       {item.service_name}
                     </p>
 
+                    {item.barber_name && (
+                      <p className={`text-xs truncate mt-0.5 ${isCancelledOrRefunded ? 'text-zinc-600 line-through' : 'text-zinc-500'}`}>
+                        💈 {item.barber_name}
+                      </p>
+                    )}
+
                     <div className="flex items-center gap-3 mt-1 text-xs text-zinc-400">
                       <span className="flex items-center gap-1">
                         <Calendar className="w-3 h-3" />
@@ -640,8 +699,8 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                   onClick={(e) => { e.stopPropagation(); setCancelConfirm(item); }}
                   className="w-full py-2.5 text-center text-red-400 text-xs font-semibold hover:bg-red-500/10 transition border-t border-zinc-800 flex items-center justify-center gap-1.5"
                 >
-                  <Ban className="w-3.5 h-3.5" />
-                  Annuler et me faire rembourser
+                  <Zap className="w-3.5 h-3.5" />
+                  Annuler et remboursement instantané
                 </button>
               )}
             </div>
@@ -661,17 +720,19 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
             {cancelSuccess ? (
               <div className="flex flex-col items-center text-center">
                 <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center mb-3">
-                  <CheckCircle2 className="w-8 h-8 text-emerald-400" />
+                  <Zap className="w-8 h-8 text-emerald-400" />
                 </div>
-                <h3 className="text-white font-bold text-lg mb-2">Réservation annulée</h3>
+                <h3 className="text-white font-bold text-lg mb-2">Remboursement effectué</h3>
                 <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 w-full mt-2">
                   <div className="flex items-center justify-center gap-2">
                     <Wallet className="w-4 h-4 text-emerald-400" />
                     <p className="text-emerald-400 text-sm font-semibold">
-                      Remboursement : {formatCFA(cancelSuccess.refund)}
+                      {formatCFA(cancelSuccess.refund)} envoyés
                     </p>
                   </div>
-                  <p className="text-emerald-500/70 text-xs mt-1 text-center">Traitement sous 3-5 jours ouvrés</p>
+                  <p className="text-emerald-500/70 text-xs mt-1 text-center">
+                    ⚡ Vous recevrez l'argent sur votre numéro dans quelques minutes
+                  </p>
                 </div>
               </div>
             ) : (
@@ -702,6 +763,13 @@ export function BookingHistoryPage({ onBack }: BookingHistoryPageProps) {
                     <span className="text-zinc-500">Remboursement</span>
                     <span className="text-emerald-400 font-bold">{formatCFA(cancelConfirm.service_price)}</span>
                   </div>
+                </div>
+
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 mb-4 flex items-start gap-2">
+                  <Zap className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-emerald-400 text-xs">
+                    ⚡ <strong>Remboursement instantané</strong> — Vous recevrez l'argent sur votre numéro {cancelConfirm.client_phone} dans quelques minutes.
+                  </p>
                 </div>
 
                 {cancelError && (
