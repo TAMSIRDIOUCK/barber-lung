@@ -5,7 +5,7 @@ import {
   Settings, ToggleLeft, ToggleRight, RefreshCw, Scissors,
   ExternalLink, X, ChevronLeft,
   Plus, Trash2, AlertTriangle, CheckCircle2, Eye, EyeOff,
-  Wallet, Clock, ArrowDownToLine, Lock
+  Wallet, Clock, ArrowDownToLine, Lock, XCircle, RotateCcw
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { Html5Qrcode } from "html5-qrcode";
@@ -44,12 +44,18 @@ interface Booking {
   booking_date: string;
   booking_time: string;
   note: string | null;
-  status: 'confirmed' | 'done';
+  status: 'confirmed' | 'done' | 'cancelled' | 'refunded';
   qr_code: string;
   qr_code_scanned: boolean;
   scanned_at: string | null;
   created_at: string;
   payment_status: 'paid';
+  // 🔥 Nouvelles colonnes annulation
+  cancelled_at?: string | null;
+  cancelled_by?: string | null;
+  refund_amount?: number;
+  refund_status?: string | null;
+  refund_at?: string | null;
 }
 
 type PayoutStatus = 'created' | 'pending' | 'processing' | 'success' | 'failed';
@@ -72,14 +78,18 @@ interface BookingSettingsPageProps {
   userId: string;
 }
 
-const STATUS_LABELS: Record<Booking['status'], string> = {
+const STATUS_LABELS: Record<string, string> = {
   confirmed: 'En attente',
   done: 'Terminé',
+  cancelled: 'Annulé',
+  refunded: 'Remboursé',
 };
 
-const STATUS_COLORS: Record<Booking['status'], string> = {
+const STATUS_COLORS: Record<string, string> = {
   confirmed: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   done: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
+  cancelled: 'bg-red-500/15 text-red-400 border-red-500/30',
+  refunded: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/30',
 };
 
 const PAYOUT_STATUS_LABELS: Record<PayoutStatus, string> = {
@@ -131,7 +141,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [filter, setFilter] = useState<'all' | Booking['status']>('all');
+  const [filter, setFilter] = useState<'all' | 'confirmed' | 'done' | 'cancelled'>('all');
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanSuccess, setScanSuccess] = useState<string | null>(null);
@@ -174,6 +184,8 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
   const bookingUrl = `${window.location.origin}/booking/${settings?.slug || ''}`;
 
+  // 🔥 Filtrer : on ne compte QUE les bookings qui rapportent de l'argent
+  // Les annulés / remboursés NE comptent PAS dans le solde
   const totalNetRevenue = useMemo(() => {
     return bookings
       .filter(b => b.status === 'done')
@@ -184,6 +196,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     return bookings
       .filter(b => b.status === 'confirmed')
       .reduce((sum, b) => sum + (b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))), 0);
+  }, [bookings]);
+
+  // 🔥 Total des annulations (info pour le salon)
+  const totalRefunded = useMemo(() => {
+    return bookings
+      .filter(b => b.status === 'cancelled' || b.status === 'refunded')
+      .reduce((sum, b) => sum + (b.refund_amount || b.service_price || 0), 0);
   }, [bookings]);
 
   const takenOrInFlight = useMemo(() => {
@@ -339,6 +358,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
 
       if (!booking) {
         setScanError('❌ Réservation non trouvée');
+        setProcessing(false);
+        return;
+      }
+
+      // 🔥 Refuser les réservations annulées
+      if (booking.status === 'cancelled' || booking.status === 'refunded') {
+        setScanError('❌ Ce ticket a été annulé par le client');
         setProcessing(false);
         return;
       }
@@ -672,11 +698,17 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
     }
   };
 
-  const filteredBookings = filter === 'all' ? bookings : bookings.filter(b => b.status === filter);
+  const filteredBookings = filter === 'all'
+    ? bookings
+    : filter === 'cancelled'
+      ? bookings.filter(b => b.status === 'cancelled' || b.status === 'refunded')
+      : bookings.filter(b => b.status === filter);
+
   const counts = {
     all: bookings.length,
     confirmed: bookings.filter(b => b.status === 'confirmed').length,
     done: bookings.filter(b => b.status === 'done').length,
+    cancelled: bookings.filter(b => b.status === 'cancelled' || b.status === 'refunded').length,
   };
 
   if (loading) {
@@ -917,6 +949,14 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
                 qu'après avoir <strong>scanné le QR code du client</strong> à la fin du service.
               </p>
             </div>
+
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 flex items-start gap-2">
+              <RotateCcw className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
+              <p className="text-red-400 text-xs">
+                ↩️ <strong>Politique d'annulation</strong> : le client peut annuler et être remboursé jusqu'à la date
+                de la réservation. Les réservations annulées ne comptent pas dans votre solde.
+              </p>
+            </div>
           </div>
 
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 space-y-3">
@@ -1015,6 +1055,13 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               <span>+ {pendingRevenue.toLocaleString('fr-FR')} F en attente — scannez le ticket du client pour débloquer</span>
             </p>
           )}
+          {/* 🔥 Info annulations */}
+          {totalRefunded > 0 && (
+            <p className="text-red-300/70 text-[11px] mt-1 flex items-center justify-center gap-1 px-2 flex-wrap">
+              <RotateCcw className="w-3 h-3 shrink-0" />
+              <span>{totalRefunded.toLocaleString('fr-FR')} F remboursés au total ({counts.cancelled} annulation{counts.cancelled > 1 ? 's' : ''})</span>
+            </p>
+          )}
         </div>
 
         <div className="flex gap-2 mb-6">
@@ -1101,27 +1148,37 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
               Activité récente
             </h3>
             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl divide-y divide-zinc-800 overflow-hidden">
-              {recentBookings.map((b) => (
-                <div key={b.id} className="px-4 py-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-white text-sm font-medium truncate">
-                      {b.service_name} — {b.client_name}
-                    </p>
-                    <p className="text-zinc-500 text-xs truncate">
-                      {new Date(b.created_at).toLocaleDateString('fr-FR')} à{' '}
-                      {new Date(b.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
-                    </p>
+              {recentBookings.map((b) => {
+                const isCancelled = b.status === 'cancelled' || b.status === 'refunded';
+                return (
+                  <div key={b.id} className="px-4 py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className={`text-sm font-medium truncate ${isCancelled ? 'text-zinc-500 line-through' : 'text-white'}`}>
+                        {b.service_name} — {b.client_name}
+                      </p>
+                      <p className="text-zinc-500 text-xs truncate">
+                        {new Date(b.created_at).toLocaleDateString('fr-FR')} à{' '}
+                        {new Date(b.created_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className={`font-bold text-sm block ${
+                        isCancelled ? 'text-red-400 line-through'
+                        : b.status === 'done' ? 'text-emerald-400'
+                        : 'text-amber-400'
+                      }`}>
+                        {isCancelled ? '-' : '+'}
+                        {(b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))).toLocaleString()}F
+                      </span>
+                      <span className="text-[10px] text-zinc-500">
+                        {isCancelled ? 'remboursé'
+                          : b.status === 'done' ? 'débloqué'
+                          : 'en attente'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <span className={`font-bold text-sm block ${b.status === 'done' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                      +{(b.net_amount ?? Math.round(b.service_price * (1 - NET_FEE_RATE))).toLocaleString()}F
-                    </span>
-                    <span className="text-[10px] text-zinc-500">
-                      {b.status === 'done' ? 'débloqué' : 'en attente'}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -1132,7 +1189,7 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
           </h3>
 
           <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-none mb-3">
-            {(['all', 'confirmed', 'done'] as const).map(val => (
+            {(['all', 'confirmed', 'done', 'cancelled'] as const).map(val => (
               <button
                 key={val}
                 onClick={() => setFilter(val)}
@@ -1155,89 +1212,157 @@ export function BookingSettingsPage({ userId }: BookingSettingsPageProps) {
             </div>
           ) : (
             <div className="space-y-2">
-              {filteredBookings.map(booking => (
-                <div key={booking.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
-                  <div className="flex items-center justify-between px-4 pt-4 pb-2 gap-2 flex-wrap">
-                    <div className="flex items-center gap-2 flex-wrap min-w-0">
-                      <span className="font-black font-mono text-white text-sm sm:text-base bg-zinc-800 px-2.5 py-1 rounded-lg leading-none">
-                        {booking.ticket_number}
-                      </span>
-                      <span className={`text-[10px] px-2 py-1 rounded-full border font-semibold ${STATUS_COLORS[booking.status]}`}>
-                        {STATUS_LABELS[booking.status]}
-                      </span>
-                      <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
-                        💳 Payé
-                      </span>
-                    </div>
-                  </div>
+              {filteredBookings.map(booking => {
+                const isCancelled = booking.status === 'cancelled' || booking.status === 'refunded';
+                const refundAmount = booking.refund_amount || booking.service_price || 0;
 
-                  <div className="px-4 pb-3 space-y-1.5">
-                    <div className="flex items-center gap-2 text-sm text-zinc-300">
-                      <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                      <span className="truncate font-medium">{booking.client_name}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-zinc-400">
-                      <Phone className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                      <a href={`tel:${booking.client_phone}`} className="truncate underline-offset-2 active:text-white">
-                        {booking.client_phone}
-                      </a>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-zinc-400">
-                      <Scissors className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                      <span className="truncate flex-1">{booking.service_name}</span>
-                      <span className="shrink-0 text-white font-bold text-xs">
-                        {booking.service_price.toLocaleString()} CFA
-                      </span>
-                    </div>
-                    {booking.net_amount != null && (
-                      <div className="flex items-center gap-2 text-sm text-zinc-500 pl-5">
-                        <span className="text-xs">Net reçu (après 15%)</span>
-                        <span className="ml-auto shrink-0 text-emerald-400 font-semibold text-xs">
-                          {booking.net_amount.toLocaleString()} CFA
+                return (
+                  <div
+                    key={booking.id}
+                    className={`bg-zinc-900 border rounded-2xl overflow-hidden ${
+                      isCancelled ? 'border-red-500/30' : 'border-zinc-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between px-4 pt-4 pb-2 gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className={`font-black font-mono text-sm sm:text-base bg-zinc-800 px-2.5 py-1 rounded-lg leading-none ${
+                          isCancelled ? 'text-zinc-500 line-through' : 'text-white'
+                        }`}>
+                          {booking.ticket_number}
                         </span>
+                        <span className={`text-[10px] px-2 py-1 rounded-full border font-semibold ${STATUS_COLORS[booking.status] || STATUS_COLORS.confirmed}`}>
+                          {STATUS_LABELS[booking.status] || booking.status}
+                        </span>
+                        {!isCancelled && (
+                          <span className="text-[10px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">
+                            💳 Payé
+                          </span>
+                        )}
+                        {isCancelled && (
+                          <span className="text-[10px] px-2 py-1 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 font-semibold flex items-center gap-1">
+                            <XCircle className="w-3 h-3" />
+                            Annulé
+                          </span>
+                        )}
                       </div>
-                    )}
-                    <div className="flex items-center gap-2 text-sm text-zinc-400">
-                      <Calendar className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                      <span>{new Date(booking.booking_date).toLocaleDateString('fr-FR')}</span>
-                      <span className="text-white font-bold">{booking.booking_time.slice(0, 5)}</span>
                     </div>
 
-                    {booking.barber_name && (
-                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                    <div className="px-4 pb-3 space-y-1.5">
+                      <div className="flex items-center gap-2 text-sm text-zinc-300">
                         <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
-                        <span className="truncate">Coiffeur: {booking.barber_name}</span>
+                        <span className={`truncate font-medium ${isCancelled ? 'text-zinc-500 line-through' : ''}`}>
+                          {booking.client_name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                        <Phone className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                        <a href={`tel:${booking.client_phone}`} className="truncate underline-offset-2 active:text-white">
+                          {booking.client_phone}
+                        </a>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                        <Scissors className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                        <span className={`truncate flex-1 ${isCancelled ? 'line-through' : ''}`}>{booking.service_name}</span>
+                        <span className={`shrink-0 font-bold text-xs ${isCancelled ? 'text-zinc-500 line-through' : 'text-white'}`}>
+                          {booking.service_price.toLocaleString()} CFA
+                        </span>
+                      </div>
+                      {booking.net_amount != null && !isCancelled && (
+                        <div className="flex items-center gap-2 text-sm text-zinc-500 pl-5">
+                          <span className="text-xs">Net reçu (après 15%)</span>
+                          <span className="ml-auto shrink-0 text-emerald-400 font-semibold text-xs">
+                            {booking.net_amount.toLocaleString()} CFA
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2 text-sm text-zinc-400">
+                        <Calendar className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                        <span className={isCancelled ? 'text-zinc-500 line-through' : ''}>
+                          {new Date(booking.booking_date).toLocaleDateString('fr-FR')}
+                        </span>
+                        <span className={`font-bold ${isCancelled ? 'text-zinc-500 line-through' : 'text-white'}`}>
+                          {booking.booking_time.slice(0, 5)}
+                        </span>
+                      </div>
+
+                      {booking.barber_name && (
+                        <div className="flex items-center gap-2 text-sm text-zinc-400">
+                          <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                          <span className="truncate">Coiffeur: {booking.barber_name}</span>
+                        </div>
+                      )}
+
+                      {booking.note && (
+                        <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
+                          <span className="text-zinc-600 shrink-0">📝</span>
+                          <span className="italic break-words">{booking.note}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 🔥 Bloc annulation bien visible */}
+                    {isCancelled && (
+                      <div className="px-4 pb-4 border-t border-red-500/20 pt-3 mt-1">
+                        <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <XCircle className="w-4 h-4 text-red-400 shrink-0" />
+                            <p className="text-red-400 font-semibold text-sm">
+                              Annulé par le client
+                            </p>
+                          </div>
+                          {booking.cancelled_at && (
+                            <div className="flex items-center gap-2 text-xs text-red-300/80">
+                              <Clock className="w-3 h-3 shrink-0" />
+                              <span>
+                                Le {new Date(booking.cancelled_at).toLocaleDateString('fr-FR')} à{' '}
+                                {new Date(booking.cancelled_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex items-center justify-between text-xs pt-1 border-t border-red-500/20">
+                            <span className="text-red-300/70 flex items-center gap-1">
+                              <RotateCcw className="w-3 h-3" />
+                              Remboursement
+                            </span>
+                            <span className="text-red-400 font-bold">
+                              {refundAmount.toLocaleString()} CFA
+                            </span>
+                          </div>
+                          {booking.refund_status && (
+                            <p className="text-[10px] text-red-300/60 text-right">
+                              Statut : {booking.refund_status === 'processing' ? 'En cours' :
+                                      booking.refund_status === 'success' ? 'Effectué' :
+                                      booking.refund_status === 'failed' ? 'Échoué' :
+                                      booking.refund_status}
+                            </p>
+                          )}
+                        </div>
                       </div>
                     )}
 
-                    {booking.note && (
-                      <div className="flex items-start gap-2 text-sm text-zinc-400 mt-1">
-                        <span className="text-zinc-600 shrink-0">📝</span>
-                        <span className="italic break-words">{booking.note}</span>
+                    {!isCancelled && (
+                      <div className="px-4 pb-4 border-t border-zinc-800/50 pt-3">
+                        {booking.status === 'confirmed' && (
+                          <div className="w-full flex items-center justify-center gap-2 text-amber-400 text-xs sm:text-sm py-2 px-2 bg-amber-500/10 rounded-xl text-center">
+                            <Lock className="w-4 h-4 shrink-0" />
+                            <span>
+                              En attente — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA bloqués
+                            </span>
+                          </div>
+                        )}
+                        {booking.status === 'done' && (
+                          <div className="w-full text-center text-emerald-400 text-xs sm:text-sm py-2 px-2 flex items-center justify-center gap-2 bg-emerald-500/10 rounded-xl">
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                            <span>
+                              Terminé — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA débloqués
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-
-                  <div className="px-4 pb-4 border-t border-zinc-800/50 pt-3">
-                    {booking.status === 'confirmed' && (
-                      <div className="w-full flex items-center justify-center gap-2 text-amber-400 text-xs sm:text-sm py-2 px-2 bg-amber-500/10 rounded-xl text-center">
-                        <Lock className="w-4 h-4 shrink-0" />
-                        <span>
-                          En attente — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA bloqués
-                        </span>
-                      </div>
-                    )}
-                    {booking.status === 'done' && (
-                      <div className="w-full text-center text-emerald-400 text-xs sm:text-sm py-2 px-2 flex items-center justify-center gap-2 bg-emerald-500/10 rounded-xl">
-                        <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        <span>
-                          Terminé — {(booking.net_amount ?? Math.round(booking.service_price * (1 - NET_FEE_RATE))).toLocaleString()} CFA débloqués
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

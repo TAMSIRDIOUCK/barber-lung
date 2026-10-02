@@ -74,15 +74,98 @@ export function SalonPublicProfile({
     (async () => {
       setLoading(true);
       try {
-        const { data: profileData } = await supabase
+        // 1. Charger le profil
+        const { data: profileData, error: profileError } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', salonId)
           .maybeSingle();
 
         if (cancelled) return;
-        setSalon(profileData);
 
+        if (profileError) {
+          console.error('❌ Erreur chargement profil:', profileError);
+        }
+
+        if (!profileData) {
+          setSalon(null);
+          setLoading(false);
+          return;
+        }
+
+        // 2. 🔥 Charger le slug depuis booking_settings (colonne absente de profiles)
+        let salonSlug: string | null = null;
+        let followersCount: number = 0;
+
+        try {
+          const { data: bookingRow, error: bookingError } = await supabase
+            .from('booking_settings')
+            .select('slug, is_active')
+            .eq('user_id', profileData.user_id)
+            .maybeSingle();
+
+          if (bookingError) {
+            console.warn('⚠️ Erreur chargement booking_settings:', bookingError);
+          }
+
+          if (
+            bookingRow?.slug &&
+            typeof bookingRow.slug === 'string' &&
+            bookingRow.slug.trim() &&
+            bookingRow.is_active !== false
+          ) {
+            salonSlug = bookingRow.slug.trim();
+          }
+        } catch (err) {
+          console.error('❌ Exception slug:', err);
+        }
+
+        // 3. 🔥 Charger le nombre de followers
+        try {
+          const { count } = await supabase
+            .from('followers')
+            .select('*', { count: 'exact', head: true })
+            .eq('following_id', profileData.id)
+            .eq('status', 'active');
+          followersCount = count || 0;
+        } catch (err) {
+          console.warn('⚠️ Erreur followers:', err);
+        }
+
+        // 4. 🔥 Charger la note moyenne
+        let rating = 0;
+        try {
+          const { data: reviews } = await supabase
+            .from('reviews')
+            .select('rating')
+            .eq('profile_id', profileData.id);
+
+          if (reviews && reviews.length > 0) {
+            rating = reviews.reduce((sum: number, r: any) => sum + r.rating, 0) / reviews.length;
+          }
+        } catch (err) {
+          console.warn('⚠️ Erreur rating:', err);
+        }
+
+        if (cancelled) return;
+
+        // 5. 🔥 Fusionner le slug + stats dans l'objet salon
+        setSalon({
+          ...profileData,
+          slug: salonSlug,
+          followers_count: followersCount,
+          rating: rating,
+        });
+
+        console.log('🎫 SalonPublicProfile — Salon chargé:', {
+          name: profileData.salon_name || profileData.full_name,
+          user_id: profileData.user_id,
+          slug: salonSlug,
+          followers: followersCount,
+          rating,
+        });
+
+        // 6. Charger le portfolio
         const { data: postsData } = await supabase
           .from('portfolio_posts')
           .select('*')
@@ -93,6 +176,7 @@ export function SalonPublicProfile({
         if (cancelled) return;
         setPosts(postsData || []);
 
+        // 7. Charger les likes de l'utilisateur
         if (isAuthenticated && currentUserId) {
           const { data: likes } = await supabase
             .from('likes')
@@ -123,7 +207,6 @@ export function SalonPublicProfile({
       return;
     }
 
-    // 🔥 Ouvre la carte dans CETTE page
     setShowRouteMap(true);
     setRouteLoading(true);
     setRouteError(null);
@@ -264,6 +347,18 @@ export function SalonPublicProfile({
   const gridPosts = posts.filter((p) => p.media_type === 'image');
   const reelsPosts = posts.filter((p) => p.media_type === 'video');
 
+  // 🔥 Le bouton Réserver est actif si le salon a un slug ET onBook est fourni
+  const hasValidSlug = typeof salon.slug === 'string' && salon.slug.trim().length > 0;
+  const canBook = hasValidSlug && !!onBook;
+
+  console.log('🎫 SalonPublicProfile — État réservation:', {
+    salon: displayName,
+    slug: salon.slug,
+    hasValidSlug,
+    hasOnBook: !!onBook,
+    canBook,
+  });
+
   // 🔥 Affichage de la carte itinéraire plein écran — DANS cette page
   if (showRouteMap) {
     return (
@@ -367,14 +462,13 @@ export function SalonPublicProfile({
                   >
                     Ouvrir dans Maps
                   </button>
-                  {onBook && (
+                  {canBook && (
                     <button
                       onClick={() => {
                         closeRouteMap();
-                        onBook(salon.slug);
+                        onBook?.(salon.slug);
                       }}
-                      disabled={!salon.slug}
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition disabled:opacity-40"
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-sm transition"
                     >
                       Réserver
                     </button>
@@ -463,21 +557,29 @@ export function SalonPublicProfile({
         </div>
 
         <div className="flex gap-2 mt-4">
-          {onBook && (
-            <button
-              onClick={() => onBook(salon.slug)}
-              disabled={!salon.slug}
-              className="flex-1 bg-white text-black font-semibold py-2 rounded-lg text-sm hover:bg-zinc-200 transition disabled:opacity-40"
-            >
-              Réserver
-            </button>
-          )}
+          {/* 🔥 BOUTON RÉSERVER : actif si le salon a un slug, inactif sinon */}
+          <button
+            onClick={() => {
+              if (canBook) onBook?.(salon.slug);
+            }}
+            disabled={!canBook}
+            title={!canBook ? "Ce salon n'a pas activé les réservations en ligne" : "Réserver"}
+            className={`flex-1 font-semibold py-2 rounded-lg text-sm transition ${
+              canBook
+                ? 'bg-white text-black hover:bg-zinc-200'
+                : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+            }`}
+          >
+            {canBook ? 'Réserver' : 'Réservation indisponible'}
+          </button>
+
           <button
             onClick={handleStartItinerary}
             className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 rounded-lg text-sm transition flex items-center justify-center gap-1"
           >
             <RouteIcon className="w-4 h-4" /> Itinéraire
           </button>
+
           {isAuthenticated && currentUserId !== salon.user_id && (
             <button
               onClick={() => {
@@ -497,6 +599,7 @@ export function SalonPublicProfile({
               )}
             </button>
           )}
+
           {salon.phone && (
             <a
               href={`tel:${salon.phone}`}

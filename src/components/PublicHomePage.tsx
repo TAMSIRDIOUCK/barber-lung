@@ -594,7 +594,16 @@ export default function PublicHomePage({
       }
       const { error } = await supabase.from('views').insert(insertData);
       if (error) {
-        console.error('Erreur enregistrement vue:', error);
+        // 404 / 42P01 = table inexistante : on ignore silencieusement
+        if (error.code === '42P01' || (error as any).status === 404) {
+          // table views n'existe pas encore — log une seule fois
+          if (!(window as any).__viewsWarned) {
+            console.warn('⚠️ Table "views" absente — créez-la dans Supabase (voir SQL fourni)');
+            (window as any).__viewsWarned = true;
+          }
+        } else {
+          console.error('Erreur enregistrement vue:', error);
+        }
       }
     } catch (err) {
       console.error('Erreur enregistrement vue:', err);
@@ -1157,19 +1166,32 @@ export default function PublicHomePage({
         }
       }
 
+      // 🔥 FIX : Charger TOUTES les lignes de booking_settings SANS .in() ni .eq()
+      // (le .in() échouait silencieusement)
       let slugMap: Record<string, string> = {};
-      if (authUserIds.length > 0) {
-        const { data: bookingSettingsRows } = await supabase
+      try {
+        const { data: bookingSettingsRows, error: bookingError } = await supabase
           .from('booking_settings')
-          .select('user_id, slug')
-          .in('user_id', authUserIds)
-          .eq('is_active', true);
+          .select('user_id, slug, is_active');
 
-        if (bookingSettingsRows) {
+        console.log('🔎 booking_settings brut:', bookingSettingsRows);
+        console.log('❌ booking_settings erreur:', bookingError);
+
+        if (bookingError) {
+          console.error('❌ Erreur chargement booking_settings:', bookingError);
+        } else if (bookingSettingsRows && bookingSettingsRows.length > 0) {
           bookingSettingsRows.forEach((row: any) => {
-            if (row.user_id && row.slug) slugMap[row.user_id] = row.slug;
+            if (row.user_id && row.slug && typeof row.slug === 'string' && row.slug.trim()) {
+              slugMap[row.user_id] = row.slug.trim();
+            }
           });
+          console.log('✅ Slugs chargés:', slugMap);
+          console.log(`✅ ${Object.keys(slugMap).length} slug(s) chargé(s)`);
+        } else {
+          console.warn('⚠️ Aucune ligne dans booking_settings');
         }
+      } catch (err) {
+        console.error('❌ Exception booking_settings:', err);
       }
 
       let userFollowingIds: Set<string> = new Set();
@@ -1261,7 +1283,15 @@ export default function PublicHomePage({
           .in('target_id', storyIds);
 
         if (viewsError) {
-          console.error('Erreur chargement vues:', viewsError);
+          // Table absente ? on ignore silencieusement
+          if (viewsError.code === '42P01' || (viewsError as any).status === 404) {
+            if (!(window as any).__viewsWarned) {
+              console.warn('⚠️ Table "views" absente — exécutez le SQL fourni');
+              (window as any).__viewsWarned = true;
+            }
+          } else {
+            console.error('Erreur chargement vues:', viewsError);
+          }
         } else {
           viewsData?.forEach((v: any) => {
             viewCountMap[v.target_id] = (viewCountMap[v.target_id] || 0) + 1;
@@ -1297,6 +1327,7 @@ export default function PublicHomePage({
         const reviewData = reviewsMap[p.id];
 
         const slug = slugMap[p.user_id] || null;
+        console.log(`🎫 ${p.salon_name || p.full_name}: user_id=${p.user_id} → slug=${slug}`);
 
         return {
           id: p.id,
