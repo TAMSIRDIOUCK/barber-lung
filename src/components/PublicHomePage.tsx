@@ -464,6 +464,9 @@ function StoryViewer({
           className="flex items-center gap-2 text-white/80 hover:text-white transition active:scale-95"
         >
           <Heart className={`w-8 h-8 transition-colors ${isLiked ? 'fill-red-500 text-red-500' : ''}`} />
+          {(currentStory.like_count || 0) > 0 && (
+            <span className="text-sm font-medium tabular-nums">{currentStory.like_count}</span>
+          )}
         </button>
         <div className="flex items-center gap-2 text-white/60">
           <Eye className="w-6 h-6" />
@@ -544,9 +547,8 @@ export default function PublicHomePage({
 
   const [showHistory, setShowHistory] = useState(false);
 
-  // 🔥 Écran plein écran du profil salon
+  // 🔥 Écran plein écran du profil salon (overlay, ne démonte PAS PublicHomePage)
   const [showPublicProfile, setShowPublicProfile] = useState<string | null>(null);
-  // 🔥 NOUVEAU : post à ouvrir dans le feed
   const [initialPostId, setInitialPostId] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
@@ -579,7 +581,6 @@ export default function PublicHomePage({
     setShowPublicProfile(salonId);
   }, []);
 
-  // 🔥 NOUVEAU : ouvrir le profil avec un post spécifique (ouvre le feed)
   const viewProfileWithPost = useCallback((salonId: string, postId: string) => {
     setInitialPostId(postId);
     setShowPublicProfile(salonId);
@@ -617,92 +618,31 @@ export default function PublicHomePage({
     }
   }, [isAuthenticated, currentUserId]);
 
-  const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
-    const wasLiked = userLikes.has(storyId);
-
-    setUserLikes(prev => {
-      const next = new Set(prev);
-      if (wasLiked) next.delete(storyId); else next.add(storyId);
-      return next;
-    });
-
-    try {
-      const deviceId = getDeviceId();
-
-      if (isAuthenticated && currentUserId) {
-        const { data: existing } = await supabase
-          .from('likes')
-          .select('id')
-          .eq('profile_id', currentUserId)
-          .eq('target_type', 'story')
-          .eq('target_id', storyId)
-          .maybeSingle();
-
-        if (wasLiked) {
-          if (existing) {
-            await supabase.from('likes').delete().eq('id', existing.id);
-          }
-        } else if (!existing) {
-          const { error } = await supabase.from('likes').insert({
-            profile_id: currentUserId,
-            target_type: 'story',
-            target_id: storyId,
-          });
-          if (error && error.code !== '23505') throw error;
-        }
-      } else {
-        const { data: existing, error: findError } = await supabase
-          .from('likes')
-          .select('id')
-          .eq('device_id', deviceId)
-          .eq('target_type', 'story')
-          .eq('target_id', storyId)
-          .maybeSingle();
-
-        if (findError && findError.code !== '42703') {
-          console.error('Erreur recherche like invité:', findError);
-        }
-
-        if (wasLiked) {
-          if (existing) {
-            await supabase.from('likes').delete().eq('id', existing.id);
-          }
-        } else if (!existing) {
-          const { error } = await supabase.from('likes').insert({
-            device_id: deviceId,
-            target_type: 'story',
-            target_id: storyId,
-          });
-          if (error && error.code !== '23505' && error.code !== '42703') throw error;
-        }
-      }
-    } catch (err: any) {
-      console.error('Erreur like:', err);
-      setUserLikes(prev => {
-        const next = new Set(prev);
-        if (wasLiked) next.add(storyId); else next.delete(storyId);
-        return next;
-      });
-    }
-  }, [isAuthenticated, currentUserId, userLikes]);
-
   const loadUserLikes = useCallback(async () => {
     try {
       const deviceId = getDeviceId();
       let likedIds: string[] = [];
 
       if (isAuthenticated && currentUserId) {
-        const { data, error } = await supabase
-          .from('likes')
-          .select('target_id')
-          .eq('profile_id', currentUserId)
-          .eq('target_type', 'story');
+        const { data: userProfile } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .maybeSingle();
 
-        if (error) {
-          console.error('Erreur chargement likes:', error);
-          return;
+        if (userProfile) {
+          const { data, error } = await supabase
+            .from('likes')
+            .select('target_id')
+            .eq('profile_id', userProfile.id)
+            .eq('target_type', 'story');
+
+          if (error) {
+            console.error('Erreur chargement likes:', error);
+          } else {
+            likedIds = data?.map((l: any) => l.target_id) || [];
+          }
         }
-        likedIds = data?.map((l: any) => l.target_id) || [];
       } else {
         const { data, error } = await supabase
           .from('likes')
@@ -710,17 +650,16 @@ export default function PublicHomePage({
           .eq('device_id', deviceId)
           .eq('target_type', 'story');
 
-        if (error && error.code !== '42703') {
+        if (error) {
           console.error('Erreur chargement likes invité:', error);
-          return;
-        }
-
-        if (!error && data) {
-          likedIds = data.map((l: any) => l.target_id) || [];
-        } else {
           try {
             const raw = localStorage.getItem('guest_story_likes');
             if (raw) likedIds = JSON.parse(raw);
+          } catch {}
+        } else {
+          likedIds = data?.map((l: any) => l.target_id) || [];
+          try {
+            localStorage.setItem('guest_story_likes', JSON.stringify(likedIds));
           } catch {}
         }
       }
@@ -730,6 +669,108 @@ export default function PublicHomePage({
       console.error('Erreur chargement likes:', err);
     }
   }, [isAuthenticated, currentUserId]);
+
+  const toggleLikeStory = useCallback(async (storyId: string, profileId: string) => {
+    const wasLiked = userLikes.has(storyId);
+
+    setUserLikes(prev => {
+      const next = new Set(prev);
+      if (wasLiked) next.delete(storyId); else next.add(storyId);
+      return next;
+    });
+
+    setStories(prev => prev.map(s =>
+      s.id === storyId
+        ? { ...s, like_count: Math.max((s.like_count || 0) + (wasLiked ? -1 : 1), 0) }
+        : s
+    ));
+
+    try {
+      const deviceId = getDeviceId();
+
+      if (isAuthenticated && currentUserId) {
+        const { data: userProfile } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .maybeSingle();
+
+        if (!userProfile) {
+          console.warn('Profil introuvable pour like');
+          return;
+        }
+
+        if (wasLiked) {
+          await supabase
+            .from('likes')
+            .delete()
+            .eq('profile_id', userProfile.id)
+            .eq('target_type', 'story')
+            .eq('target_id', storyId);
+        } else {
+          const { error } = await supabase
+            .from('likes')
+            .upsert(
+              {
+                profile_id: userProfile.id,
+                target_type: 'story',
+                target_id: storyId,
+              },
+              { onConflict: 'profile_id,target_type,target_id' }
+            );
+          if (error && error.code !== '23505') throw error;
+        }
+      } else {
+        if (wasLiked) {
+          await supabase
+            .from('likes')
+            .delete()
+            .eq('device_id', deviceId)
+            .eq('target_type', 'story')
+            .eq('target_id', storyId);
+        } else {
+          const { error } = await supabase
+            .from('likes')
+            .upsert(
+              {
+                device_id: deviceId,
+                target_type: 'story',
+                target_id: storyId,
+              },
+              { onConflict: 'device_id,target_type,target_id' }
+            );
+          if (error && error.code !== '23505') throw error;
+        }
+
+        try {
+          const raw = localStorage.getItem('guest_story_likes');
+          const arr: string[] = raw ? JSON.parse(raw) : [];
+          const set = new Set(arr);
+          if (wasLiked) set.delete(storyId); else set.add(storyId);
+          localStorage.setItem('guest_story_likes', JSON.stringify(Array.from(set)));
+        } catch {}
+      }
+
+      await loadUserLikes();
+    } catch (err: any) {
+      console.error('Erreur like:', err);
+      setUserLikes(prev => {
+        const next = new Set(prev);
+        if (wasLiked) next.add(storyId); else next.delete(storyId);
+        return next;
+      });
+      setStories(prev => prev.map(s =>
+        s.id === storyId
+          ? { ...s, like_count: Math.max((s.like_count || 0) + (wasLiked ? 1 : -1), 0) }
+          : s
+      ));
+      showToast('Erreur lors du like');
+    }
+  }, [isAuthenticated, currentUserId, userLikes, loadUserLikes, showToast]);
+
+  useEffect(() => {
+    loadUserLikes();
+  }, [selectedStory, loadUserLikes]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -959,7 +1000,8 @@ export default function PublicHomePage({
         let profileId = userProfile?.id;
 
         if (!profileId) {
-          const { data: newProfile, error: createError } = await supabase            .from('profiles')
+          const { data: newProfile, error: createError } = await supabase
+            .from('profiles')
             .insert({
               user_id: currentUserId,
               full_name: 'Utilisateur',
@@ -1295,9 +1337,27 @@ export default function PublicHomePage({
         }
       }
 
+      let likeCountMap: Record<string, number> = {};
+      if (storyIds.length > 0) {
+        const { data: likesData, error: likesError } = await supabase
+          .from('likes')
+          .select('target_id')
+          .eq('target_type', 'story')
+          .in('target_id', storyIds);
+
+        if (likesError) {
+          console.error('Erreur chargement likes count:', likesError);
+        } else {
+          likesData?.forEach((l: any) => {
+            likeCountMap[l.target_id] = (likeCountMap[l.target_id] || 0) + 1;
+          });
+        }
+      }
+
       const storiesWithViewCounts: Story[] = (storiesData || []).map((s: any) => ({
         ...s,
         view_count: viewCountMap[s.id] ?? (s.view_count || 0),
+        like_count: likeCountMap[s.id] ?? (s.like_count || 0),
       }));
 
       const { data: portfolioData } = await supabase
@@ -1482,6 +1542,16 @@ export default function PublicHomePage({
     }
     return () => { document.body.style.overflow = ''; };
   }, [mapFullscreen]);
+
+  // 🔥 Bloquer le scroll de la page quand le profil salon est ouvert
+  useEffect(() => {
+    if (showPublicProfile) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [showPublicProfile]);
 
   const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
     const R = 6371;
@@ -1802,7 +1872,6 @@ export default function PublicHomePage({
                       salonId: salon.id,
                     });
                   } else {
-                    // 🔥 Pas de story → page profil (pas de feed)
                     viewProfile(salon.id);
                   }
                 }}
@@ -2264,7 +2333,6 @@ export default function PublicHomePage({
               key={salon.id}
               className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden"
             >
-              {/* Header salon — clic sur NOM/AVATAR → page profil */}
               <div
                 className="flex items-center gap-3 p-3 cursor-pointer"
                 onClick={() => {
@@ -2276,7 +2344,6 @@ export default function PublicHomePage({
                       salonId: salon.id,
                     });
                   } else {
-                    // 🔥 Sans story → page profil
                     viewProfile(salon.id);
                   }
                 }}
@@ -2339,14 +2406,12 @@ export default function PublicHomePage({
                 </button>
               </div>
 
-              {/* 🔥 CARROUSEL HORIZONTAL DE PHOTOS — clic sur CHAQUE PHOTO → FEED */}
               {posts.length > 0 ? (
                 <div className="flex gap-0.5 overflow-x-auto snap-x snap-mandatory scrollbar-none">
                   {posts.map((post) => (
                     <div
                       key={post.id}
                       onClick={() => {
-                        // 🔥 Ouvre le FEED sur cette photo spécifique
                         viewProfileWithPost(salon.id, post.id);
                       }}
                       className="relative flex-shrink-0 snap-start bg-zinc-800 cursor-pointer"
@@ -2612,33 +2677,6 @@ export default function PublicHomePage({
     );
   }
 
-  // 🔥 Écran plein écran du profil salon (avec initialPostId optionnel)
-  if (showPublicProfile) {
-    return (
-      <SalonPublicProfile
-        salonId={showPublicProfile}
-        initialPostId={initialPostId}
-        isAuthenticated={isAuthenticated}
-        currentUserId={currentUserId}
-        isFollowing={
-          followingIds.has(showPublicProfile) ||
-          guestFollowingIds.has(showPublicProfile)
-        }
-        onFollowToggle={(id) => toggleFollow(id)}
-        onBack={() => {
-          setShowPublicProfile(null);
-          setInitialPostId(null);
-        }}
-        onBook={(slug) => {
-          if (slug) navigate(`/booking/${slug}`);
-        }}
-        onStartItinerary={startItinerary}
-        userLocation={userLocation}
-        showToast={showToast}
-      />
-    );
-  }
-
   return (
     <div className="min-h-screen bg-zinc-950 text-white pb-20 overflow-x-hidden">
       <header className="sticky top-0 z-50 bg-black/90 backdrop-blur-md border-b border-zinc-800 px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2">
@@ -2765,6 +2803,34 @@ export default function PublicHomePage({
       )}
 
       {renderSalonModal()}
+
+      {/* 🔥 OVERLAY : Profil salon (PublicHomePage reste monté → scroll préservé) */}
+      {showPublicProfile && (
+        <div className="fixed inset-0 z-[80] bg-zinc-950 overflow-y-auto">
+          <SalonPublicProfile
+            salonId={showPublicProfile}
+            initialPostId={initialPostId}
+            fromPublicFeed={true}
+            isAuthenticated={isAuthenticated}
+            currentUserId={currentUserId}
+            isFollowing={
+              followingIds.has(showPublicProfile) ||
+              guestFollowingIds.has(showPublicProfile)
+            }
+            onFollowToggle={(id) => toggleFollow(id)}
+            onBack={() => {
+              setShowPublicProfile(null);
+              setInitialPostId(null);
+            }}
+            onBook={(slug) => {
+              if (slug) navigate(`/booking/${slug}`);
+            }}
+            onStartItinerary={startItinerary}
+            userLocation={userLocation}
+            showToast={showToast}
+          />
+        </div>
+      )}
 
       {toast && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[110] bg-zinc-800 border border-zinc-700 text-white text-xs font-medium px-4 py-2.5 rounded-full shadow-2xl max-w-[90vw] text-center">

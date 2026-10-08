@@ -22,7 +22,7 @@ export interface SalonMapHandle {
 interface SalonMapViewProps<T extends MapSalon> {
   salons: T[];
   userLocation: { lat: number; lng: number } | null;
-  radiusFilter: number; // km, Infinity = pas de cercle
+  radiusFilter: number;
   activeSalonId?: string | null;
   onSelectSalon: (salon: T) => void;
   getDisplayName: (salon: T) => string;
@@ -33,7 +33,6 @@ interface SalonMapViewProps<T extends MapSalon> {
 
 const DAKAR_FALLBACK = { lat: 14.7167, lng: -17.4677 };
 
-// ── Vérifie si un salon a des coordonnées valides (non null, non 0) ──
 function hasValidCoords(salon: MapSalon): boolean {
   return (
     typeof salon.latitude === 'number' &&
@@ -45,7 +44,6 @@ function hasValidCoords(salon: MapSalon): boolean {
   );
 }
 
-// ── Coordonnées effectives d'un salon (avec fallback Dakar si manquantes) ──
 function getSalonCoords(salon: MapSalon): [number, number] {
   if (hasValidCoords(salon)) {
     return [salon.latitude, salon.longitude];
@@ -53,7 +51,6 @@ function getSalonCoords(salon: MapSalon): [number, number] {
   return [DAKAR_FALLBACK.lat, DAKAR_FALLBACK.lng];
 }
 
-// ── HTML du marqueur salon (photo de profil ronde + pointe) ──
 function buildSalonMarkerHtml(
   salon: MapSalon,
   displayName: string,
@@ -69,7 +66,6 @@ function buildSalonMarkerHtml(
     ? `<img src="${salon.avatar_url}" class="w-full h-full object-cover" />`
     : `<div class="w-full h-full flex items-center justify-center bg-indigo-600 text-white font-bold text-sm">${initial}</div>`;
 
-  // ✅ Les salons sans coordonnées ont un marqueur légèrement grisé / avec icône d'alerte
   const fallbackRing = isFallback ? 'ring-2 ring-orange-400' : ringClass;
   const fallbackBadge = isFallback
     ? `<div style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;background:#f97316;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-size:10px;font-weight:bold;border:2px solid white;z-index:2;">?</div>`
@@ -95,7 +91,6 @@ function buildSalonMarkerHtml(
   `;
 }
 
-// ── HTML du marqueur "ma position" (point bleu pulsant) ──
 function buildUserMarkerHtml() {
   return `
     <div class="relative flex items-center justify-center" style="width:22px;height:22px;">
@@ -132,21 +127,36 @@ function SalonMapViewInner<T extends MapSalon>(
   const routeOutlineRef = useRef<L.Polyline | null>(null);
   const hasFitRouteRef = useRef(false);
 
-  // ── Initialisation de la carte ──
+  // ═══════════════════════════════════════════════════════
+  // INITIALISATION DE LA CARTE
+  // ═══════════════════════════════════════════════════════
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
       center: userLocation ? [userLocation.lat, userLocation.lng] : [DAKAR_FALLBACK.lat, DAKAR_FALLBACK.lng],
-      zoom: 12, // ✅ zoom un peu plus large pour voir tous les salons au démarrage
+      zoom: 15,
       zoomControl: false,
       attributionControl: true,
     });
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    // 🔥 TUILES STYLE GOOGLE MAPS (rues, bâtiments, noms visibles)
+    // OpenStreetMap "standard" = celui utilisé par défaut par Google Maps
+    // en terme de rendu : bâtiments, rues nommées, POI, etc.
+
+    // 1. Fond principal : rues, bâtiments, noms
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // 2. Overlay : noms des rues et points d'intérêt plus visibles
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; CARTO',
       maxZoom: 19,
       subdomains: 'abcd',
+      pane: 'overlayPane',
+      opacity: 0.9,
     }).addTo(map);
 
     mapRef.current = map;
@@ -165,7 +175,6 @@ function SalonMapViewInner<T extends MapSalon>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Exposer les commandes à l'extérieur ──
   useImperativeHandle(
     ref,
     () => ({
@@ -173,13 +182,13 @@ function SalonMapViewInner<T extends MapSalon>(
       zoomOut: () => mapRef.current?.zoomOut(),
       centerOnUser: () => {
         if (userLocation && mapRef.current) {
-          mapRef.current.flyTo([userLocation.lat, userLocation.lng], 14, { duration: 0.8 });
+          mapRef.current.flyTo([userLocation.lat, userLocation.lng], 16, { duration: 0.8 });
         }
       },
       centerOnSalon: (salon) => {
         const [lat, lng] = getSalonCoords(salon);
         if (mapRef.current) {
-          mapRef.current.flyTo([lat, lng], 15, { duration: 0.8 });
+          mapRef.current.flyTo([lat, lng], 17, { duration: 0.8 });
         }
       },
       invalidateSize: () => mapRef.current?.invalidateSize(),
@@ -187,7 +196,6 @@ function SalonMapViewInner<T extends MapSalon>(
     [userLocation]
   );
 
-  // ── Recalcule la taille quand le conteneur change ──
   useEffect(() => {
     if (!mapRef.current) return;
     const timer = setTimeout(() => mapRef.current?.invalidateSize(), 200);
@@ -214,7 +222,7 @@ function SalonMapViewInner<T extends MapSalon>(
     }
   }, [userLocation]);
 
-  // ── Cercle de rayon de recherche (purement visuel) ──
+  // ── Cercle de rayon de recherche ──
   useEffect(() => {
     if (!mapRef.current) return;
     if (!userLocation || !isFinite(radiusFilter) || (routeCoords && routeCoords.length > 0)) {
@@ -232,26 +240,20 @@ function SalonMapViewInner<T extends MapSalon>(
       circleRef.current = L.circle(latlng, {
         radius: radiusFilter * 1000,
         color: '#10b981',
-        weight: 1,
+        weight: 1.5,
         fillColor: '#10b981',
-        fillOpacity: 0.06,
+        fillOpacity: 0.08,
         dashArray: '6 6',
       }).addTo(mapRef.current);
     }
   }, [userLocation, radiusFilter, routeCoords]);
 
-  // ────────────────────────────────────────────────────────────────
-  // ✅ MARQUEURS DES SALONS
-  // - Affiche TOUS les salons reçus
-  // - Les salons sans coordonnées valides sont placés à Dakar (fallback)
-  // - Le marqueur d'un salon sans coordonnées a un liseré orange + badge "?"
-  // ────────────────────────────────────────────────────────────────
+  // ── Marqueurs des salons ──
   useEffect(() => {
     if (!mapRef.current) return;
     const map = mapRef.current;
     const currentIds = new Set(salons.map((s) => s.id));
 
-    // Supprimer les marqueurs qui ne sont plus dans la liste
     Object.keys(markersRef.current).forEach((id) => {
       if (!currentIds.has(id)) {
         map.removeLayer(markersRef.current[id]);
@@ -259,7 +261,6 @@ function SalonMapViewInner<T extends MapSalon>(
       }
     });
 
-    // Ajouter / mettre à jour les marqueurs de TOUS les salons
     salons.forEach((salon) => {
       const [lat, lng] = getSalonCoords(salon);
       const isFallback = !hasValidCoords(salon);
@@ -293,11 +294,7 @@ function SalonMapViewInner<T extends MapSalon>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [salons, activeSalonId]);
 
-  // ────────────────────────────────────────────────────────────────
-  // ✅ AJUSTEMENT AUTOMATIQUE DU ZOOM
-  // - Inclut TOUS les salons (avec coordonnées + ceux en fallback)
-  // - Dézoome suffisamment pour tous les voir
-  // ────────────────────────────────────────────────────────────────
+  // ── Ajustement automatique du zoom ──
   useEffect(() => {
     if (!mapRef.current || hasAutoFitRef.current) return;
     if (!userLocation && salons.length === 0) return;
@@ -306,23 +303,23 @@ function SalonMapViewInner<T extends MapSalon>(
     const bounds = L.latLngBounds([]);
     if (userLocation) bounds.extend([userLocation.lat, userLocation.lng]);
 
-    // Ajouter TOUS les salons (avec fallback Dakar si nécessaire)
     salons.forEach((s) => {
       const [lat, lng] = getSalonCoords(s);
       bounds.extend([lat, lng]);
     });
 
     if (bounds.isValid()) {
-      // ✅ padding plus généreux + maxZoom plus bas pour englober tous les marqueurs
       mapRef.current.fitBounds(bounds, {
-        padding: [40, 40],
-        maxZoom: 12, // si les salons sont très dispersés, on dézoome plus
+        padding: [50, 50],
+        maxZoom: 15,
       });
       hasAutoFitRef.current = true;
     }
   }, [salons, userLocation, routeCoords]);
 
-  // ── Tracé de l'itinéraire ──
+  // ═══════════════════════════════════════════════════════
+  // 🔥 TRACÉ DE L'ITINÉRAIRE — style Google Maps
+  // ═══════════════════════════════════════════════════════
   useEffect(() => {
     if (!mapRef.current) return;
     const map = mapRef.current;
@@ -343,24 +340,60 @@ function SalonMapViewInner<T extends MapSalon>(
     if (routeOutlineRef.current) map.removeLayer(routeOutlineRef.current);
     if (routeLineRef.current) map.removeLayer(routeLineRef.current);
 
+    // 🔥 Contour noir épais (comme Google Maps)
     routeOutlineRef.current = L.polyline(routeCoords, {
-      color: '#000',
-      weight: 9,
-      opacity: 0.35,
+      color: '#000000',
+      weight: 12,
+      opacity: 0.75,
       lineCap: 'round',
       lineJoin: 'round',
     }).addTo(map);
 
+    // 🔥 Trait bleu (comme Google Maps)
     routeLineRef.current = L.polyline(routeCoords, {
-      color: '#10b981',
-      weight: 5,
-      opacity: 0.95,
+      color: '#4285F4', // Bleu Google
+      weight: 7,
+      opacity: 1,
       lineCap: 'round',
       lineJoin: 'round',
     }).addTo(map);
+
+    // 🔥 Bonus : marqueur de départ (vert) et d'arrivée (rouge)
+    if (routeCoords.length >= 2) {
+      const start = routeCoords[0];
+      const end = routeCoords[routeCoords.length - 1];
+
+      // Marqueur départ (point bleu du user — déjà affiché)
+      // Marqueur arrivée (drapeau rouge)
+      const endIcon = L.divIcon({
+        html: `
+          <div style="position:relative;display:flex;flex-direction:column;align-items:center;filter:drop-shadow(0 3px 5px rgba(0,0,0,0.5));">
+            <div style="width:32px;height:32px;background:#EA4335;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">
+              <div style="width:10px;height:10px;background:white;border-radius:50%;transform:rotate(45deg);"></div>
+            </div>
+          </div>
+        `,
+        className: '',
+        iconSize: [32, 42],
+        iconAnchor: [16, 42],
+      });
+
+      const endMarker = L.marker(end, {
+        icon: endIcon,
+        zIndexOffset: 900,
+        interactive: false,
+      }).addTo(map);
+
+      // Cleanup automatique du marqueur d'arrivée
+      setTimeout(() => {
+        if (mapRef.current) {
+          mapRef.current.removeLayer(endMarker);
+        }
+      }, 0);
+    }
 
     if (!hasFitRouteRef.current) {
-      map.fitBounds(L.latLngBounds(routeCoords), { padding: [70, 90], maxZoom: 16 });
+      map.fitBounds(L.latLngBounds(routeCoords), { padding: [80, 100], maxZoom: 17 });
       hasFitRouteRef.current = true;
     }
   }, [routeCoords]);
@@ -369,7 +402,7 @@ function SalonMapViewInner<T extends MapSalon>(
     <div
       ref={containerRef}
       style={{ height: height || '100%', width: '100%' }}
-      className="bg-zinc-900"
+      className="bg-zinc-100"
     />
   );
 }
