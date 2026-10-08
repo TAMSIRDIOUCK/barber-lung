@@ -91,7 +91,6 @@ export function SalonPublicProfile({
   const [following, setFollowing] = useState(initialFollowing);
   const [userLikes, setUserLikes] = useState<Set<string>>(new Set());
 
-  // 🔥 MODE FEED : null = page profil, sinon = index du post ouvert
   const [feedIndex, setFeedIndex] = useState<number | null>(null);
   const [feedSoundOn, setFeedSoundOn] = useState(false);
 
@@ -119,34 +118,29 @@ export function SalonPublicProfile({
   const feedRef = useRef<HTMLDivElement>(null);
 
   // ═══════════════════════════════════════════════════════
-  // 🔥 GESTION DU BOUTON RETOUR NATIF (Android / geste iOS)
+  // 🔥 GESTION DU BOUTON RETOUR NATIF
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
     window.history.pushState({ salonProfileOpen: true }, '');
 
     const handlePopState = () => {
-      // 1. Si les commentaires sont ouverts → les fermer d'abord
       if (showComments) {
         setShowComments(false);
         setComments([]);
         window.history.pushState({ salonProfileOpen: true }, '');
         return;
       }
-      // 2. Si on est sur la carte itinéraire → fermer la carte
       if (showRouteMap) {
         setShowRouteMap(false);
         setRouteInfo(null);
         window.history.pushState({ salonProfileOpen: true }, '');
         return;
       }
-      // 3. Si on est dans le feed MAIS qu'on ne vient PAS de la page publique
-      //    → retour au profil du salon
       if (feedIndex !== null && !fromPublicFeed) {
         setFeedIndex(null);
         window.history.pushState({ salonProfileOpen: true }, '');
         return;
       }
-      // 4. Sinon → fermer complètement le profil (retour accueil)
       onBack();
     };
 
@@ -242,15 +236,52 @@ export function SalonPublicProfile({
           review_count: reviewCount,
         });
 
+        // 🔥 Récupérer posts AVEC compteurs
         const { data: postsData } = await supabase
           .from('portfolio_posts')
-          .select('*')
+          .select('id, profile_id, image_url, caption, media_type, like_count, comment_count, view_count, created_at, is_active')
           .eq('profile_id', salonId)
           .eq('is_active', true)
           .order('created_at', { ascending: false });
 
         if (cancelled) return;
-        setPosts(postsData || []);
+
+        const postIds = (postsData || []).map((p: any) => p.id);
+        let likesCountMap: Record<string, number> = {};
+        let commentsCountMap: Record<string, number> = {};
+
+        if (postIds.length > 0) {
+          const { data: likesData } = await supabase
+            .from('likes')
+            .select('target_id')
+            .eq('target_type', 'portfolio')
+            .in('target_id', postIds);
+
+          if (likesData) {
+            likesData.forEach((l: any) => {
+              likesCountMap[l.target_id] = (likesCountMap[l.target_id] || 0) + 1;
+            });
+          }
+
+          const { data: commentsData } = await supabase
+            .from('portfolio_comments')
+            .select('post_id')
+            .in('post_id', postIds);
+
+          if (commentsData) {
+            commentsData.forEach((c: any) => {
+              commentsCountMap[c.post_id] = (commentsCountMap[c.post_id] || 0) + 1;
+            });
+          }
+        }
+
+        const postsWithRealCounts = (postsData || []).map((p: any) => ({
+          ...p,
+          like_count: likesCountMap[p.id] ?? (p.like_count || 0),
+          comment_count: commentsCountMap[p.id] ?? (p.comment_count || 0),
+        }));
+
+        setPosts(postsWithRealCounts);
 
         try {
           const { data: storiesData } = await supabase
@@ -280,27 +311,48 @@ export function SalonPublicProfile({
     return () => { cancelled = true; };
   }, [salonId, isAuthenticated, currentUserId]);
 
-  // 🔥 AUTO-OUVRIR LE FEED si initialPostId est fourni
+  // ═══════════════════════════════════════════════════════
+  // 🔥 AUTO-OUVRIR LE FEED (si initialPostId fourni)
+  // ═══════════════════════════════════════════════════════
   useEffect(() => {
     if (!initialPostId || posts.length === 0) return;
 
     const index = posts.findIndex(p => p.id === initialPostId);
-    if (index >= 0 && feedIndex !== index) {
+    if (index < 0) return;
+
+    if (feedIndex !== index) {
       setFeedIndex(index);
-      setTimeout(() => {
-        if (feedRef.current) {
-          feedRef.current.scrollTop = index * feedRef.current.clientHeight;
-        }
-      }, 150);
     }
   }, [initialPostId, posts]);
 
-  // 🔥 Reset feedIndex quand on revient sur la page (initialPostId devient null)
+  // ═══════════════════════════════════════════════════════
+  // 🔥 SCROLLER VERS LE POST CIBLÉ (double RAF pour fiabilité)
+  // ═══════════════════════════════════════════════════════
   useEffect(() => {
-    if (initialPostId === null && feedIndex !== null && fromPublicFeed) {
-      setFeedIndex(null);
-    }
-  }, [initialPostId, fromPublicFeed, feedIndex]);
+    if (feedIndex === null) return;
+
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => {
+        const container = feedRef.current;
+        if (!container) return;
+
+        const children = container.querySelectorAll('[data-feed-item]');
+        const target = children[feedIndex] as HTMLElement | undefined;
+
+        if (target) {
+          target.scrollIntoView({
+            behavior: 'instant' as ScrollBehavior,
+            block: 'start',
+          });
+        } else {
+          container.scrollTop = feedIndex * container.clientHeight;
+        }
+      });
+      return () => cancelAnimationFrame(raf2);
+    });
+
+    return () => cancelAnimationFrame(raf1);
+  }, [feedIndex]);
 
   const loadUserLikes = useCallback(async () => {
     try {
@@ -455,17 +507,9 @@ export function SalonPublicProfile({
     const index = posts.findIndex(p => p.id === postId);
     if (index >= 0) {
       setFeedIndex(index);
-      setTimeout(() => {
-        if (feedRef.current) {
-          feedRef.current.scrollTop = index * feedRef.current.clientHeight;
-        }
-      }, 50);
     }
   }, [posts]);
 
-  // 🔥 FERMETURE DU FEED
-  // - Si on vient de la page publique → onBack() direct
-  // - Sinon → retour à la page profil du salon
   const closeFeed = useCallback(() => {
     if (fromPublicFeed) {
       onBack();
@@ -624,7 +668,6 @@ export function SalonPublicProfile({
     }
   }, [posts, feedIndex]);
 
-  // 🔥 LIKE robuste avec upsert
   const toggleLike = useCallback(async (post: PortfolioPost) => {
     const wasLiked = userLikes.has(post.id);
 
@@ -650,10 +693,7 @@ export function SalonPublicProfile({
           .eq('user_id', currentUserId)
           .maybeSingle();
 
-        if (!userProfile) {
-          console.warn('Profil introuvable pour like');
-          return;
-        }
+        if (!userProfile) return;
 
         if (wasLiked) {
           await supabase
@@ -836,7 +876,7 @@ export function SalonPublicProfile({
 
   if (loading) {
     return (
-      <div translate="no" className="min-h-screen bg-black flex items-center justify-center">
+      <div translate="no" className="min-h-full bg-black flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-white animate-spin" />
       </div>
     );
@@ -844,7 +884,7 @@ export function SalonPublicProfile({
 
   if (!salon) {
     return (
-      <div translate="no" className="min-h-screen bg-black flex flex-col items-center justify-center gap-4 p-6">
+      <div translate="no" className="min-h-full bg-black flex flex-col items-center justify-center gap-4 p-6">
         <p className="text-zinc-400">Profil introuvable</p>
         <button onClick={onBack} className="bg-white text-black px-4 py-2 rounded-full font-semibold">
           Retour
@@ -1022,6 +1062,7 @@ export function SalonPublicProfile({
             return (
               <div
                 key={post.id}
+                data-feed-item
                 className="relative h-full w-full snap-start snap-always flex items-center justify-center"
                 style={{ scrollSnapAlign: 'start', height: '100vh' }}
               >
@@ -1289,7 +1330,7 @@ export function SalonPublicProfile({
   // 👤 PAGE PROFIL
   // ═══════════════════════════════════════════════════════════
   return (
-    <div translate="no" className="min-h-screen bg-black text-white pb-20">
+    <div translate="no" className="min-h-full bg-black text-white pb-20">
       <header className="sticky top-0 z-40 bg-black/95 backdrop-blur-md border-b border-zinc-800 flex items-center gap-3 px-4 h-14">
         <button onClick={onBack} className="p-1 -ml-1 text-white hover:opacity-80">
           <ChevronLeft className="w-6 h-6" />
