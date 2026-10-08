@@ -4,7 +4,7 @@ import {
   ChevronLeft, Star, MapPin, Phone, Scissors, Heart, X, Loader2,
   Route as RouteIcon, UserCheck, UserPlus as UserPlusIcon,
   Grid3x3, Share2, MessageCircle, Eye, Play, Music, Check, Clock,
-  Send, Trash2, Loader
+  Send, Trash2, Loader, Navigation, Volume2, VolumeX
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import SalonMapView from './SalonMapView';
@@ -32,8 +32,18 @@ interface Comment {
   created_at: string;
 }
 
+interface Story {
+  id: string;
+  profile_id: string;
+  image_url: string;
+  created_at: string;
+  expires_at: string;
+}
+
 interface SalonPublicProfileProps {
   salonId: string;
+  initialPostId?: string | null;
+  fromPublicFeed?: boolean;   // 🔥 NOUVEAU : true si on vient de la page publique
   isAuthenticated?: boolean;
   currentUserId?: string | null;
   isFollowing?: boolean;
@@ -51,7 +61,6 @@ interface RouteState {
   coords: [number, number][];
 }
 
-// 🔥 Utilitaire device_id pour les invités
 function getDeviceId(): string {
   let deviceId = localStorage.getItem('device_id');
   if (!deviceId) {
@@ -63,6 +72,8 @@ function getDeviceId(): string {
 
 export function SalonPublicProfile({
   salonId,
+  initialPostId = null,
+  fromPublicFeed = false,   // 🔥 AJOUT
   isAuthenticated = false,
   currentUserId = null,
   isFollowing: initialFollowing = false,
@@ -74,32 +85,42 @@ export function SalonPublicProfile({
 }: SalonPublicProfileProps) {
   const [salon, setSalon] = useState<any>(null);
   const [posts, setPosts] = useState<PortfolioPost[]>([]);
+  const [stories, setStories] = useState<Story[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedPost, setSelectedPost] = useState<PortfolioPost | null>(null);
+  const [profileTab, setProfileTab] = useState<'grid' | 'reels'>('grid');
   const [following, setFollowing] = useState(initialFollowing);
   const [userLikes, setUserLikes] = useState<Set<string>>(new Set());
-  const [tab, setTab] = useState<'grid' | 'reels'>('grid');
 
-  // 🔥 Commentaires
+  // 🔥 MODE FEED : null = page profil, sinon = index du post ouvert
+  const [feedIndex, setFeedIndex] = useState<number | null>(null);
+  const [feedSoundOn, setFeedSoundOn] = useState(false);
+
+  const [userRating, setUserRating] = useState<number | null>(null);
+  const [hoverRating, setHoverRating] = useState<number | null>(null);
+  const [ratingLoading, setRatingLoading] = useState(false);
+
+  const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [postingComment, setPostingComment] = useState(false);
   const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
   const commentsEndRef = useRef<HTMLDivElement>(null);
+  const commentInputRef = useRef<HTMLInputElement>(null);
 
-  // 🔥 Itinéraire intégré
   const [showRouteMap, setShowRouteMap] = useState(false);
   const [routeInfo, setRouteInfo] = useState<RouteState | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
 
-  // 🔥 Partage
   const [shareFeedback, setShareFeedback] = useState<string | null>(null);
 
   const mapRef = useRef<any>(null);
+  const feedRef = useRef<HTMLDivElement>(null);
 
-  // Charge salon + portfolio + likes
+  // ═══════════════════════════════════════════════════════
+  // CHARGEMENT INITIAL
+  // ═══════════════════════════════════════════════════════
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -127,15 +148,11 @@ export function SalonPublicProfile({
         let followersCount: number = 0;
 
         try {
-          const { data: bookingRow, error: bookingError } = await supabase
+          const { data: bookingRow } = await supabase
             .from('booking_settings')
             .select('slug, is_active')
             .eq('user_id', profileData.user_id)
             .maybeSingle();
-
-          if (bookingError) {
-            console.warn('⚠️ Erreur chargement booking_settings:', bookingError);
-          }
 
           if (
             bookingRow?.slug &&
@@ -161,6 +178,7 @@ export function SalonPublicProfile({
         }
 
         let rating = 0;
+        let reviewCount = 0;
         try {
           const { data: reviews } = await supabase
             .from('reviews')
@@ -169,6 +187,7 @@ export function SalonPublicProfile({
 
           if (reviews && reviews.length > 0) {
             rating = reviews.reduce((sum: number, r: any) => sum + r.rating, 0) / reviews.length;
+            reviewCount = reviews.length;
           }
         } catch (err) {
           console.warn('⚠️ Erreur rating:', err);
@@ -181,14 +200,7 @@ export function SalonPublicProfile({
           slug: salonSlug,
           followers_count: followersCount,
           rating: rating,
-        });
-
-        console.log('🎫 SalonPublicProfile — Salon chargé:', {
-          name: profileData.salon_name || profileData.full_name,
-          user_id: profileData.user_id,
-          slug: salonSlug,
-          followers: followersCount,
-          rating,
+          review_count: reviewCount,
         });
 
         const { data: postsData } = await supabase
@@ -201,8 +213,25 @@ export function SalonPublicProfile({
         if (cancelled) return;
         setPosts(postsData || []);
 
-        // 🔥 Charger les likes de l'utilisateur (connecté OU invité)
-        await loadUserLikes();
+        try {
+          const { data: storiesData } = await supabase
+            .from('stories')
+            .select('id, profile_id, image_url, created_at, expires_at')
+            .eq('profile_id', salonId)
+            .gte('expires_at', new Date().toISOString())
+            .order('created_at', { ascending: false });
+
+          if (!cancelled && storiesData) {
+            setStories(storiesData);
+          }
+        } catch (err) {
+          console.warn('⚠️ Erreur stories:', err);
+        }
+
+        await Promise.all([
+          loadUserLikes(),
+          loadUserRating(profileData.id),
+        ]);
       } catch (err) {
         console.error('❌ Erreur chargement profil:', err);
       } finally {
@@ -212,13 +241,26 @@ export function SalonPublicProfile({
     return () => { cancelled = true; };
   }, [salonId, isAuthenticated, currentUserId]);
 
-  // 🔥 Charger les likes (user connecté + invité)
+  // 🔥 AUTO-OUVRIR LE FEED si initialPostId est fourni
+  useEffect(() => {
+    if (initialPostId && posts.length > 0 && feedIndex === null) {
+      const index = posts.findIndex(p => p.id === initialPostId);
+      if (index >= 0) {
+        setFeedIndex(index);
+        setTimeout(() => {
+          if (feedRef.current) {
+            feedRef.current.scrollTop = index * feedRef.current.clientHeight;
+          }
+        }, 100);
+      }
+    }
+  }, [initialPostId, posts]);
+
   const loadUserLikes = useCallback(async () => {
     try {
       const likedIds: string[] = [];
 
       if (isAuthenticated && currentUserId) {
-        // Utilisateur connecté : likes par profile_id
         const { data, error } = await supabase
           .from('likes')
           .select('target_id')
@@ -229,7 +271,6 @@ export function SalonPublicProfile({
           likedIds.push(...data.map((l: any) => l.target_id));
         }
       } else {
-        // Invité : likes par device_id
         const deviceId = getDeviceId();
         const { data, error } = await supabase
           .from('likes')
@@ -239,8 +280,6 @@ export function SalonPublicProfile({
 
         if (!error && data) {
           likedIds.push(...data.map((l: any) => l.target_id));
-        } else if (error) {
-          console.warn('⚠️ Erreur likes invité:', error.message);
         }
       }
 
@@ -250,7 +289,140 @@ export function SalonPublicProfile({
     }
   }, [isAuthenticated, currentUserId]);
 
-  // 🔥 Charger les commentaires d'un post
+  const loadUserRating = useCallback(async (profileId: string) => {
+    try {
+      if (isAuthenticated && currentUserId) {
+        const { data } = await supabase
+          .from('reviews')
+          .select('rating')
+          .eq('profile_id', profileId)
+          .eq('reviewer_id', currentUserId)
+          .maybeSingle();
+
+        if (data) setUserRating(data.rating);
+      } else {
+        const deviceId = getDeviceId();
+        const { data } = await supabase
+          .from('reviews')
+          .select('rating')
+          .eq('profile_id', profileId)
+          .eq('device_id', deviceId)
+          .maybeSingle();
+
+        if (data) setUserRating(data.rating);
+      }
+    } catch (err) {
+      console.warn('⚠️ Erreur loadUserRating:', err);
+    }
+  }, [isAuthenticated, currentUserId]);
+
+  const handleRateSalon = useCallback(async (rating: number) => {
+    if (!salon || ratingLoading) return;
+
+    if (isAuthenticated && currentUserId === salon.user_id) {
+      showToast?.('Vous ne pouvez pas noter votre propre salon');
+      return;
+    }
+
+    setRatingLoading(true);
+
+    try {
+      const deviceId = getDeviceId();
+
+      if (isAuthenticated && currentUserId) {
+        const { data: existing } = await supabase
+          .from('reviews')
+          .select('id')
+          .eq('profile_id', salon.id)
+          .eq('reviewer_id', currentUserId)
+          .maybeSingle();
+
+        if (existing) {
+          await supabase
+            .from('reviews')
+            .update({ rating, updated_at: new Date().toISOString() })
+            .eq('id', existing.id);
+        } else {
+          await supabase.from('reviews').insert({
+            profile_id: salon.id,
+            reviewer_id: currentUserId,
+            rating,
+            device_id: deviceId,
+          });
+        }
+      } else {
+        const { data: existing } = await supabase
+          .from('reviews')
+          .select('id')
+          .eq('profile_id', salon.id)
+          .eq('device_id', deviceId)
+          .maybeSingle();
+
+        if (existing) {
+          await supabase
+            .from('reviews')
+            .update({ rating, updated_at: new Date().toISOString() })
+            .eq('id', existing.id);
+        } else {
+          await supabase.from('reviews').insert({
+            profile_id: salon.id,
+            rating,
+            device_id: deviceId,
+          });
+        }
+      }
+
+      const { data: allReviews } = await supabase
+        .from('reviews')
+        .select('rating')
+        .eq('profile_id', salon.id);
+
+      const newAvg = allReviews && allReviews.length > 0
+        ? allReviews.reduce((sum: number, r: any) => sum + r.rating, 0) / allReviews.length
+        : 0;
+
+      setUserRating(rating);
+      setSalon((prev: any) => prev ? {
+        ...prev,
+        rating: newAvg,
+        review_count: allReviews?.length || 0,
+      } : prev);
+
+      showToast?.(`✅ Note enregistrée : ${rating} ⭐`);
+    } catch (err) {
+      console.error('Erreur notation:', err);
+      showToast?.('Erreur lors de la notation');
+    } finally {
+      setRatingLoading(false);
+    }
+  }, [salon, isAuthenticated, currentUserId, ratingLoading, showToast]);
+
+  const openFeedAtPost = useCallback((postId: string) => {
+    const index = posts.findIndex(p => p.id === postId);
+    if (index >= 0) {
+      setFeedIndex(index);
+      setTimeout(() => {
+        if (feedRef.current) {
+          feedRef.current.scrollTop = index * feedRef.current.clientHeight;
+        }
+      }, 50);
+    }
+  }, [posts]);
+
+  // 🔥 RETOUR DU FEED : si on vient de la page publique → onBack direct
+  // Sinon → retour à la page profil
+  const closeFeed = useCallback(() => {
+    if (fromPublicFeed) {
+      // 🔥 On est arrivé depuis la page publique → retour à la page publique
+      onBack();
+      return;
+    }
+    // Sinon → retour à la page profil
+    setFeedIndex(null);
+    setShowComments(false);
+    setComments([]);
+  }, [fromPublicFeed, onBack]);
+
   const loadComments = useCallback(async (postId: string) => {
     setCommentsLoading(true);
     try {
@@ -274,23 +446,21 @@ export function SalonPublicProfile({
     }
   }, []);
 
-  // 🔥 Charger les commentaires quand on ouvre un post
   useEffect(() => {
-    if (selectedPost) {
-      loadComments(selectedPost.id);
-    } else {
-      setComments([]);
+    if (showComments && feedIndex !== null && posts[feedIndex]) {
+      loadComments(posts[feedIndex].id);
     }
-  }, [selectedPost, loadComments]);
+  }, [showComments, feedIndex, posts, loadComments]);
 
-  // 🔥 Auto-scroll vers le dernier commentaire
   useEffect(() => {
-    commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [comments.length]);
+    if (showComments) {
+      setTimeout(() => commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  }, [comments.length, showComments]);
 
-  // 🔥 Ajouter un commentaire
   const handleAddComment = useCallback(async () => {
-    if (!selectedPost || !newComment.trim() || postingComment) return;
+    const currentPost = feedIndex !== null ? posts[feedIndex] : null;
+    if (!currentPost || !newComment.trim() || postingComment) return;
 
     const content = newComment.trim();
     setPostingComment(true);
@@ -298,7 +468,6 @@ export function SalonPublicProfile({
     try {
       const deviceId = getDeviceId();
 
-      // Récupérer le nom et l'avatar de l'auteur
       let authorName = 'Anonyme';
       let authorAvatar: string | null = null;
 
@@ -314,7 +483,6 @@ export function SalonPublicProfile({
           authorAvatar = profile.avatar_url || null;
         }
       } else {
-        // Invité : nom générique
         const guestNumber = localStorage.getItem('guest_number');
         if (!guestNumber) {
           const num = Math.floor(1000 + Math.random() * 9000);
@@ -328,7 +496,7 @@ export function SalonPublicProfile({
       const { data: inserted, error } = await supabase
         .from('portfolio_comments')
         .insert({
-          post_id: selectedPost.id,
+          post_id: currentPost.id,
           profile_id: isAuthenticated && currentUserId ? currentUserId : null,
           device_id: isAuthenticated ? null : deviceId,
           author_name: authorName,
@@ -344,23 +512,19 @@ export function SalonPublicProfile({
         return;
       }
 
-      // Ajouter localement
       setComments(prev => [...prev, inserted as Comment]);
       setNewComment('');
 
-      // Incrémenter le compteur
       setPosts(prev => prev.map(p =>
-        p.id === selectedPost.id
+        p.id === currentPost.id
           ? { ...p, comment_count: (p.comment_count || 0) + 1 }
           : p
       ));
-      setSelectedPost(prev => prev ? { ...prev, comment_count: (prev.comment_count || 0) + 1 } : null);
 
-      // Met à jour le compteur en base
       await supabase
         .from('portfolio_posts')
-        .update({ comment_count: (selectedPost.comment_count || 0) + 1 })
-        .eq('id', selectedPost.id);
+        .update({ comment_count: (currentPost.comment_count || 0) + 1 })
+        .eq('id', currentPost.id);
 
     } catch (err) {
       console.error('Exception addComment:', err);
@@ -368,11 +532,11 @@ export function SalonPublicProfile({
     } finally {
       setPostingComment(false);
     }
-  }, [selectedPost, newComment, postingComment, isAuthenticated, currentUserId, showToast]);
+  }, [posts, feedIndex, newComment, postingComment, isAuthenticated, currentUserId, showToast]);
 
-  // 🔥 Supprimer un commentaire (seulement le sien)
   const handleDeleteComment = useCallback(async (commentId: string) => {
-    if (!selectedPost) return;
+    const currentPost = feedIndex !== null ? posts[feedIndex] : null;
+    if (!currentPost) return;
 
     setDeletingCommentId(commentId);
     try {
@@ -383,38 +547,32 @@ export function SalonPublicProfile({
 
       if (error) {
         console.error('Erreur suppression:', error);
-        showToast?.('Erreur');
         return;
       }
 
       setComments(prev => prev.filter(c => c.id !== commentId));
 
-      // Décrémenter le compteur
       setPosts(prev => prev.map(p =>
-        p.id === selectedPost.id
+        p.id === currentPost.id
           ? { ...p, comment_count: Math.max((p.comment_count || 1) - 1, 0) }
           : p
       ));
-      setSelectedPost(prev => prev ? { ...prev, comment_count: Math.max((prev.comment_count || 1) - 1, 0) } : null);
 
       await supabase
         .from('portfolio_posts')
-        .update({ comment_count: Math.max((selectedPost.comment_count || 1) - 1, 0) })
-        .eq('id', selectedPost.id);
+        .update({ comment_count: Math.max((currentPost.comment_count || 1) - 1, 0) })
+        .eq('id', currentPost.id);
 
     } catch (err) {
       console.error('Exception deleteComment:', err);
-      showToast?.('Erreur');
     } finally {
       setDeletingCommentId(null);
     }
-  }, [selectedPost, showToast]);
+  }, [posts, feedIndex]);
 
-  // 🔥 Toggle like (connecté OU invité)
   const toggleLike = useCallback(async (post: PortfolioPost) => {
     const wasLiked = userLikes.has(post.id);
 
-    // Mise à jour optimiste
     setUserLikes(prev => {
       const next = new Set(prev);
       if (wasLiked) next.delete(post.id); else next.add(post.id);
@@ -426,16 +584,11 @@ export function SalonPublicProfile({
         ? { ...p, like_count: Math.max((p.like_count || 0) + (wasLiked ? -1 : 1), 0) }
         : p
     ));
-    setSelectedPost(prev => prev && prev.id === post.id
-      ? { ...prev, like_count: Math.max((prev.like_count || 0) + (wasLiked ? -1 : 1), 0) }
-      : prev
-    );
 
     try {
       const deviceId = getDeviceId();
 
       if (isAuthenticated && currentUserId) {
-        // Utilisateur connecté : identifier par profile_id
         if (wasLiked) {
           await supabase
             .from('likes')
@@ -451,7 +604,6 @@ export function SalonPublicProfile({
           });
         }
       } else {
-        // Invité : identifier par device_id
         const { data: existing } = await supabase
           .from('likes')
           .select('id')
@@ -473,7 +625,6 @@ export function SalonPublicProfile({
         }
       }
 
-      // Mettre à jour le compteur en base
       await supabase
         .from('portfolio_posts')
         .update({
@@ -483,7 +634,6 @@ export function SalonPublicProfile({
 
     } catch (err) {
       console.error('Erreur like:', err);
-      // Rollback
       setUserLikes(prev => {
         const next = new Set(prev);
         if (wasLiked) next.add(post.id); else next.delete(post.id);
@@ -497,7 +647,6 @@ export function SalonPublicProfile({
     }
   }, [isAuthenticated, currentUserId, userLikes]);
 
-  // 🔥 Itinéraire
   const handleStartItinerary = useCallback(async () => {
     if (!salon?.latitude || !salon?.longitude) {
       showToast?.('Position du salon indisponible');
@@ -573,20 +722,15 @@ export function SalonPublicProfile({
       }
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
-        console.error('Erreur partage:', err);
         try {
           await navigator.clipboard.writeText(shareUrl);
           setShareFeedback('Lien copié !');
           setTimeout(() => setShareFeedback(null), 1800);
-        } catch {
-          setShareFeedback('Erreur partage');
-          setTimeout(() => setShareFeedback(null), 1800);
-        }
+        } catch {}
       }
     }
   }, [salon, salonId]);
 
-  // 🔥 Helper : est-ce MON commentaire ?
   const isMyComment = useCallback((comment: Comment): boolean => {
     if (isAuthenticated && currentUserId && comment.profile_id === currentUserId) {
       return true;
@@ -598,7 +742,6 @@ export function SalonPublicProfile({
     return false;
   }, [isAuthenticated, currentUserId]);
 
-  // 🔥 Formater date relative (il y a X min)
   const formatRelativeTime = (dateStr: string): string => {
     try {
       const diff = Date.now() - new Date(dateStr).getTime();
@@ -637,13 +780,17 @@ export function SalonPublicProfile({
   }
 
   const displayName = salon.salon_name || salon.full_name || 'Salon';
+  const hasValidSlug = typeof salon.slug === 'string' && salon.slug.trim().length > 0;
+  const canBook = hasValidSlug && !!onBook;
+  const isOwnProfile = isAuthenticated && currentUserId === salon.user_id;
+  const hasActiveStories = stories.length > 0;
+
   const gridPosts = posts.filter((p) => p.media_type === 'image');
   const reelsPosts = posts.filter((p) => p.media_type === 'video');
 
-  const hasValidSlug = typeof salon.slug === 'string' && salon.slug.trim().length > 0;
-  const canBook = hasValidSlug && !!onBook;
-
-  // 🔥 Affichage carte itinéraire
+  // ═══════════════════════════════════════════════════════════
+  // 🗺️ CARTE ITINÉRAIRE
+  // ═══════════════════════════════════════════════════════════
   if (showRouteMap) {
     return (
       <div translate="no" className="fixed inset-0 z-[200] bg-zinc-950 flex flex-col">
@@ -695,12 +842,6 @@ export function SalonPublicProfile({
                 <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
                 <p className="text-white text-sm font-medium">Calcul de l'itinéraire...</p>
               </div>
-            </div>
-          )}
-
-          {routeError && !routeLoading && (
-            <div className="absolute top-4 left-4 right-4 bg-red-500/15 border border-red-500/40 rounded-xl p-3 flex items-start gap-2 z-20">
-              <span className="text-red-400 text-xs">{routeError}</span>
             </div>
           )}
 
@@ -766,324 +907,233 @@ export function SalonPublicProfile({
     );
   }
 
-  return (
-    <div translate="no" className="min-h-screen bg-black text-white pb-24">
-      <header className="sticky top-0 z-40 bg-black/95 backdrop-blur-md border-b border-zinc-800 flex items-center gap-3 px-4 h-14">
-        <button onClick={onBack} className="p-1 -ml-1 text-white hover:opacity-80">
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-        <h1 className="flex-1 font-bold text-base truncate">
-          @{displayName.toLowerCase().replace(/\s/g, '_')}
-        </h1>
-        <button
-          onClick={handleShare}
-          className="p-1 text-white hover:opacity-80 relative"
-          title="Partager"
-        >
-          {shareFeedback ? (
-            <Check className="w-5 h-5 text-emerald-400" />
-          ) : (
-            <Share2 className="w-5 h-5" />
-          )}
-        </button>
-      </header>
-
-      {shareFeedback && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[150] bg-emerald-600 text-white text-xs font-semibold px-4 py-2 rounded-full shadow-2xl">
-          {shareFeedback}
-        </div>
-      )}
-
-      <div className="px-4 pt-4 pb-2">
-        <div className="flex items-center gap-6">
-          <div className="w-20 h-20 rounded-full p-[3px] bg-gradient-to-tr from-yellow-400 via-pink-500 to-purple-600 flex-shrink-0">
-            <div className="w-full h-full rounded-full bg-black p-[2px]">
-              <div className="w-full h-full rounded-full overflow-hidden bg-zinc-800 flex items-center justify-center">
-                {salon.avatar_url ? (
-                  <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <Scissors className="w-8 h-8 text-white" />
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex-1 min-w-0 grid grid-cols-3 gap-2">
-            <div className="text-center">
-              <p className="font-bold text-lg">{posts.length}</p>
-              <p className="text-zinc-400 text-xs">Publications</p>
-            </div>
-            <div className="text-center">
-              <p className="font-bold text-lg">{salon.followers_count || 0}</p>
-              <p className="text-zinc-400 text-xs">Abonnés</p>
-            </div>
-            <div className="text-center">
-              <p className="font-bold text-lg flex items-center justify-center gap-1">
-                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-                {(salon.rating || 0).toFixed(1)}
-              </p>
-              <p className="text-zinc-400 text-xs">Note</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-3">
-          <p className="font-bold text-sm">{displayName}</p>
-          {salon.description && (
-            <p className="text-zinc-300 text-xs mt-0.5 whitespace-pre-wrap">{salon.description}</p>
-          )}
-          {salon.address && (
-            <p className="text-zinc-500 text-xs mt-1 flex items-center gap-1">
-              <MapPin className="w-3 h-3 flex-shrink-0" />
-              <span className="truncate">{salon.address}</span>
-            </p>
-          )}
-        </div>
-
-        <div className="flex gap-2 mt-4">
-          <button
-            onClick={() => {
-              if (canBook) onBook?.(salon.slug);
-            }}
-            disabled={!canBook}
-            title={!canBook ? "Ce salon n'a pas activé les réservations en ligne" : "Réserver"}
-            className={`flex-1 font-semibold py-2 rounded-lg text-sm transition ${
-              canBook
-                ? 'bg-white text-black hover:bg-zinc-200'
-                : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-            }`}
-          >
-            {canBook ? 'Réserver' : 'Réservation indisponible'}
-          </button>
-
-          <button
-            onClick={handleStartItinerary}
-            className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 rounded-lg text-sm transition flex items-center justify-center gap-1"
-          >
-            <RouteIcon className="w-4 h-4" /> Itinéraire
-          </button>
-
-          {isAuthenticated && currentUserId !== salon.user_id && (
-            <button
-              onClick={() => {
-                onFollowToggle?.(salonId);
-                setFollowing((f) => !f);
-              }}
-              className={`flex-1 font-semibold py-2 rounded-lg text-sm transition flex items-center justify-center gap-1 ${
-                following
-                  ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
-                  : 'bg-blue-600 hover:bg-blue-700 text-white'
-              }`}
-            >
-              {following ? (
-                <><UserCheck className="w-4 h-4" /> Suivi</>
-              ) : (
-                <><UserPlusIcon className="w-4 h-4" /> Suivre</>
-              )}
+  // ═══════════════════════════════════════════════════════════
+  // 🎬 MODE FEED
+  // ═══════════════════════════════════════════════════════════
+  if (feedIndex !== null) {
+    return (
+      <div translate="no" className="fixed inset-0 bg-black text-white overflow-hidden">
+        <header className="absolute top-0 left-0 right-0 z-40 bg-gradient-to-b from-black/90 to-transparent px-4 pt-4 pb-8 pointer-events-none">
+          <div className="flex items-center gap-3 pointer-events-auto">
+            {/* 🔥 RETOUR adaptatif : page publique OU page profil */}
+            <button onClick={closeFeed} className="p-1 text-white hover:opacity-80">
+              <ChevronLeft className="w-6 h-6" />
             </button>
-          )}
+            <h1 className="flex-1 font-bold text-base truncate">
+              @{displayName.toLowerCase().replace(/\s/g, '_')}
+            </h1>
+            {canBook && !isOwnProfile && (
+              <button
+                onClick={() => onBook?.(salon.slug)}
+                className="bg-white text-black text-xs font-bold px-3 py-1.5 rounded-full"
+              >
+                Réserver
+              </button>
+            )}
+          </div>
+        </header>
 
-          {salon.phone && (
-            <a
-              href={`tel:${salon.phone}`}
-              className="p-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 transition"
-            >
-              <Phone className="w-5 h-5" />
-            </a>
-          )}
-        </div>
-      </div>
-
-      <div className="flex border-t border-zinc-800 mt-3">
-        <button
-          onClick={() => setTab('grid')}
-          className={`flex-1 py-3 flex items-center justify-center gap-2 text-xs font-semibold transition ${
-            tab === 'grid' ? 'text-white border-t-2 border-white -mt-px' : 'text-zinc-500'
-          }`}
-        >
-          <Grid3x3 className="w-4 h-4" /> PHOTOS
-        </button>
-        <button
-          onClick={() => setTab('reels')}
-          className={`flex-1 py-3 flex items-center justify-center gap-2 text-xs font-semibold transition ${
-            tab === 'reels' ? 'text-white border-t-2 border-white -mt-px' : 'text-zinc-500'
-          }`}
-        >
-          <Music className="w-4 h-4" /> VIDÉOS
-        </button>
-      </div>
-
-      {tab === 'grid' && (
-        <div>
-          {gridPosts.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center px-6">
-              <div className="w-16 h-16 rounded-full border-2 border-zinc-700 flex items-center justify-center mb-3">
-                <Grid3x3 className="w-7 h-7 text-zinc-600" />
-              </div>
-              <p className="text-white font-semibold text-sm">Aucune publication</p>
-              <p className="text-zinc-500 text-xs mt-1">Ce salon n'a pas encore publié de coiffure</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-0.5">
-              {gridPosts.map((post) => (
-                <button
-                  key={post.id}
-                  onClick={() => setSelectedPost(post)}
-                  className="relative aspect-square bg-zinc-900 group overflow-hidden"
-                >
-                  <img
-                    src={post.image_url}
-                    alt=""
-                    className="w-full h-full object-cover group-hover:opacity-90 transition"
-                    loading="lazy"
-                  />
-                  <div className="absolute bottom-1.5 left-1.5 flex items-center gap-2 text-white text-xs font-semibold drop-shadow-lg">
-                    {post.like_count > 0 && (
-                      <span className="flex items-center gap-1">
-                        <Heart className="w-3.5 h-3.5 fill-white" />
-                        {post.like_count}
-                      </span>
-                    )}
-                    {(post.comment_count || 0) > 0 && (
-                      <span className="flex items-center gap-1">
-                        <MessageCircle className="w-3.5 h-3.5 fill-white" />
-                        {post.comment_count}
-                      </span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {tab === 'reels' && (
-        <div>
-          {reelsPosts.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center px-6">
-              <div className="w-16 h-16 rounded-full border-2 border-zinc-700 flex items-center justify-center mb-3">
-                <Music className="w-7 h-7 text-zinc-600" />
-              </div>
-              <p className="text-white font-semibold text-sm">Aucune vidéo</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-0.5">
-              {reelsPosts.map((post) => (
-                <button
-                  key={post.id}
-                  onClick={() => setSelectedPost(post)}
-                  className="relative aspect-[9/16] bg-zinc-900 group overflow-hidden"
-                >
-                  <video src={post.image_url} className="w-full h-full object-cover" muted />
-                  <div className="absolute top-2 right-2 text-white">
-                    <Play className="w-4 h-4 fill-white" />
-                  </div>
-                  <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 text-white text-xs font-semibold drop-shadow-lg">
-                    <Eye className="w-3.5 h-3.5" />
-                    {post.view_count || 0}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════ */}
-      {/* 🔥 MODAL POST AVEC COMMENTAIRES STYLE INSTAGRAM */}
-      {/* ═══════════════════════════════════════════════════════ */}
-      {selectedPost && (
         <div
-          className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-0 sm:p-4"
-          onClick={() => setSelectedPost(null)}
+          ref={feedRef}
+          className="h-full overflow-y-scroll snap-y snap-mandatory"
+          style={{ scrollSnapType: 'y mandatory', WebkitOverflowScrolling: 'touch' }}
         >
-          <button
-            onClick={() => setSelectedPost(null)}
-            className="absolute top-4 right-4 text-white/80 hover:text-white z-20 p-2 rounded-full bg-black/40 backdrop-blur-sm"
-          >
-            <X className="w-6 h-6" />
-          </button>
+          {posts.map((post, index) => {
+            const isLiked = userLikes.has(post.id);
+            const isVideo = post.media_type === 'video';
 
-          <div
-            className="bg-zinc-900 sm:rounded-2xl w-full max-w-5xl h-full sm:h-auto sm:max-h-[92vh] overflow-hidden grid md:grid-cols-2"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* ── Image / Vidéo ── */}
-            <div className="bg-black flex items-center justify-center h-[40vh] md:h-auto md:max-h-[92vh] relative">
-              {selectedPost.media_type === 'video' ? (
-                <video
-                  src={selectedPost.image_url}
-                  className="w-full h-full object-contain md:max-h-[92vh]"
-                  controls
-                  autoPlay
-                  playsInline
-                />
-              ) : (
-                <img
-                  src={selectedPost.image_url}
-                  alt=""
-                  className="w-full h-full object-contain md:max-h-[92vh]"
-                />
-              )}
-            </div>
-
-            {/* ── Panneau droit : header + comments + actions ── */}
-            <div className="flex flex-col bg-zinc-900 h-[60vh] md:h-auto md:max-h-[92vh]">
-              {/* Header */}
-              <div className="flex items-center gap-3 p-4 border-b border-zinc-800 flex-shrink-0">
-                <div className="w-10 h-10 rounded-full bg-zinc-800 overflow-hidden flex items-center justify-center flex-shrink-0 border-2 border-zinc-700">
-                  {salon.avatar_url ? (
-                    <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
+            return (
+              <div
+                key={post.id}
+                className="relative h-full w-full snap-start snap-always flex items-center justify-center"
+                style={{ scrollSnapAlign: 'start', height: '100vh' }}
+              >
+                <div className="absolute inset-0 flex items-center justify-center bg-black">
+                  {isVideo ? (
+                    <video
+                      src={post.image_url}
+                      className="max-w-full max-h-full object-contain"
+                      loop
+                      playsInline
+                      autoPlay={index === feedIndex}
+                      muted={!feedSoundOn}
+                    />
                   ) : (
-                    <Scissors className="w-5 h-5 text-white" />
+                    <img
+                      src={post.image_url}
+                      alt=""
+                      className="max-w-full max-h-full object-contain"
+                      loading="lazy"
+                    />
                   )}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-bold text-sm truncate">{displayName}</p>
-                  <p className="text-zinc-500 text-xs">
-                    {new Date(selectedPost.created_at).toLocaleDateString('fr-FR', {
-                      day: 'numeric',
-                      month: 'long',
-                      year: 'numeric'
-                    })}
-                  </p>
+
+                <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none" />
+
+                {isVideo && (
+                  <button
+                    onClick={() => setFeedSoundOn(s => !s)}
+                    className="absolute top-20 right-4 z-30 p-2.5 rounded-full bg-black/50 backdrop-blur-sm text-white active:scale-95"
+                  >
+                    {feedSoundOn ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+                  </button>
+                )}
+
+                <div className="absolute right-3 bottom-32 z-30 flex flex-col items-center gap-5">
+                  <button
+                    onClick={() => toggleLike(post)}
+                    className="flex flex-col items-center gap-1 active:scale-90 transition"
+                  >
+                    <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                      <Heart
+                        className={`w-7 h-7 transition ${
+                          isLiked ? 'fill-red-500 text-red-500' : 'text-white'
+                        }`}
+                      />
+                    </div>
+                    <span className="text-white text-xs font-semibold drop-shadow-lg">
+                      {post.like_count || 0}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setFeedIndex(index);
+                      setShowComments(true);
+                    }}
+                    className="flex flex-col items-center gap-1 active:scale-90 transition"
+                  >
+                    <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                      <MessageCircle className="w-7 h-7 text-white" />
+                    </div>
+                    <span className="text-white text-xs font-semibold drop-shadow-lg">
+                      {post.comment_count || 0}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={handleShare}
+                    className="flex flex-col items-center gap-1 active:scale-90 transition"
+                  >
+                    <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                      <Share2 className="w-7 h-7 text-white" />
+                    </div>
+                    <span className="text-white text-xs font-semibold drop-shadow-lg">
+                      Partager
+                    </span>
+                  </button>
+
+                  {salon.latitude && salon.longitude && (
+                    <button
+                      onClick={handleStartItinerary}
+                      className="flex flex-col items-center gap-1 active:scale-90 transition"
+                    >
+                      <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                        <RouteIcon className="w-7 h-7 text-white" />
+                      </div>
+                      <span className="text-white text-xs font-semibold drop-shadow-lg">
+                        Route
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="absolute left-3 right-20 bottom-6 z-30">
+                  <button
+                    onClick={closeFeed}
+                    className="flex items-center gap-2 mb-2 active:opacity-80 transition text-left"
+                  >
+                    <div className="w-9 h-9 rounded-full overflow-hidden bg-zinc-800 border border-white/20 flex-shrink-0">
+                      {salon.avatar_url ? (
+                        <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <Scissors className="w-4 h-4 text-white" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm text-white drop-shadow-lg truncate">
+                        {displayName}
+                      </p>
+                      <div className="flex items-center gap-1 text-[10px] text-white/80">
+                        <Star className="w-3 h-3 text-yellow-400 fill-yellow-400" />
+                        <span>{(salon.rating || 0).toFixed(1)}</span>
+                        <span>•</span>
+                        <span>{salon.followers_count || 0} abonnés</span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {post.caption && (
+                    <p className="text-white text-sm leading-snug drop-shadow-lg line-clamp-2">
+                      {post.caption}
+                    </p>
+                  )}
+
+                  <div className="flex items-center gap-1.5 mt-1.5 text-white/90 text-xs">
+                    <Music className="w-3 h-3" />
+                    <span className="drop-shadow-lg truncate">
+                      {post.media_type === 'video' ? 'Vidéo originale' : 'Publication'} • {formatRelativeTime(post.created_at)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 text-white text-xs font-semibold bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full">
+                  {index + 1} / {posts.length}
                 </div>
               </div>
+            );
+          })}
+        </div>
 
-              {/* Caption */}
-              {selectedPost.caption && (
-                <div className="px-4 py-3 border-b border-zinc-800 flex-shrink-0">
-                  <p className="text-white text-sm whitespace-pre-wrap">{selectedPost.caption}</p>
-                </div>
-              )}
+        {/* MODAL COMMENTAIRES */}
+        {showComments && posts[feedIndex] && (
+          <div
+            className="fixed inset-0 z-[100] bg-black/70 flex items-end sm:items-center sm:justify-center"
+            onClick={() => setShowComments(false)}
+          >
+            <div
+              className="bg-zinc-950 w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl flex flex-col max-h-[85vh] sm:max-h-[80vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-12 h-1 bg-zinc-700 rounded-full mx-auto mt-3 sm:hidden flex-shrink-0" />
 
-              {/* Commentaires */}
+              <div className="flex items-center justify-between p-4 border-b border-zinc-800 flex-shrink-0">
+                <h3 className="font-bold text-white text-base">Commentaires</h3>
+                <button
+                  onClick={() => setShowComments(false)}
+                  className="p-1.5 rounded-full hover:bg-zinc-800 transition"
+                >
+                  <X className="w-5 h-5 text-white" />
+                </button>
+              </div>
+
               <div className="flex-1 overflow-y-auto px-4 py-3">
                 {commentsLoading ? (
-                  <div className="flex items-center justify-center py-8">
+                  <div className="flex items-center justify-center py-12">
                     <Loader2 className="w-6 h-6 text-zinc-500 animate-spin" />
                   </div>
                 ) : comments.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <div className="flex flex-col items-center justify-center py-16 text-center">
                     <MessageCircle className="w-12 h-12 text-zinc-700 mb-3" />
                     <p className="text-white font-semibold text-sm">Aucun commentaire</p>
                     <p className="text-zinc-500 text-xs mt-1">Soyez le premier à commenter</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="space-y-4">
                     {comments.map((comment) => {
                       const isMine = isMyComment(comment);
                       const isDeleting = deletingCommentId === comment.id;
 
                       return (
                         <div key={comment.id} className="flex items-start gap-3 group">
-                          <div className="w-8 h-8 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border border-zinc-700">
+                          <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border border-zinc-700">
                             {comment.author_avatar ? (
                               <img src={comment.author_avatar} alt="" className="w-full h-full object-cover" />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
-                                <Scissors className="w-3.5 h-3.5 text-zinc-500" />
+                                <Scissors className="w-4 h-4 text-zinc-500" />
                               </div>
                             )}
                           </div>
@@ -1101,13 +1151,12 @@ export function SalonPublicProfile({
                             <button
                               onClick={() => handleDeleteComment(comment.id)}
                               disabled={isDeleting}
-                              className="text-zinc-600 hover:text-red-400 transition opacity-0 group-hover:opacity-100 p-1 flex-shrink-0 disabled:opacity-50"
-                              title="Supprimer"
+                              className="text-zinc-600 hover:text-red-400 transition p-1 flex-shrink-0 disabled:opacity-50"
                             >
                               {isDeleting ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <Loader2 className="w-4 h-4 animate-spin" />
                               ) : (
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <Trash2 className="w-4 h-4" />
                               )}
                             </button>
                           )}
@@ -1119,32 +1168,10 @@ export function SalonPublicProfile({
                 )}
               </div>
 
-              {/* Actions (like, comment, share) */}
-              <div className="border-t border-zinc-800 p-3 flex-shrink-0">
-                <div className="flex items-center gap-4 mb-3">
-                  <button
-                    onClick={() => toggleLike(selectedPost)}
-                    className="flex items-center gap-1.5 text-white active:scale-95 transition"
-                  >
-                    <Heart
-                      className={`w-6 h-6 transition ${
-                        userLikes.has(selectedPost.id) ? 'fill-red-500 text-red-500' : ''
-                      }`}
-                    />
-                    <span className="text-sm font-semibold">{selectedPost.like_count || 0}</span>
-                  </button>
-                  <button className="flex items-center gap-1.5 text-white">
-                    <MessageCircle className="w-6 h-6" />
-                    <span className="text-sm font-semibold">{comments.length}</span>
-                  </button>
-                  <button onClick={handleShare} className="text-white ml-auto active:scale-95 transition">
-                    <Share2 className="w-6 h-6" />
-                  </button>
-                </div>
-
-                {/* Input commentaire */}
-                <div className="flex items-center gap-2 border-t border-zinc-800 pt-3">
+              <div className="border-t border-zinc-800 p-3 flex-shrink-0 bg-zinc-950 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+                <div className="flex items-center gap-2">
                   <input
+                    ref={commentInputRef}
                     type="text"
                     placeholder="Ajouter un commentaire..."
                     value={newComment}
@@ -1157,24 +1184,338 @@ export function SalonPublicProfile({
                     }}
                     disabled={postingComment}
                     maxLength={500}
-                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-full px-4 py-2 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition disabled:opacity-50"
+                    autoFocus
+                    className="flex-1 min-w-0 bg-zinc-800 border border-zinc-700 rounded-full px-4 py-2.5 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition disabled:opacity-50"
                   />
                   <button
                     onClick={handleAddComment}
                     disabled={!newComment.trim() || postingComment}
-                    className="p-2 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition active:scale-95"
+                    className="flex-shrink-0 w-11 h-11 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition active:scale-95 flex items-center justify-center shadow-lg shadow-emerald-500/20"
                   >
                     {postingComment ? (
-                      <Loader2 className="w-4 h-4 text-white animate-spin" />
+                      <Loader2 className="w-5 h-5 text-white animate-spin" />
                     ) : (
-                      <Send className="w-4 h-4 text-white" />
+                      <Send className="w-5 h-5 text-white" />
                     )}
                   </button>
                 </div>
               </div>
             </div>
           </div>
+        )}
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // 👤 PAGE PROFIL
+  // ═══════════════════════════════════════════════════════════
+  return (
+    <div translate="no" className="min-h-screen bg-black text-white pb-20">
+      <header className="sticky top-0 z-40 bg-black/95 backdrop-blur-md border-b border-zinc-800 flex items-center gap-3 px-4 h-14">
+        <button onClick={onBack} className="p-1 -ml-1 text-white hover:opacity-80">
+          <ChevronLeft className="w-6 h-6" />
+        </button>
+        <h1 className="flex-1 font-bold text-base truncate">
+          @{displayName.toLowerCase().replace(/\s/g, '_')}
+        </h1>
+        <button
+          onClick={handleShare}
+          className="p-1 text-white hover:opacity-80"
+          title="Partager"
+        >
+          {shareFeedback ? (
+            <Check className="w-5 h-5 text-emerald-400" />
+          ) : (
+            <Share2 className="w-5 h-5" />
+          )}
+        </button>
+      </header>
+
+      {shareFeedback && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-[150] bg-emerald-600 text-white text-xs font-semibold px-4 py-2 rounded-full shadow-2xl">
+          {shareFeedback}
         </div>
+      )}
+
+      <div className="relative">
+        <div className="h-32 bg-gradient-to-br from-indigo-600 to-purple-600">
+          {salon.cover_image && (
+            <img src={salon.cover_image} alt="" className="w-full h-full object-cover" />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+        </div>
+      </div>
+
+      <div className="px-4 -mt-12 relative">
+        <div className="flex items-end gap-4 mb-4">
+          <div className="flex-shrink-0 cursor-default">
+            {hasActiveStories ? (
+              <div className="w-24 h-24 rounded-full p-[3px] bg-gradient-to-tr from-yellow-400 via-pink-500 to-purple-600">
+                <div className="w-full h-full rounded-full bg-black p-[2px]">
+                  <div className="w-full h-full rounded-full overflow-hidden bg-zinc-800 flex items-center justify-center">
+                    {salon.avatar_url ? (
+                      <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <Scissors className="w-10 h-10 text-white" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="w-24 h-24 rounded-full overflow-hidden bg-zinc-800 border-2 border-zinc-700 flex items-center justify-center">
+                {salon.avatar_url ? (
+                  <img src={salon.avatar_url} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <Scissors className="w-10 h-10 text-white" />
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 min-w-0 pb-1">
+            <h2 className="text-white font-bold text-lg truncate">{displayName}</h2>
+            <p className="text-zinc-400 text-xs truncate">
+              @{displayName.toLowerCase().replace(/\s/g, '_')}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-4 gap-2 py-4 border-y border-zinc-800 mb-4">
+          <div className="text-center">
+            <p className="text-white font-bold text-base">{posts.length}</p>
+            <p className="text-zinc-500 text-[10px] uppercase tracking-wider">Publications</p>
+          </div>
+          <div className="text-center">
+            <p className="text-white font-bold text-base">{salon.followers_count || 0}</p>
+            <p className="text-zinc-500 text-[10px] uppercase tracking-wider">Abonnés</p>
+          </div>
+          <div className="text-center">
+            <p className="text-white font-bold text-base flex items-center justify-center gap-0.5">
+              <Star className="w-3.5 h-3.5 text-yellow-400 fill-yellow-400" />
+              {(salon.rating || 0).toFixed(1)}
+            </p>
+            <p className="text-zinc-500 text-[10px] uppercase tracking-wider">Note</p>
+          </div>
+          <div className="text-center">
+            <p className="text-white font-bold text-base">{salon.review_count || 0}</p>
+            <p className="text-zinc-500 text-[10px] uppercase tracking-wider">Avis</p>
+          </div>
+        </div>
+
+        {salon.description && (
+          <p className="text-zinc-300 text-sm mb-4 whitespace-pre-wrap">{salon.description}</p>
+        )}
+
+        {!isOwnProfile && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 mb-4">
+            <p className="text-white font-semibold text-sm mb-3">
+              {userRating ? 'Votre note' : 'Noter ce salon'}
+            </p>
+            <div className="flex items-center gap-2 mb-2">
+              {[1, 2, 3, 4, 5].map((star) => {
+                const isActive = hoverRating !== null
+                  ? star <= hoverRating
+                  : star <= (userRating || 0);
+
+                return (
+                  <button
+                    key={star}
+                    onClick={() => handleRateSalon(star)}
+                    onMouseEnter={() => setHoverRating(star)}
+                    onMouseLeave={() => setHoverRating(null)}
+                    disabled={ratingLoading}
+                    className="transition-transform hover:scale-110 active:scale-95 disabled:opacity-50"
+                  >
+                    <Star
+                      className={`w-9 h-9 transition-colors ${
+                        isActive ? 'fill-yellow-400 text-yellow-400' : 'text-zinc-600'
+                      }`}
+                    />
+                  </button>
+                );
+              })}
+              {ratingLoading && (
+                <Loader2 className="w-5 h-5 text-zinc-400 animate-spin ml-1" />
+              )}
+            </div>
+            {userRating ? (
+              <p className="text-emerald-400 text-xs font-medium">✅ Vous avez noté {userRating}/5</p>
+            ) : (
+              <p className="text-zinc-500 text-xs">Touchez une étoile pour noter</p>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-2 mb-4">
+          {salon.address && (
+            <div className="flex items-start gap-3 bg-zinc-900 rounded-xl p-3">
+              <MapPin className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-0.5">Adresse</p>
+                <p className="text-white text-sm break-words">{salon.address}</p>
+              </div>
+            </div>
+          )}
+
+          {salon.phone && (
+            <a
+              href={`tel:${salon.phone}`}
+              className="flex items-center gap-3 bg-zinc-900 rounded-xl p-3 hover:bg-zinc-800 transition"
+            >
+              <Phone className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-0.5">Téléphone</p>
+                <p className="text-white text-sm">{salon.phone}</p>
+              </div>
+            </a>
+          )}
+        </div>
+
+        <div className="space-y-2 mb-4">
+          {canBook && !isOwnProfile && (
+            <button
+              onClick={() => onBook?.(salon.slug)}
+              className="w-full bg-white text-black font-bold py-3.5 rounded-xl active:scale-[0.98] transition"
+            >
+              Réserver
+            </button>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              onClick={handleStartItinerary}
+              className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl transition active:scale-[0.98]"
+            >
+              <Navigation className="w-4 h-4" /> Itinéraire
+            </button>
+            <button
+              onClick={handleShare}
+              className="flex-1 flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-3 rounded-xl transition active:scale-[0.98]"
+            >
+              <Share2 className="w-4 h-4" /> Partager
+            </button>
+          </div>
+
+          {isAuthenticated && !isOwnProfile && (
+            <button
+              onClick={() => {
+                onFollowToggle?.(salonId);
+                setFollowing((f) => !f);
+              }}
+              className={`w-full font-bold py-3 rounded-xl transition active:scale-[0.98] flex items-center justify-center gap-2 ${
+                following
+                  ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
+            >
+              {following ? (
+                <><UserCheck className="w-4 h-4" /> Suivi</>
+              ) : (
+                <><UserPlusIcon className="w-4 h-4" /> Suivre ce salon</>
+              )}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {posts.length > 0 && (
+        <>
+          <div className="flex border-t border-b border-zinc-800">
+            <button
+              onClick={() => setProfileTab('grid')}
+              className={`flex-1 py-3 flex items-center justify-center gap-2 text-xs font-semibold transition ${
+                profileTab === 'grid' ? 'text-white border-b-2 border-white' : 'text-zinc-500'
+              }`}
+            >
+              <Grid3x3 className="w-4 h-4" /> PHOTOS
+            </button>
+            <button
+              onClick={() => setProfileTab('reels')}
+              className={`flex-1 py-3 flex items-center justify-center gap-2 text-xs font-semibold transition ${
+                profileTab === 'reels' ? 'text-white border-b-2 border-white' : 'text-zinc-500'
+              }`}
+            >
+              <Music className="w-4 h-4" /> VIDÉOS
+            </button>
+          </div>
+
+          {profileTab === 'grid' && (
+            <div>
+              {gridPosts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center px-6">
+                  <div className="w-16 h-16 rounded-full border-2 border-zinc-700 flex items-center justify-center mb-3">
+                    <Grid3x3 className="w-7 h-7 text-zinc-600" />
+                  </div>
+                  <p className="text-white font-semibold text-sm">Aucune photo</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-0.5">
+                  {gridPosts.map((post) => (
+                    <button
+                      key={post.id}
+                      onClick={() => openFeedAtPost(post.id)}
+                      className="relative aspect-square bg-zinc-900 group overflow-hidden"
+                    >
+                      <img
+                        src={post.image_url}
+                        alt=""
+                        className="w-full h-full object-cover group-hover:opacity-90 transition"
+                        loading="lazy"
+                      />
+                      <div className="absolute bottom-1.5 left-1.5 flex items-center gap-2 text-white text-xs font-semibold drop-shadow-lg">
+                        {post.like_count > 0 && (
+                          <span className="flex items-center gap-1">
+                            <Heart className="w-3.5 h-3.5 fill-white" />
+                            {post.like_count}
+                          </span>
+                        )}
+                        {(post.comment_count || 0) > 0 && (
+                          <span className="flex items-center gap-1">
+                            <MessageCircle className="w-3.5 h-3.5 fill-white" />
+                            {post.comment_count}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {profileTab === 'reels' && (
+            <div>
+              {reelsPosts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center px-6">
+                  <div className="w-16 h-16 rounded-full border-2 border-zinc-700 flex items-center justify-center mb-3">
+                    <Music className="w-7 h-7 text-zinc-600" />
+                  </div>
+                  <p className="text-white font-semibold text-sm">Aucune vidéo</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-0.5">
+                  {reelsPosts.map((post) => (
+                    <button
+                      key={post.id}
+                      onClick={() => openFeedAtPost(post.id)}
+                      className="relative aspect-[9/16] bg-zinc-900 group overflow-hidden"
+                    >
+                      <video src={post.image_url} className="w-full h-full object-cover" muted />
+                      <div className="absolute top-2 right-2 text-white">
+                        <Play className="w-4 h-4 fill-white" />
+                      </div>
+                      <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 text-white text-xs font-semibold drop-shadow-lg">
+                        <Eye className="w-3.5 h-3.5" />
+                        {post.view_count || 0}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

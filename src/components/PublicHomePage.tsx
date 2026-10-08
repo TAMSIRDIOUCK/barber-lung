@@ -546,6 +546,8 @@ export default function PublicHomePage({
 
   // 🔥 Écran plein écran du profil salon
   const [showPublicProfile, setShowPublicProfile] = useState<string | null>(null);
+  // 🔥 NOUVEAU : post à ouvrir dans le feed
+  const [initialPostId, setInitialPostId] = useState<string | null>(null);
 
   const showToast = useCallback((message: string) => {
     setToast(message);
@@ -573,6 +575,13 @@ export default function PublicHomePage({
   }, [stories, viewedStories]);
 
   const viewProfile = useCallback((salonId: string) => {
+    setInitialPostId(null);
+    setShowPublicProfile(salonId);
+  }, []);
+
+  // 🔥 NOUVEAU : ouvrir le profil avec un post spécifique (ouvre le feed)
+  const viewProfileWithPost = useCallback((salonId: string, postId: string) => {
+    setInitialPostId(postId);
     setShowPublicProfile(salonId);
   }, []);
 
@@ -594,11 +603,9 @@ export default function PublicHomePage({
       }
       const { error } = await supabase.from('views').insert(insertData);
       if (error) {
-        // 404 / 42P01 = table inexistante : on ignore silencieusement
         if (error.code === '42P01' || (error as any).status === 404) {
-          // table views n'existe pas encore — log une seule fois
           if (!(window as any).__viewsWarned) {
-            console.warn('⚠️ Table "views" absente — créez-la dans Supabase (voir SQL fourni)');
+            console.warn('⚠️ Table "views" absente — créez-la dans Supabase');
             (window as any).__viewsWarned = true;
           }
         } else {
@@ -952,8 +959,7 @@ export default function PublicHomePage({
         let profileId = userProfile?.id;
 
         if (!profileId) {
-          const { data: newProfile, error: createError } = await supabase
-            .from('profiles')
+          const { data: newProfile, error: createError } = await supabase            .from('profiles')
             .insert({
               user_id: currentUserId,
               full_name: 'Utilisateur',
@@ -1166,16 +1172,11 @@ export default function PublicHomePage({
         }
       }
 
-      // 🔥 FIX : Charger TOUTES les lignes de booking_settings SANS .in() ni .eq()
-      // (le .in() échouait silencieusement)
       let slugMap: Record<string, string> = {};
       try {
         const { data: bookingSettingsRows, error: bookingError } = await supabase
           .from('booking_settings')
           .select('user_id, slug, is_active');
-
-        console.log('🔎 booking_settings brut:', bookingSettingsRows);
-        console.log('❌ booking_settings erreur:', bookingError);
 
         if (bookingError) {
           console.error('❌ Erreur chargement booking_settings:', bookingError);
@@ -1185,10 +1186,6 @@ export default function PublicHomePage({
               slugMap[row.user_id] = row.slug.trim();
             }
           });
-          console.log('✅ Slugs chargés:', slugMap);
-          console.log(`✅ ${Object.keys(slugMap).length} slug(s) chargé(s)`);
-        } else {
-          console.warn('⚠️ Aucune ligne dans booking_settings');
         }
       } catch (err) {
         console.error('❌ Exception booking_settings:', err);
@@ -1283,7 +1280,6 @@ export default function PublicHomePage({
           .in('target_id', storyIds);
 
         if (viewsError) {
-          // Table absente ? on ignore silencieusement
           if (viewsError.code === '42P01' || (viewsError as any).status === 404) {
             if (!(window as any).__viewsWarned) {
               console.warn('⚠️ Table "views" absente — exécutez le SQL fourni');
@@ -1304,7 +1300,6 @@ export default function PublicHomePage({
         view_count: viewCountMap[s.id] ?? (s.view_count || 0),
       }));
 
-      // 🔥 Charger les publications portfolio de tous les salons
       const { data: portfolioData } = await supabase
         .from('portfolio_posts')
         .select('id, profile_id, image_url, media_type, like_count, created_at')
@@ -1327,7 +1322,6 @@ export default function PublicHomePage({
         const reviewData = reviewsMap[p.id];
 
         const slug = slugMap[p.user_id] || null;
-        console.log(`🎫 ${p.salon_name || p.full_name}: user_id=${p.user_id} → slug=${slug}`);
 
         return {
           id: p.id,
@@ -1808,7 +1802,8 @@ export default function PublicHomePage({
                       salonId: salon.id,
                     });
                   } else {
-                    setShowPublicProfile(salon.id);
+                    // 🔥 Pas de story → page profil (pas de feed)
+                    viewProfile(salon.id);
                   }
                 }}
               />
@@ -2149,7 +2144,7 @@ export default function PublicHomePage({
                     <div
                       key={salon.id}
                       className="w-full flex items-center gap-3 p-2.5 bg-zinc-800/80 rounded-xl border border-zinc-700/50 hover:border-zinc-500 transition cursor-pointer"
-                      onClick={() => setShowPublicProfile(salon.id)}
+                      onClick={() => viewProfile(salon.id)}
                     >
                       <div className="w-11 h-11 rounded-full bg-zinc-700 overflow-hidden flex-shrink-0 border-2 border-zinc-600">
                         <SafeImage
@@ -2269,6 +2264,7 @@ export default function PublicHomePage({
               key={salon.id}
               className="bg-zinc-900 border border-zinc-700 rounded-2xl overflow-hidden"
             >
+              {/* Header salon — clic sur NOM/AVATAR → page profil */}
               <div
                 className="flex items-center gap-3 p-3 cursor-pointer"
                 onClick={() => {
@@ -2280,7 +2276,8 @@ export default function PublicHomePage({
                       salonId: salon.id,
                     });
                   } else {
-                    setShowPublicProfile(salon.id);
+                    // 🔥 Sans story → page profil
+                    viewProfile(salon.id);
                   }
                 }}
               >
@@ -2342,16 +2339,17 @@ export default function PublicHomePage({
                 </button>
               </div>
 
-              {/* 🔥 CARROUSEL HORIZONTAL DE PHOTOS (3 visibles, scroll droite) */}
+              {/* 🔥 CARROUSEL HORIZONTAL DE PHOTOS — clic sur CHAQUE PHOTO → FEED */}
               {posts.length > 0 ? (
-                <div
-                  className="flex gap-0.5 overflow-x-auto snap-x snap-mandatory scrollbar-none cursor-pointer"
-                  onClick={() => setShowPublicProfile(salon.id)}
-                >
+                <div className="flex gap-0.5 overflow-x-auto snap-x snap-mandatory scrollbar-none">
                   {posts.map((post) => (
                     <div
                       key={post.id}
-                      className="relative flex-shrink-0 snap-start bg-zinc-800"
+                      onClick={() => {
+                        // 🔥 Ouvre le FEED sur cette photo spécifique
+                        viewProfileWithPost(salon.id, post.id);
+                      }}
+                      className="relative flex-shrink-0 snap-start bg-zinc-800 cursor-pointer"
                       style={{ width: 'calc(33.333% - 2px)', aspectRatio: '1 / 1' }}
                     >
                       {post.media_type === 'video' ? (
@@ -2376,7 +2374,7 @@ export default function PublicHomePage({
               ) : (
                 <div
                   className="py-6 text-center cursor-pointer hover:bg-zinc-800/50 transition"
-                  onClick={() => setShowPublicProfile(salon.id)}
+                  onClick={() => viewProfile(salon.id)}
                 >
                   <p className="text-zinc-600 text-xs">Aucune publication pour l'instant</p>
                 </div>
@@ -2384,7 +2382,7 @@ export default function PublicHomePage({
 
               <div className="flex items-center border-t border-zinc-800">
                 <button
-                  onClick={() => setShowPublicProfile(salon.id)}
+                  onClick={() => viewProfile(salon.id)}
                   className="flex-1 py-2.5 text-center text-white text-xs font-semibold hover:bg-zinc-800 transition"
                 >
                   Voir le profil
@@ -2507,7 +2505,7 @@ export default function PublicHomePage({
               <button
                 onClick={() => {
                   setSelectedSalon(null);
-                  setShowPublicProfile(selectedSalon.id);
+                  viewProfile(selectedSalon.id);
                 }}
                 className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl text-sm transition"
               >
@@ -2614,11 +2612,12 @@ export default function PublicHomePage({
     );
   }
 
-  // 🔥 Écran plein écran du profil salon
+  // 🔥 Écran plein écran du profil salon (avec initialPostId optionnel)
   if (showPublicProfile) {
     return (
       <SalonPublicProfile
         salonId={showPublicProfile}
+        initialPostId={initialPostId}
         isAuthenticated={isAuthenticated}
         currentUserId={currentUserId}
         isFollowing={
@@ -2626,7 +2625,10 @@ export default function PublicHomePage({
           guestFollowingIds.has(showPublicProfile)
         }
         onFollowToggle={(id) => toggleFollow(id)}
-        onBack={() => setShowPublicProfile(null)}
+        onBack={() => {
+          setShowPublicProfile(null);
+          setInitialPostId(null);
+        }}
         onBook={(slug) => {
           if (slug) navigate(`/booking/${slug}`);
         }}
