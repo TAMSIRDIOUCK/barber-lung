@@ -17,7 +17,6 @@ import { ReferralProgram } from './components/ReferralProgram';
 import RequirePhoneNumber from './components/Requirephonenumber';
 import { SubscribePage } from './components/Subscribepage';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
-import { useSubscriptionStatus } from './hooks/useSubscriptionStatus';
 import { supabase } from './lib/supabase';
 import type { AuthUser } from './components/Clientapp';
 import PublicHomePage from './components/PublicHomePage';
@@ -32,11 +31,13 @@ interface AppProps {
   onNavigateToAuth: (page: 'login' | 'register') => void;
 }
 
-// ── PaymentSuccessPage ──
+// ============================================================
+// PaymentSuccessPage
+// ============================================================
 function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
-  const [countdown, setCountdown] = useState(3);
+  const [countdown] = useState(3);
   const [status, setStatus] = useState<'checking' | 'activating' | 'success'>('checking');
-  const [error, setError] = useState<string | null>(null);
+  const [error] = useState<string | null>(null);
   const [attempts, setAttempts] = useState(0);
   const wasOpenedAsPopup = !!window.opener;
   const completedRef = { current: false };
@@ -62,6 +63,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
       const checkSession = async () => {
         try {
           const { data: { session } } = await supabase.auth.getSession();
+          void session;
           setStatus('success');
           redirectAfterSuccess();
         } catch {
@@ -136,7 +138,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
         {status === 'checking' && (
           <>
             <Loader className="w-16 h-16 text-white mx-auto mb-4 animate-spin" />
-            <h2 className="text-white text-xl font-bold">Vérification du paiement...</h2>
+            <h2 className="text-white text-xl font-bold">Verification du paiement...</h2>
           </>
         )}
         {status === 'activating' && (
@@ -145,7 +147,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
               <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
             </div>
             <h2 className="text-white text-xl font-bold">Activation en cours...</h2>
-            <p className="text-zinc-500 text-sm mt-2">Vérification {attempts}/{20}</p>
+            <p className="text-zinc-500 text-sm mt-2">Verification {attempts}/20</p>
           </>
         )}
         {status === 'success' && (
@@ -153,7 +155,7 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
             <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
               <CheckCircle2 className="w-10 h-10 text-green-400" />
             </div>
-            <h2 className="text-white text-2xl font-bold mb-2">Paiement réussi ! 🎉</h2>
+            <h2 className="text-white text-2xl font-bold mb-2">Paiement reussi</h2>
             <p className="text-zinc-400 mb-4">Votre abonnement est maintenant actif.</p>
             <p className="text-zinc-500 text-sm">
               Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...
@@ -171,7 +173,9 @@ function PaymentSuccessPage({ onComplete }: { onComplete: () => void }) {
   );
 }
 
-// ── PaymentCancelPage ──
+// ============================================================
+// PaymentCancelPage
+// ============================================================
 function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
   const [countdown, setCountdown] = useState(5);
   const wasOpenedAsPopup = !!window.opener;
@@ -201,8 +205,8 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
         <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
           <X className="w-10 h-10 text-red-400" />
         </div>
-        <h2 className="text-white text-2xl font-bold mb-2">Paiement annulé</h2>
-        <p className="text-zinc-400 mb-4">Vous n'avez pas confirmé le paiement.</p>
+        <h2 className="text-white text-2xl font-bold mb-2">Paiement annule</h2>
+        <p className="text-zinc-400 mb-4">Vous n'avez pas confirme le paiement.</p>
         <p className="text-zinc-500 text-sm">Redirection dans {countdown} seconde{countdown > 1 ? 's' : ''}...</p>
         <button
           onClick={() => {
@@ -215,7 +219,7 @@ function PaymentCancelPage({ onComplete }: { onComplete: () => void }) {
           }}
           className="mt-4 bg-white text-black px-6 py-2 rounded-lg font-semibold hover:bg-zinc-200 transition"
         >
-          Retour à l'accueil
+          Retour a l'accueil
         </button>
       </div>
     </div>
@@ -242,16 +246,113 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
   const [bookingSlug, setBookingSlug] = useState<string | null>(null);
   const [showChangePassword, setShowChangePassword] = useState(false);
 
-  const { daysLeft, needsRenewal } = useSubscriptionStatus(authUser?.id || '');
+  // Rafraichissement toutes les minutes
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick(t => t + 1);
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const hasActiveSubscription = useMemo(() => {
     if (!authUser?.subscription) return false;
-    const status = authUser.subscription.status?.toLowerCase() || '';
+    const status = authUser.subscription.status?.toLowerCase().trim() || '';
     const isActive = status === 'active' || status === 'actif';
     const expiresAt = authUser.subscription.expires_at;
     const isNotExpired = !expiresAt || new Date(expiresAt) > new Date();
     return isActive && isNotExpired;
   }, [authUser]);
+
+  // ============================================================
+  // CALCUL DU MESSAGE D'ALERTE
+  // Le message s'affiche tant que l'abonnement n'est pas valide.
+  // ============================================================
+  const renewalAlert = useMemo(() => {
+    // Pas connecte
+    if (!authUser) {
+      return { show: false, message: '' };
+    }
+
+    // Pas d'abonnement
+    if (!authUser.subscription) {
+      return {
+        show: true,
+        message: 'Aucun abonnement actif. Souscrivez pour acceder a toutes les fonctionnalites.',
+      };
+    }
+
+    const status = (authUser.subscription.status || '').toLowerCase().trim();
+    const expiryStr = authUser.subscription.expires_at;
+
+    // Calcul des jours restants (0 si pas de date)
+    let days = 0;
+    let hasValidDate = false;
+
+    if (expiryStr) {
+      try {
+        const expiry = new Date(expiryStr);
+        if (!isNaN(expiry.getTime())) {
+          hasValidDate = true;
+          const now = new Date();
+          const diffMs = expiry.getTime() - now.getTime();
+          days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+        }
+      } catch {
+        hasValidDate = false;
+      }
+    }
+
+    // Verifier si le statut est actif
+    const isActiveStatus = status === 'active' || status === 'actif';
+
+    // ========== CAS 1 : Statut inactif OU pas de date valide ==========
+    if (!isActiveStatus || !hasValidDate) {
+      // Si le statut est inactif → message inactif
+      if (!isActiveStatus) {
+        return {
+          show: true,
+          message: 'Votre abonnement est inactif. Souscrivez pour acceder a toutes les fonctionnalites.',
+        };
+      }
+      // Si pas de date → renouveler
+      return {
+        show: true,
+        message: 'Votre abonnement doit etre renouvele pour continuer.',
+      };
+    }
+
+    // ========== CAS 2 : Statut actif + date valide ==========
+    // Deja expire
+    if (days <= 0) {
+      return {
+        show: true,
+        message: 'Votre abonnement a expire. Renouvelez-le pour acceder a vos revenus, depenses et reservations.',
+      };
+    }
+
+    // Expire dans 5 jours ou moins
+    if (days <= 5) {
+      return {
+        show: true,
+        message: `Votre abonnement expire dans ${days} jour${days > 1 ? 's' : ''}.`,
+      };
+    }
+
+    // Tout est OK → pas de message
+    return { show: false, message: '' };
+  }, [authUser]);
+
+  // Debug console
+  console.log('APP RENDER:', {
+    hasAuthUser: !!authUser,
+    subscription: authUser?.subscription,
+    status: authUser?.subscription?.status,
+    expires_at: authUser?.subscription?.expires_at,
+    renewalAlert,
+    currentPage,
+    showPublicHome,
+  });
 
   useEffect(() => {
     const handlePaymentReturn = () => {
@@ -269,15 +370,29 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     const checkActiveBanner = async () => {
       setCheckingBanner(true);
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('public_banners')
           .select('id')
           .eq('is_active', true)
           .gte('expiry_date', new Date().toISOString())
-          .maybeSingle();
-        setHasActiveBanner(!!data);
-      } catch { setHasActiveBanner(false); }
-      finally { setCheckingBanner(false); }
+          .limit(1);
+
+        if (error) {
+          if (error.code === '42P01' || error.code === 'PGRST205' || error.code === 'PGRST116') {
+            console.warn('Table public_banners absente ou inaccessible');
+          } else {
+            console.warn('Erreur banniere:', error.message);
+          }
+          setHasActiveBanner(false);
+        } else {
+          setHasActiveBanner(!!(data && data.length > 0));
+        }
+      } catch (err) {
+        console.warn('Exception checkActiveBanner:', err);
+        setHasActiveBanner(false);
+      } finally {
+        setCheckingBanner(false);
+      }
     };
     checkActiveBanner();
   }, []);
@@ -324,7 +439,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     setShowRenewPage(false);
   };
 
-  // ✅ navigateToPage : PAS de 'history', uniquement les pages de l'app
   const navigateToPage = (page: 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings' | 'admin') => {
     if (page === 'publicHome') {
       setShowPublicHome(true);
@@ -392,7 +506,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     const url = window.location.origin;
     try {
       if (navigator.share) {
-        await navigator.share({ title: 'LE COUPE', text: 'Gérez votre salon comme un pro avec LE COUPE 💈', url });
+        await navigator.share({ title: 'LE COUPE', text: 'Gerez votre salon comme un pro avec LE COUPE', url });
       } else {
         await navigator.clipboard.writeText(url);
         setCopied(true);
@@ -403,14 +517,10 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
 
   const appPages: { id: Page; label: string; Icon: any }[] = [
     { id: 'home', label: 'Services', Icon: Scissors },
-    { id: 'bookings', label: 'Réservations', Icon: CalendarCheck },
+    { id: 'bookings', label: 'Reservations', Icon: CalendarCheck },
     { id: 'revenue', label: 'Revenus', Icon: TrendingUp },
-    { id: 'expenses', label: 'Dépenses', Icon: DollarSign },
+    { id: 'expenses', label: 'Depenses', Icon: DollarSign },
   ];
-
-  const pages = isAdmin
-    ? [...appPages, { id: 'admin' as Page, label: 'Admin', Icon: Shield }]
-    : appPages;
 
   const expiryDate = authUser?.subscription?.expires_at
     ? new Date(authUser.subscription.expires_at).toLocaleDateString('fr-FR', {
@@ -502,12 +612,12 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   className="flex items-center gap-1 text-zinc-400 hover:text-white text-xs px-2 py-1 rounded-lg hover:bg-zinc-800 border border-zinc-700"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Share2 className="w-3.5 h-3.5" />}
-                  <span className="hidden sm:inline text-[10px]">{copied ? 'Copié !' : 'Partager'}</span>
+                  <span className="hidden sm:inline text-[10px]">{copied ? 'Copie' : 'Partager'}</span>
                 </button>
                 <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-700 rounded-lg px-2 py-1">
                   <Crown className="w-3 h-3 text-yellow-400" />
                   <span className="text-white text-[10px] font-semibold hidden sm:inline">{authUser.subscription?.plan_name || 'Gratuit'}</span>
-                  <span className="text-zinc-500 text-[10px] hidden md:inline">· {expiryDate}</span>
+                  <span className="text-zinc-500 text-[10px] hidden md:inline">- {expiryDate}</span>
                 </div>
                 <button
                   onClick={() => setShowChangePassword(true)}
@@ -575,7 +685,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                   className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
                 >
                   {copied ? <Check className="w-4 h-4 text-green-400" /> : <Share2 className="w-4 h-4" />}
-                  {copied ? 'Lien copié !' : "Partager l'application"}
+                  {copied ? 'Lien copie' : "Partager l'application"}
                 </button>
                 <button
                   onClick={() => { setShowChangePassword(true); setMobileMenuOpen(false); }}
@@ -589,7 +699,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
                     <p className="text-zinc-500 text-xs">Expire le {expiryDate}</p>
                   </div>
                   <button onClick={onLogout} className="flex items-center gap-1.5 text-zinc-400 hover:text-white text-sm transition shrink-0">
-                    <LogOut className="w-4 h-4" /> Déconnexion
+                    <LogOut className="w-4 h-4" /> Deconnexion
                   </button>
                 </div>
               </div>
@@ -598,15 +708,17 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
         </header>
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-[calc(4rem+env(safe-area-inset-bottom))] w-full overflow-x-hidden">
-          {needsRenewal && daysLeft !== null && currentPage !== 'home' && currentPage !== 'admin' && (
+          {/* MESSAGE D'ALERTE ABONNEMENT */}
+          {renewalAlert.show && (
             <div className="bg-yellow-950 border border-yellow-700 text-yellow-300 text-sm rounded-xl px-4 py-3 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <span className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
-                {daysLeft <= 0
-                  ? 'Votre abonnement a expiré. Renouvelez-le pour accéder à vos revenus, dépenses et réservations.'
-                  : `Votre abonnement expire dans ${daysLeft} jour${daysLeft > 1 ? 's' : ''}.`}
+                {renewalAlert.message}
               </span>
-              <button onClick={() => setShowRenewPage(true)} className="bg-white text-black px-4 py-2 rounded-lg font-bold whitespace-nowrap">
+              <button
+                onClick={() => setShowRenewPage(true)}
+                className="bg-white text-black px-4 py-2 rounded-lg font-bold whitespace-nowrap"
+              >
                 Payer maintenant
               </button>
             </div>
@@ -629,7 +741,6 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
           {currentPage === 'admin' && <AdminPanel currentUserId={authUser.id} isAdmin={isAdmin} />}
         </main>
 
-        {/* BOTTOM NAV : 5 boutons SANS "Mes réservations" */}
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
           <div className="flex items-center justify-around px-2 py-2 max-w-7xl mx-auto">
             <button onClick={() => navigateToPage('publicHome')} className="flex flex-col items-center gap-0.5 px-2 py-1 group">
@@ -656,7 +767,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
               <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${currentPage === 'bookings' ? 'bg-white' : 'group-hover:bg-white/10'}`}>
                 <CalendarCheck className={`w-5 h-5 ${currentPage === 'bookings' ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className={`text-[8px] font-medium ${currentPage === 'bookings' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Réservations</span>
+              <span className={`text-[8px] font-medium ${currentPage === 'bookings' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Reservations</span>
             </button>
 
             <button
@@ -676,7 +787,7 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
               <div className={`p-1 rounded-xl transition-all flex items-center justify-center ${currentPage === 'expenses' ? 'bg-white' : 'group-hover:bg-white/10'}`}>
                 <DollarSign className={`w-5 h-5 ${currentPage === 'expenses' ? 'text-black' : 'text-zinc-600 group-hover:text-white'}`} />
               </div>
-              <span className={`text-[8px] font-medium ${currentPage === 'expenses' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Dépenses</span>
+              <span className={`text-[8px] font-medium ${currentPage === 'expenses' ? 'text-white' : 'text-zinc-600 group-hover:text-white'}`}>Depenses</span>
             </button>
           </div>
         </nav>

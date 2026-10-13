@@ -335,7 +335,15 @@ function StoryViewer({
     setProgress(0);
   }, [index]);
 
+  // 🔥 Timer pour les IMAGES uniquement (5 secondes fixes)
+  // Les VIDÉOS utilisent leur propre durée naturelle (via onEnded)
   useEffect(() => {
+    const currentStory = stories[index];
+    const isCurrentVideo = currentStory?.media_type === 'video' ||
+      currentStory?.image_url?.match(/\.(mp4|webm|mov|avi)$/i);
+
+    // Ne pas lancer le timer automatique pour les vidéos
+    if (isCurrentVideo) return;
     if (isPaused || !isImageLoaded) return;
 
     timerRef.current = setInterval(() => {
@@ -356,7 +364,7 @@ function StoryViewer({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [index, isPaused, isImageLoaded, stories.length, onClose]);
+  }, [index, isPaused, isImageLoaded, stories, onClose]);
 
   const currentStory = stories[index];
   if (!currentStory) return null;
@@ -415,6 +423,7 @@ function StoryViewer({
     }, 2000);
   };
 
+  // 🔥 Gestion vidéo : progression en fonction de la durée RÉELLE
   const handleVideoLoad = () => {
     setIsImageLoaded(true);
     setIsLoading(false);
@@ -422,6 +431,25 @@ function StoryViewer({
       videoRef.current.play().catch(() => {});
     }
   };
+
+  // 🔥 Progression de la barre en fonction de la vidéo RÉELLE
+  const handleVideoTimeUpdate = () => {
+    const v = videoRef.current;
+    if (!v || !v.duration || isNaN(v.duration) || !isFinite(v.duration)) return;
+    setProgress((v.currentTime / v.duration) * 100);
+  };
+
+  // 🔥 Fin de vidéo → passage à la story suivante (peu importe la durée)
+  const handleVideoEnded = () => {
+    if (index < stories.length - 1) {
+      setIndex((p) => p + 1);
+    } else {
+      onClose();
+    }
+  };
+
+  const handleVideoWaiting = () => setIsLoading(true);
+  const handleVideoPlaying = () => setIsLoading(false);
 
   return (
     <div
@@ -499,17 +527,26 @@ function StoryViewer({
         <div className="relative w-full h-full flex items-center justify-center">
           {isVideo ? (
             <video
+              key={currentStory.id}
               ref={videoRef}
               src={currentStory.image_url}
               className="w-full h-full object-contain rounded-lg"
               playsInline
+              autoPlay
+              preload="auto"
               muted={isPaused}
+              loop={false}
               onLoadedData={handleVideoLoad}
+              onTimeUpdate={handleVideoTimeUpdate}
+              onEnded={handleVideoEnded}
+              onWaiting={handleVideoWaiting}
+              onPlaying={handleVideoPlaying}
               onError={handleImageError}
               style={{ backgroundColor: 'black' }}
             />
           ) : (
             <img
+              key={currentStory.id}
               src={currentStory.image_url}
               alt=""
               className={`w-full h-full object-contain rounded-lg transition-opacity duration-300 ${
@@ -606,7 +643,7 @@ function PortfolioFeedViewer({
 
   const currentPost = posts[currentIndex];
 
-  // 🔥 Feed dans la pile (retour = fermer le feed → retour à la grille)
+  // 🔥 Feed dans la pile
   useEffect(() => {
     const handle = navStack.push('PortfolioFeedViewer', () => {
       onClose();
@@ -898,6 +935,8 @@ function PortfolioFeedViewer({
                     playsInline
                     autoPlay={index === currentIndex}
                     muted={!feedSoundOn}
+                    preload="metadata"
+                    controls={false}
                   />
                 ) : (
                   <img
@@ -1172,7 +1211,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
   const MAX_STORIES = 10;
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
-  // 🔥 Sauvegarde de la position pour restauration au retour
   const savedScrollYRef = useRef<number>(0);
 
   const hasLocation = isValidCoords(profile?.latitude, profile?.longitude);
@@ -1273,7 +1311,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     return () => handle.pop();
   }, [showPreviewModal]);
 
-  // 🔥 Restaurer le scroll quand le feed se ferme (retour à la grille)
   useEffect(() => {
     if (showFeedViewer) return;
     if (showPortfolioManager) return;
@@ -2250,7 +2287,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
         <button
           onClick={() => {
-            // 🔥 Sauvegarder la position avant d'ouvrir la grille
             savedScrollYRef.current = window.scrollY;
             setShowPortfolioManager(true);
           }}
@@ -2437,9 +2473,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                     <div
                       key={post.id}
                       onClick={() => {
-                        // 🔥 IMPORTANT : on NE ferme PAS le PortfolioManager
-                        // Le feed s'affiche par-dessus (z-150 > z-130)
-                        // → au retour, la grille est toujours là
                         setFeedViewerIndex(index);
                         setShowFeedViewer(true);
                       }}
@@ -2451,6 +2484,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                           className="w-full h-full object-cover"
                           muted
                           playsInline
+                          preload="metadata"
                         />
                       ) : (
                         <img
