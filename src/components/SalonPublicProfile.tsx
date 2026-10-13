@@ -7,6 +7,7 @@ import {
   Send, Trash2, Loader, Navigation, Volume2, VolumeX
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { navStack } from '../lib/navigationStack';
 import SalonMapView from './SalonMapView';
 
 interface PortfolioPost {
@@ -117,39 +118,80 @@ export function SalonPublicProfile({
   const mapRef = useRef<any>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
+  // 🔥 Sauvegarde de la position pour restauration au retour
+  const savedScrollYRef = useRef<number>(0);
+  const savedProfileTabRef = useRef<'grid' | 'reels'>('grid');
+
   // ═══════════════════════════════════════════════════════
-  // 🔥 GESTION DU BOUTON RETOUR NATIF
+  // 🔥 ENREGISTRER LES ÉCRANS DANS LA PILE (bas → haut)
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
-    window.history.pushState({ salonProfileOpen: true }, '');
+    const handles: { pop: () => void }[] = [];
 
-    const handlePopState = () => {
-      if (showComments) {
+    // 1. Profil complet (base)
+    handles.push(navStack.push('SalonPublicProfile-Root', () => {
+      onBack();
+      return true;
+    }));
+
+    // 2. Feed (au-dessus)
+    if (feedIndex !== null) {
+      handles.push(navStack.push('SalonPublicProfile-Feed', () => {
+        setFeedIndex(null);
         setShowComments(false);
         setComments([]);
-        window.history.pushState({ salonProfileOpen: true }, '');
-        return;
-      }
-      if (showRouteMap) {
+        setNewComment('');
+        return true;
+      }));
+    }
+
+    // 3. Commentaires du feed (au-dessus)
+    if (showComments) {
+      handles.push(navStack.push('SalonPublicProfile-FeedComments', () => {
+        setShowComments(false);
+        setComments([]);
+        return true;
+      }));
+    }
+
+    // 4. Carte itinéraire (tout au-dessus)
+    if (showRouteMap) {
+      handles.push(navStack.push('SalonPublicProfile-RouteMap', () => {
         setShowRouteMap(false);
         setRouteInfo(null);
-        window.history.pushState({ salonProfileOpen: true }, '');
-        return;
-      }
-      if (feedIndex !== null && !fromPublicFeed) {
-        setFeedIndex(null);
-        window.history.pushState({ salonProfileOpen: true }, '');
-        return;
-      }
-      onBack();
-    };
-
-    window.addEventListener('popstate', handlePopState);
+        return true;
+      }));
+    }
 
     return () => {
-      window.removeEventListener('popstate', handlePopState);
+      handles.forEach(h => h.pop());
     };
-  }, [showComments, feedIndex, showRouteMap, fromPublicFeed, onBack]);
+  }, [feedIndex, showComments, showRouteMap, onBack]);
+
+  // ═══════════════════════════════════════════════════════
+  // 🔥 RESTAURER SCROLL + ONGLET quand on revient d'un écran
+  // ═══════════════════════════════════════════════════════
+  useEffect(() => {
+    // Ne rien faire si un écran est encore ouvert
+    if (feedIndex !== null || showRouteMap || showComments) return;
+
+    // Restaurer l'onglet sauvegardé
+    if (savedProfileTabRef.current !== profileTab) {
+      setProfileTab(savedProfileTabRef.current);
+    }
+
+    // Restaurer le scroll après un petit délai (le temps que le DOM se mette à jour)
+    const timer = setTimeout(() => {
+      if (savedScrollYRef.current > 0) {
+        window.scrollTo({
+          top: savedScrollYRef.current,
+          behavior: 'instant' as ScrollBehavior,
+        });
+      }
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [feedIndex, showRouteMap, showComments]);
 
   // ═══════════════════════════════════════════════════════
   // CHARGEMENT INITIAL
@@ -236,7 +278,6 @@ export function SalonPublicProfile({
           review_count: reviewCount,
         });
 
-        // 🔥 Récupérer posts AVEC compteurs
         const { data: postsData } = await supabase
           .from('portfolio_posts')
           .select('id, profile_id, image_url, caption, media_type, like_count, comment_count, view_count, created_at, is_active')
@@ -312,7 +353,7 @@ export function SalonPublicProfile({
   }, [salonId, isAuthenticated, currentUserId]);
 
   // ═══════════════════════════════════════════════════════
-  // 🔥 AUTO-OUVRIR LE FEED (si initialPostId fourni)
+  // 🔥 AUTO-OUVRIR LE FEED + SAUVEGARDER POSITION
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
     if (!initialPostId || posts.length === 0) return;
@@ -321,12 +362,14 @@ export function SalonPublicProfile({
     if (index < 0) return;
 
     if (feedIndex !== index) {
+      // 🔥 Sauvegarder la position avant d'ouvrir le feed
+      savedScrollYRef.current = window.scrollY;
       setFeedIndex(index);
     }
   }, [initialPostId, posts]);
 
   // ═══════════════════════════════════════════════════════
-  // 🔥 SCROLLER VERS LE POST CIBLÉ (double RAF pour fiabilité)
+  // SCROLLER VERS LE POST CIBLÉ
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
     if (feedIndex === null) return;
@@ -503,23 +546,33 @@ export function SalonPublicProfile({
     }
   }, [salon, isAuthenticated, currentUserId, ratingLoading, showToast]);
 
+  // 🔥 Ouvrir le feed + sauvegarder la position
   const openFeedAtPost = useCallback((postId: string) => {
+    savedScrollYRef.current = window.scrollY;
+    savedProfileTabRef.current = profileTab;
+
     const index = posts.findIndex(p => p.id === postId);
     if (index >= 0) {
       setFeedIndex(index);
     }
-  }, [posts]);
+  }, [posts, profileTab]);
 
+  // 🔥 Fermer le feed → restaurer la position
   const closeFeed = useCallback(() => {
-    if (fromPublicFeed) {
-      onBack();
-      return;
-    }
     setFeedIndex(null);
     setShowComments(false);
     setComments([]);
     setNewComment('');
-  }, [fromPublicFeed, onBack]);
+
+    setTimeout(() => {
+      if (savedScrollYRef.current > 0) {
+        window.scrollTo({
+          top: savedScrollYRef.current,
+          behavior: 'instant' as ScrollBehavior,
+        });
+      }
+    }, 50);
+  }, []);
 
   const loadComments = useCallback(async (postId: string) => {
     setCommentsLoading(true);
@@ -771,6 +824,9 @@ export function SalonPublicProfile({
       return;
     }
 
+    // 🔥 Sauvegarder la position avant d'ouvrir la carte
+    savedScrollYRef.current = window.scrollY;
+
     setShowRouteMap(true);
     setRouteLoading(true);
     setRouteError(null);
@@ -808,10 +864,20 @@ export function SalonPublicProfile({
     }
   }, [salon, userLocation, showToast]);
 
+  // 🔥 Fermer la carte → restaurer la position
   const closeRouteMap = useCallback(() => {
     setShowRouteMap(false);
     setRouteInfo(null);
     setRouteError(null);
+
+    setTimeout(() => {
+      if (savedScrollYRef.current > 0) {
+        window.scrollTo({
+          top: savedScrollYRef.current,
+          behavior: 'instant' as ScrollBehavior,
+        });
+      }
+    }, 50);
   }, []);
 
   const handleShare = useCallback(async () => {
@@ -1542,7 +1608,10 @@ export function SalonPublicProfile({
         <>
           <div className="flex border-t border-b border-zinc-800">
             <button
-              onClick={() => setProfileTab('grid')}
+              onClick={() => {
+                savedProfileTabRef.current = 'grid';
+                setProfileTab('grid');
+              }}
               className={`flex-1 py-3 flex items-center justify-center gap-2 text-xs font-semibold transition ${
                 profileTab === 'grid' ? 'text-white border-b-2 border-white' : 'text-zinc-500'
               }`}
@@ -1550,7 +1619,10 @@ export function SalonPublicProfile({
               <Grid3x3 className="w-4 h-4" /> PHOTOS
             </button>
             <button
-              onClick={() => setProfileTab('reels')}
+              onClick={() => {
+                savedProfileTabRef.current = 'reels';
+                setProfileTab('reels');
+              }}
               className={`flex-1 py-3 flex items-center justify-center gap-2 text-xs font-semibold transition ${
                 profileTab === 'reels' ? 'text-white border-b-2 border-white' : 'text-zinc-500'
               }`}

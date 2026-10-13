@@ -3,11 +3,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Edit2, Camera, MapPin, Star, Plus, X, Upload, Save, AlertCircle, ChevronLeft,
   ChevronRight, Scissors, Trash2, Play, Loader2, Eye, Heart, Navigation, Clock,
-  Grid3x3, Image as ImageIcon
+  Grid3x3, Image as ImageIcon, MessageCircle, Send, Volume2, VolumeX, Music
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { SalonLocationEditor } from './SalonLocationEditor';
 import { ErrorBoundary } from './ErrorBoundary';
+import { navStack } from '../lib/navigationStack';
 
 interface SalonProfileProps {
   userId: string;
@@ -55,11 +56,23 @@ interface PortfolioPost {
   caption: string;
   media_type: 'image' | 'video';
   like_count: number;
+  comment_count: number;
   view_count: number;
   created_at: string;
 }
 
-// ── Validation des coordonnées ──
+interface PortfolioComment {
+  id: string;
+  post_id: string;
+  profile_id: string | null;
+  device_id: string | null;
+  author_name: string;
+  author_avatar: string | null;
+  content: string;
+  created_at: string;
+}
+
+// ── Helpers ──
 function isValidCoords(lat?: number | null, lng?: number | null): boolean {
   if (typeof lat !== 'number' || typeof lng !== 'number') return false;
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
@@ -69,7 +82,6 @@ function isValidCoords(lat?: number | null, lng?: number | null): boolean {
   return true;
 }
 
-// ── Chemin de stockage à partir de l'URL publique ──
 function storagePathFromUrl(url: string): string | null {
   const marker = '/public-media/';
   const i = url.indexOf(marker);
@@ -77,7 +89,15 @@ function storagePathFromUrl(url: string): string | null {
   return decodeURIComponent(url.slice(i + marker.length).split('?')[0]);
 }
 
-// ── Accès profil, hors composant ──
+function getDeviceId(): string {
+  let deviceId = localStorage.getItem('device_id');
+  if (!deviceId) {
+    deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+    localStorage.setItem('device_id', deviceId);
+  }
+  return deviceId;
+}
+
 async function fetchProfileRow(uid: string) {
   const { data, error } = await supabase
     .from('profiles')
@@ -120,7 +140,6 @@ async function insertProfileRow(uid: string) {
   return data;
 }
 
-// ── Suppression des stories expirées (plus de 48h) ──
 async function deleteExpiredStories() {
   try {
     const expiryDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
@@ -151,6 +170,88 @@ async function deleteExpiredStories() {
   }
 }
 
+// ── Fonctions utilitaires : LIKE + VIEW ──
+async function recordView(
+  targetType: 'portfolio' | 'story',
+  targetId: string,
+  profileId: string | null,
+  deviceId: string | null,
+  isOwner: boolean = false
+): Promise<boolean> {
+  if (isOwner) return false;
+
+  try {
+    const payload: any = {
+      target_type: targetType,
+      target_id: targetId,
+    };
+
+    if (profileId) {
+      payload.profile_id = profileId;
+      payload.device_id = null;
+    } else {
+      payload.profile_id = null;
+      payload.device_id = deviceId;
+    }
+
+    const { error } = await supabase
+      .from('views')
+      .upsert(payload, {
+        onConflict: 'target_type,target_id,profile_id,device_id',
+        ignoreDuplicates: true,
+      });
+
+    if (error && error.code !== '23505') {
+      console.error('Erreur enregistrement vue:', error);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('Exception recordView:', err);
+    return false;
+  }
+}
+
+async function fetchViewCount(
+  targetType: 'portfolio' | 'story',
+  targetId: string
+): Promise<number> {
+  try {
+    const { count, error } = await supabase
+      .from('views')
+      .select('*', { count: 'exact', head: true })
+      .eq('target_type', targetType)
+      .eq('target_id', targetId);
+
+    if (error) {
+      console.error('Erreur comptage vues:', error);
+      return 0;
+    }
+    return count || 0;
+  } catch (err) {
+    console.error('Exception fetchViewCount:', err);
+    return 0;
+  }
+}
+
+async function fetchCommentCount(postId: string): Promise<number> {
+  try {
+    const { count, error } = await supabase
+      .from('portfolio_comments')
+      .select('*', { count: 'exact', head: true })
+      .eq('post_id', postId);
+
+    if (error) {
+      console.error('Erreur comptage commentaires:', error);
+      return 0;
+    }
+    return count || 0;
+  } catch (err) {
+    console.error('Exception fetchCommentCount:', err);
+    return 0;
+  }
+}
+
 // ── Visionneuse de stories ──
 function StoryViewer({
   stories,
@@ -175,8 +276,27 @@ function StoryViewer({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const viewCountedRef = useRef<Set<string>>(new Set());
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const viewRegisteredRef = useRef<Set<string>>(new Set());
+
+  // 🔥 StoryViewer dans la pile
+  useEffect(() => {
+    const handle = navStack.push('StoryViewer', () => {
+      onClose();
+      return true;
+    });
+    return () => handle.pop();
+  }, [onClose]);
+
+  // 🔥 Modale suppression dans la pile
+  useEffect(() => {
+    if (!showDeleteConfirm) return;
+    const handle = navStack.push('StoryViewer-DeleteConfirm', () => {
+      setShowDeleteConfirm(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showDeleteConfirm]);
 
   const getTimeRemaining = (createdAt: string) => {
     const created = new Date(createdAt);
@@ -196,32 +316,18 @@ function StoryViewer({
     }
   }, [index, stories]);
 
-  const incrementViewCount = useCallback(async (storyId: string) => {
-    try {
-      const { data: current } = await supabase
-        .from('stories')
-        .select('view_count')
-        .eq('id', storyId)
-        .single();
-
-      if (current) {
-        await supabase
-          .from('stories')
-          .update({ view_count: (current.view_count || 0) + 1 })
-          .eq('id', storyId);
-      }
-    } catch (err) {
-      console.error('Erreur incrémentation vues:', err);
-    }
-  }, []);
-
   useEffect(() => {
     const currentStory = stories[index];
-    if (currentStory && currentStory.id && !viewCountedRef.current.has(currentStory.id)) {
-      viewCountedRef.current.add(currentStory.id);
-      incrementViewCount(currentStory.id);
-    }
-  }, [index, stories, incrementViewCount]);
+    if (!currentStory?.id) return;
+    if (viewRegisteredRef.current.has(currentStory.id)) return;
+
+    viewRegisteredRef.current.add(currentStory.id);
+
+    const deviceId = getDeviceId();
+    const profileId = userId || null;
+
+    recordView('story', currentStory.id, profileId, deviceId, true).catch(console.error);
+  }, [index, stories, userId]);
 
   useEffect(() => {
     setIsLoading(true);
@@ -463,6 +569,562 @@ function StoryViewer({
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// 🔥 PORTFOLIO FEED VIEWER
+// ═══════════════════════════════════════════════════════════════════
+function PortfolioFeedViewer({
+  posts,
+  initialIndex,
+  profile,
+  onClose,
+  onPostDeleted,
+  onPostUpdated,
+}: {
+  posts: PortfolioPost[];
+  initialIndex: number;
+  profile: Profile | null;
+  onClose: () => void;
+  onPostDeleted: (postId: string) => void;
+  onPostUpdated: (postId: string, updates: Partial<PortfolioPost>) => void;
+}) {
+  const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [feedSoundOn, setFeedSoundOn] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const [showComments, setShowComments] = useState(false);
+  const [comments, setComments] = useState<PortfolioComment[]>([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [newComment, setNewComment] = useState('');
+  const [postingComment, setPostingComment] = useState(false);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
+  const commentsEndRef = useRef<HTMLDivElement>(null);
+
+  const feedRef = useRef<HTMLDivElement>(null);
+  const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
+  const viewRegisteredRef = useRef<Set<string>>(new Set());
+
+  const currentPost = posts[currentIndex];
+
+  // 🔥 Feed dans la pile (retour = fermer le feed → retour à la grille)
+  useEffect(() => {
+    const handle = navStack.push('PortfolioFeedViewer', () => {
+      onClose();
+      return true;
+    });
+    return () => handle.pop();
+  }, [onClose]);
+
+  // 🔥 Commentaires dans la pile
+  useEffect(() => {
+    if (!showComments) return;
+    const handle = navStack.push('PortfolioFeedViewer-Comments', () => {
+      setShowComments(false);
+      setComments([]);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showComments]);
+
+  // 🔥 Confirmation suppression dans la pile
+  useEffect(() => {
+    if (!showDeleteConfirm) return;
+    const handle = navStack.push('PortfolioFeedViewer-DeleteConfirm', () => {
+      setShowDeleteConfirm(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showDeleteConfirm]);
+
+  useEffect(() => {
+    if (!feedRef.current) return;
+    const raf1 = requestAnimationFrame(() => {
+      const raf2 = requestAnimationFrame(() => {
+        const container = feedRef.current;
+        if (!container) return;
+        const children = container.querySelectorAll('[data-feed-item]');
+        const target = children[initialIndex] as HTMLElement | undefined;
+        if (target) {
+          target.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'start' });
+        }
+      });
+      return () => cancelAnimationFrame(raf2);
+    });
+    return () => cancelAnimationFrame(raf1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!currentPost?.id) return;
+    if (viewRegisteredRef.current.has(currentPost.id)) return;
+
+    viewRegisteredRef.current.add(currentPost.id);
+
+    const deviceId = getDeviceId();
+    const profileId = profile?.id || null;
+
+    recordView('portfolio', currentPost.id, profileId, deviceId, true)
+      .then(async () => {
+        const realViewCount = await fetchViewCount('portfolio', currentPost.id);
+        onPostUpdated(currentPost.id, { view_count: realViewCount });
+      })
+      .catch(console.error);
+  }, [currentPost?.id, profile?.id, onPostUpdated]);
+
+  const loadComments = useCallback(async (postId: string) => {
+    setCommentsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('portfolio_comments')
+        .select('*')
+        .eq('post_id', postId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Erreur chargement commentaires:', error);
+        setComments([]);
+      } else {
+        setComments(data || []);
+      }
+    } catch (err) {
+      console.error('Exception loadComments:', err);
+      setComments([]);
+    } finally {
+      setCommentsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (showComments && currentPost) {
+      loadComments(currentPost.id);
+    }
+  }, [showComments, currentPost, loadComments]);
+
+  useEffect(() => {
+    if (showComments) {
+      setTimeout(() => commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  }, [comments.length, showComments]);
+
+  const handleAddComment = useCallback(async () => {
+    if (!currentPost || !newComment.trim() || postingComment) return;
+
+    const content = newComment.trim();
+    setPostingComment(true);
+
+    try {
+      const authorName = profile?.salon_name || profile?.full_name || 'Salon';
+      const authorAvatar = profile?.avatar_url || null;
+
+      const { data: inserted, error } = await supabase
+        .from('portfolio_comments')
+        .insert({
+          post_id: currentPost.id,
+          profile_id: profile?.id || null,
+          device_id: null,
+          author_name: authorName,
+          author_avatar: authorAvatar,
+          content: content,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Erreur insertion commentaire:', error);
+        alert('Erreur lors de l\'envoi');
+        return;
+      }
+
+      setComments(prev => [...prev, inserted as PortfolioComment]);
+      setNewComment('');
+
+      const realCount = await fetchCommentCount(currentPost.id);
+      onPostUpdated(currentPost.id, { comment_count: realCount });
+    } catch (err) {
+      console.error('Exception addComment:', err);
+      alert('Erreur');
+    } finally {
+      setPostingComment(false);
+    }
+  }, [currentPost, newComment, postingComment, profile, onPostUpdated]);
+
+  const handleDeleteComment = useCallback(async (commentId: string) => {
+    if (!currentPost) return;
+
+    setDeletingCommentId(commentId);
+    try {
+      const { error } = await supabase
+        .from('portfolio_comments')
+        .delete()
+        .eq('id', commentId);
+
+      if (error) {
+        console.error('Erreur suppression:', error);
+        return;
+      }
+
+      setComments(prev => prev.filter(c => c.id !== commentId));
+
+      const realCount = await fetchCommentCount(currentPost.id);
+      onPostUpdated(currentPost.id, { comment_count: realCount });
+    } catch (err) {
+      console.error('Exception deleteComment:', err);
+    } finally {
+      setDeletingCommentId(null);
+    }
+  }, [currentPost, onPostUpdated]);
+
+  const handleDeletePost = useCallback(async () => {
+    if (!currentPost || isDeleting) return;
+
+    setIsDeleting(true);
+    try {
+      const { error } = await supabase
+        .from('portfolio_posts')
+        .delete()
+        .eq('id', currentPost.id);
+
+      if (error) throw error;
+
+      const path = storagePathFromUrl(currentPost.image_url);
+      if (path) {
+        await supabase.storage.from('public-media').remove([path]).catch(() => {});
+      }
+
+      setShowDeleteConfirm(false);
+
+      if (posts.length <= 1) {
+        onClose();
+      }
+
+      onPostDeleted(currentPost.id);
+    } catch (err) {
+      console.error('Erreur suppression post:', err);
+      alert('Erreur lors de la suppression');
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [currentPost, isDeleting, posts.length, onPostDeleted, onClose]);
+
+  const formatRelativeTime = (dateStr: string): string => {
+    try {
+      const diff = Date.now() - new Date(dateStr).getTime();
+      const seconds = Math.floor(diff / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      if (seconds < 60) return 'à l\'instant';
+      if (minutes < 60) return `il y a ${minutes} min`;
+      if (hours < 24) return `il y a ${hours} h`;
+      if (days < 7) return `il y a ${days} j`;
+      return new Date(dateStr).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
+    } catch {
+      return '';
+    }
+  };
+
+  if (!currentPost) return null;
+
+  return (
+    <div
+      translate="no"
+      className="fixed inset-0 z-[150] bg-black text-white overflow-hidden"
+    >
+      <header className="absolute top-0 left-0 right-0 z-40 bg-gradient-to-b from-black/90 to-transparent px-4 pt-4 pb-8 pointer-events-none">
+        <div className="flex items-center gap-3 pointer-events-auto">
+          <button onClick={onClose} className="p-1 text-white hover:opacity-80">
+            <ChevronLeft className="w-6 h-6" />
+          </button>
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full overflow-hidden bg-zinc-800 border border-white/20 flex-shrink-0">
+              {profile?.avatar_url ? (
+                <img src={profile.avatar_url} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <Scissors className="w-4 h-4 text-white" />
+                </div>
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="font-bold text-sm truncate">
+                {profile?.salon_name || profile?.full_name || 'Mon Salon'}
+              </p>
+              <p className="text-[10px] text-white/60 truncate">
+                Ma publication • {formatRelativeTime(currentPost.created_at)}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="p-2 rounded-full hover:bg-red-500/20 text-white/70 hover:text-red-400 transition flex-shrink-0"
+            title="Supprimer"
+          >
+            <Trash2 className="w-5 h-5" />
+          </button>
+        </div>
+      </header>
+
+      <div
+        ref={feedRef}
+        className="h-full overflow-y-scroll snap-y snap-mandatory"
+        style={{ scrollSnapType: 'y mandatory', WebkitOverflowScrolling: 'touch' }}
+        onScroll={(e) => {
+          const target = e.currentTarget;
+          const idx = Math.round(target.scrollTop / target.clientHeight);
+          if (idx !== currentIndex && idx >= 0 && idx < posts.length) {
+            setCurrentIndex(idx);
+          }
+        }}
+      >
+        {posts.map((post, index) => {
+          const isVideo = post.media_type === 'video';
+
+          return (
+            <div
+              key={post.id}
+              data-feed-item
+              className="relative h-full w-full snap-start snap-always flex items-center justify-center"
+              style={{ scrollSnapAlign: 'start', height: '100vh' }}
+            >
+              <div className="absolute inset-0 flex items-center justify-center bg-black">
+                {isVideo ? (
+                  <video
+                    ref={(el) => { videoRefs.current[post.id] = el; }}
+                    src={post.image_url}
+                    className="max-w-full max-h-full object-contain"
+                    loop
+                    playsInline
+                    autoPlay={index === currentIndex}
+                    muted={!feedSoundOn}
+                  />
+                ) : (
+                  <img
+                    src={post.image_url}
+                    alt=""
+                    className="max-w-full max-h-full object-contain"
+                    loading="lazy"
+                  />
+                )}
+              </div>
+
+              <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none" />
+
+              {isVideo && index === currentIndex && (
+                <button
+                  onClick={() => setFeedSoundOn(s => !s)}
+                  className="absolute top-20 right-4 z-30 p-2.5 rounded-full bg-black/50 backdrop-blur-sm text-white active:scale-95"
+                >
+                  {feedSoundOn ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
+                </button>
+              )}
+
+              <div className="absolute right-3 bottom-32 z-30 flex flex-col items-center gap-5">
+                <div className="flex flex-col items-center gap-1">
+                  <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                    <Heart className="w-7 h-7 text-white/70" />
+                  </div>
+                  <span className="text-white text-xs font-semibold drop-shadow-lg">
+                    {post.like_count || 0}
+                  </span>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setCurrentIndex(index);
+                    setShowComments(true);
+                  }}
+                  className="flex flex-col items-center gap-1 active:scale-90 transition"
+                >
+                  <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                    <MessageCircle className="w-7 h-7 text-white" />
+                  </div>
+                  <span className="text-white text-xs font-semibold drop-shadow-lg">
+                    {post.comment_count || 0}
+                  </span>
+                </button>
+
+                <div className="flex flex-col items-center gap-1">
+                  <div className="w-12 h-12 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center">
+                    <Eye className="w-7 h-7 text-white/70" />
+                  </div>
+                  <span className="text-white text-xs font-semibold drop-shadow-lg">
+                    {post.view_count || 0}
+                  </span>
+                </div>
+              </div>
+
+              <div className="absolute left-3 right-20 bottom-6 z-30">
+                {post.caption && (
+                  <p className="text-white text-sm leading-snug drop-shadow-lg line-clamp-3 mb-1">
+                    {post.caption}
+                  </p>
+                )}
+                <div className="flex items-center gap-1.5 text-white/90 text-xs">
+                  <Music className="w-3 h-3" />
+                  <span className="drop-shadow-lg truncate">
+                    {post.media_type === 'video' ? 'Vidéo' : 'Photo'} • {formatRelativeTime(post.created_at)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 text-white text-xs font-semibold bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full">
+                {index + 1} / {posts.length}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {showComments && currentPost && (
+        <div
+          className="fixed inset-0 z-[160] bg-black/70 flex items-end sm:items-center sm:justify-center"
+          onClick={() => setShowComments(false)}
+        >
+          <div
+            className="bg-zinc-950 w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl flex flex-col max-h-[85vh] sm:max-h-[80vh]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-1 bg-zinc-700 rounded-full mx-auto mt-3 sm:hidden flex-shrink-0" />
+
+            <div className="flex items-center justify-between p-4 border-b border-zinc-800 flex-shrink-0">
+              <h3 className="font-bold text-white text-base">Commentaires ({comments.length})</h3>
+              <button
+                onClick={() => setShowComments(false)}
+                className="p-1.5 rounded-full hover:bg-zinc-800 transition"
+              >
+                <X className="w-5 h-5 text-white" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-4 py-3">
+              {commentsLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 text-zinc-500 animate-spin" />
+                </div>
+              ) : comments.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <MessageCircle className="w-12 h-12 text-zinc-700 mb-3" />
+                  <p className="text-white font-semibold text-sm">Aucun commentaire</p>
+                  <p className="text-zinc-500 text-xs mt-1">Vos clients peuvent commenter vos photos</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {comments.map((comment) => {
+                    const isDeleting = deletingCommentId === comment.id;
+
+                    return (
+                      <div key={comment.id} className="flex items-start gap-3 group">
+                        <div className="w-9 h-9 rounded-full bg-zinc-800 overflow-hidden flex-shrink-0 border border-zinc-700">
+                          {comment.author_avatar ? (
+                            <img src={comment.author_avatar} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <Scissors className="w-4 h-4 text-zinc-500" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm leading-relaxed break-words">
+                            <span className="font-semibold text-white">{comment.author_name}</span>
+                            {' '}
+                            <span className="text-zinc-200">{comment.content}</span>
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-0.5">
+                            {formatRelativeTime(comment.created_at)}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteComment(comment.id)}
+                          disabled={isDeleting}
+                          className="text-zinc-600 hover:text-red-400 transition p-1 flex-shrink-0 disabled:opacity-50"
+                        >
+                          {isDeleting ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-4 h-4" />
+                          )}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <div ref={commentsEndRef} />
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-zinc-800 p-3 flex-shrink-0 bg-zinc-950 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Répondre à un client..."
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleAddComment();
+                    }
+                  }}
+                  disabled={postingComment}
+                  maxLength={500}
+                  className="flex-1 min-w-0 bg-zinc-800 border border-zinc-700 rounded-full px-4 py-2.5 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition disabled:opacity-50"
+                  style={{ fontSize: '16px' }}
+                />
+                <button
+                  onClick={handleAddComment}
+                  disabled={!newComment.trim() || postingComment}
+                  className="flex-shrink-0 w-11 h-11 rounded-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition active:scale-95 flex items-center justify-center"
+                >
+                  {postingComment ? (
+                    <Loader2 className="w-5 h-5 text-white animate-spin" />
+                  ) : (
+                    <Send className="w-5 h-5 text-white" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[170] bg-black/70 flex items-center justify-center p-4">
+          <div className="bg-zinc-900 rounded-2xl p-6 max-w-sm w-full border border-zinc-700 shadow-2xl">
+            <h3 className="text-white font-bold text-lg mb-2">Supprimer cette publication ?</h3>
+            <p className="text-zinc-400 text-sm mb-4">
+              Cette action est irréversible. Les likes et vues sont conservés dans l'historique.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleDeletePost}
+                disabled={isDeleting}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 rounded-xl transition disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Suppression...
+                  </>
+                ) : (
+                  'Supprimer'
+                )}
+              </button>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-2.5 rounded-xl transition"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Composant principal ──
 export default function SalonProfile({ userId }: SalonProfileProps) {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -498,15 +1160,20 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
   const [showLocationEditor, setShowLocationEditor] = useState(false);
 
-  // ── PORTFOLIO (photos de coiffures permanentes) ──
   const [portfolioPosts, setPortfolioPosts] = useState<PortfolioPost[]>([]);
   const [uploadingPortfolio, setUploadingPortfolio] = useState(false);
   const [showPortfolioManager, setShowPortfolioManager] = useState(false);
   const [portfolioDeleteConfirm, setPortfolioDeleteConfirm] = useState<string | null>(null);
   const portfolioInputRef = useRef<HTMLInputElement>(null);
 
+  const [showFeedViewer, setShowFeedViewer] = useState(false);
+  const [feedViewerIndex, setFeedViewerIndex] = useState(0);
+
   const MAX_STORIES = 10;
   const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
+  // 🔥 Sauvegarde de la position pour restauration au retour
+  const savedScrollYRef = useRef<number>(0);
 
   const hasLocation = isValidCoords(profile?.latitude, profile?.longitude);
 
@@ -538,6 +1205,90 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     const p = await ensureProfile(uid);
     return p?.id || null;
   }, [ensureProfile]);
+
+  // ═══════════════════════════════════════════════════════════════
+  // 🔥 NAVIGATION STACK
+  // ═══════════════════════════════════════════════════════════════
+
+  useEffect(() => {
+    if (!isEditing) return;
+    const handle = navStack.push('SalonProfile-Edit', () => {
+      setIsEditing(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [isEditing]);
+
+  useEffect(() => {
+    if (!showPortfolioManager) return;
+    const handle = navStack.push('SalonProfile-PortfolioManager', () => {
+      setShowPortfolioManager(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showPortfolioManager]);
+
+  useEffect(() => {
+    if (!portfolioDeleteConfirm) return;
+    const handle = navStack.push('SalonProfile-PortfolioDeleteConfirm', () => {
+      setPortfolioDeleteConfirm(null);
+      return true;
+    });
+    return () => handle.pop();
+  }, [portfolioDeleteConfirm]);
+
+  useEffect(() => {
+    if (!showFeedViewer) return;
+    const handle = navStack.push('SalonProfile-Feed', () => {
+      setShowFeedViewer(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showFeedViewer]);
+
+  useEffect(() => {
+    if (!showStoryViewer) return;
+    const handle = navStack.push('SalonProfile-StoryViewer', () => {
+      setShowStoryViewer(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showStoryViewer]);
+
+  useEffect(() => {
+    if (!showLocationEditor) return;
+    const handle = navStack.push('SalonProfile-LocationEditor', () => {
+      setShowLocationEditor(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showLocationEditor]);
+
+  useEffect(() => {
+    if (!showPreviewModal) return;
+    const handle = navStack.push('SalonProfile-PreviewModal', () => {
+      setShowPreviewModal(false);
+      return true;
+    });
+    return () => handle.pop();
+  }, [showPreviewModal]);
+
+  // 🔥 Restaurer le scroll quand le feed se ferme (retour à la grille)
+  useEffect(() => {
+    if (showFeedViewer) return;
+    if (showPortfolioManager) return;
+
+    const timer = setTimeout(() => {
+      if (savedScrollYRef.current > 0) {
+        window.scrollTo({
+          top: savedScrollYRef.current,
+          behavior: 'instant' as ScrollBehavior,
+        });
+      }
+    }, 50);
+
+    return () => clearTimeout(timer);
+  }, [showFeedViewer, showPortfolioManager]);
 
   const loadProfile = useCallback(async () => {
     if (!userId) {
@@ -628,7 +1379,15 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
       const myStoryIds = (myStoryIdsData || []).map((s: any) => s.id);
 
-      let totalLikesCount = 0;
+      const { data: myPortfolioIdsData } = await supabase
+        .from('portfolio_posts')
+        .select('id')
+        .eq('profile_id', profileId)
+        .eq('is_active', true);
+
+      const myPortfolioIds = (myPortfolioIdsData || []).map((p: any) => p.id);
+
+      let storyLikesCount = 0;
       if (myStoryIds.length > 0) {
         const { count, error: likesError } = await supabase
           .from('likes')
@@ -636,12 +1395,21 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
           .eq('target_type', 'story')
           .in('target_id', myStoryIds);
 
-        if (likesError) {
-          console.error('❌ Erreur chargement likes:', likesError);
-        } else {
-          totalLikesCount = count || 0;
-        }
+        if (!likesError) storyLikesCount = count || 0;
       }
+
+      let portfolioLikesCount = 0;
+      if (myPortfolioIds.length > 0) {
+        const { count, error: likesError } = await supabase
+          .from('likes')
+          .select('*', { count: 'exact', head: true })
+          .eq('target_type', 'portfolio')
+          .in('target_id', myPortfolioIds);
+
+        if (!likesError) portfolioLikesCount = count || 0;
+      }
+
+      const totalLikesCount = storyLikesCount + portfolioLikesCount;
 
       const { data: reviews } = await supabase
         .from('reviews')
@@ -664,7 +1432,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     }
   }, [userId, getProfileId]);
 
-  // ── PORTFOLIO : charger ──
   const loadPortfolio = useCallback(async () => {
     if (!userId) return;
     const profileId = await getProfileId(userId);
@@ -682,13 +1449,63 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         console.error('Erreur chargement portfolio:', error);
         return;
       }
-      setPortfolioPosts(data || []);
+
+      const postIds = (data || []).map((p: any) => p.id);
+
+      let likesCountMap: Record<string, number> = {};
+      let viewsCountMap: Record<string, number> = {};
+      let commentsCountMap: Record<string, number> = {};
+
+      if (postIds.length > 0) {
+        const { data: likesData } = await supabase
+          .from('likes')
+          .select('target_id')
+          .eq('target_type', 'portfolio')
+          .in('target_id', postIds);
+
+        if (likesData) {
+          likesData.forEach((l: any) => {
+            likesCountMap[l.target_id] = (likesCountMap[l.target_id] || 0) + 1;
+          });
+        }
+
+        const { data: viewsData } = await supabase
+          .from('views')
+          .select('target_id')
+          .eq('target_type', 'portfolio')
+          .in('target_id', postIds);
+
+        if (viewsData) {
+          viewsData.forEach((v: any) => {
+            viewsCountMap[v.target_id] = (viewsCountMap[v.target_id] || 0) + 1;
+          });
+        }
+
+        const { data: commentsData } = await supabase
+          .from('portfolio_comments')
+          .select('post_id')
+          .in('post_id', postIds);
+
+        if (commentsData) {
+          commentsData.forEach((c: any) => {
+            commentsCountMap[c.post_id] = (commentsCountMap[c.post_id] || 0) + 1;
+          });
+        }
+      }
+
+      const postsWithCounts = (data || []).map((p: any) => ({
+        ...p,
+        like_count: likesCountMap[p.id] ?? 0,
+        view_count: viewsCountMap[p.id] ?? 0,
+        comment_count: commentsCountMap[p.id] ?? 0,
+      }));
+
+      setPortfolioPosts(postsWithCounts);
     } catch (err) {
       console.error('Erreur chargement portfolio:', err);
     }
   }, [userId, getProfileId]);
 
-  // ── PORTFOLIO : upload ──
   const handlePortfolioUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0 || !userId) return;
@@ -729,6 +1546,9 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
           image_url: urlData.publicUrl,
           media_type: file.type.startsWith('video/') ? 'video' : 'image',
           caption: '',
+          like_count: 0,
+          comment_count: 0,
+          view_count: 0,
         });
       }
 
@@ -740,6 +1560,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         if (insertError) throw insertError;
 
         await loadPortfolio();
+        await loadStats();
         alert(`✅ ${uploaded.length} publication${uploaded.length > 1 ? 's' : ''} ajoutée${uploaded.length > 1 ? 's' : ''} !`);
       }
     } catch (err) {
@@ -749,9 +1570,8 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
       setUploadingPortfolio(false);
       if (e.target) e.target.value = '';
     }
-  }, [userId, getProfileId, loadPortfolio]);
+  }, [userId, getProfileId, loadPortfolio, loadStats]);
 
-  // ── PORTFOLIO : supprimer ──
   const handleDeletePortfolioPost = useCallback(async (postId: string, imageUrl: string) => {
     try {
       const { error } = await supabase
@@ -768,11 +1588,12 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
 
       setPortfolioPosts((prev) => prev.filter((p) => p.id !== postId));
       setPortfolioDeleteConfirm(null);
+      await loadStats();
     } catch (err) {
       console.error('Erreur suppression:', err);
       alert('Erreur lors de la suppression');
     }
-  }, []);
+  }, [loadStats]);
 
   const uploadSelectedStories = useCallback(async () => {
     if (selectedFiles.length === 0 || !userId) return;
@@ -1046,6 +1867,25 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     setEditAvatarPreview(null);
   };
 
+  const handlePostDeleted = useCallback((postId: string) => {
+    setPortfolioPosts(prev => {
+      const newList = prev.filter(p => p.id !== postId);
+      if (newList.length === 0) {
+        setShowFeedViewer(false);
+      } else if (feedViewerIndex >= newList.length) {
+        setFeedViewerIndex(newList.length - 1);
+      }
+      return newList;
+    });
+    loadStats();
+  }, [feedViewerIndex, loadStats]);
+
+  const handlePostUpdated = useCallback((postId: string, updates: Partial<PortfolioPost>) => {
+    setPortfolioPosts(prev => prev.map(p =>
+      p.id === postId ? { ...p, ...updates } : p
+    ));
+  }, []);
+
   useEffect(() => {
     const interval = setInterval(() => {
       deleteExpiredStories();
@@ -1251,7 +2091,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
     );
   }
 
-  // 🔥 LOGIQUE DU CERCLE : story active → dégradé Insta | pas de story → gris
   const hasActiveStories = stories.length > 0;
 
   return (
@@ -1281,7 +2120,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
               }
             }}
           >
-            {/* 🔥 CERCLE : gris si pas de story, dégradé Insta sinon */}
             <div
               className={`w-20 h-20 rounded-full p-[3px] group-hover:scale-105 transition ${
                 hasActiveStories
@@ -1410,9 +2248,12 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
           </div>
         </div>
 
-        {/* 🔥 Bouton Mes réalisations (portfolio) */}
         <button
-          onClick={() => setShowPortfolioManager(true)}
+          onClick={() => {
+            // 🔥 Sauvegarder la position avant d'ouvrir la grille
+            savedScrollYRef.current = window.scrollY;
+            setShowPortfolioManager(true);
+          }}
           className="mt-3 w-full flex items-center justify-center gap-2 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-700 hover:to-emerald-600 text-white font-semibold py-3 rounded-xl text-sm transition shadow-lg shadow-emerald-900/30"
         >
           <Grid3x3 className="w-4 h-4" />
@@ -1525,7 +2366,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
         </div>
       )}
 
-      {/* 🔥 Modal Gestion des réalisations */}
       {showPortfolioManager && (
         <div
           translate="no"
@@ -1578,7 +2418,6 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                   </>
                 )}
               </button>
-             
             </div>
 
             <div className="flex-1 overflow-y-auto p-3">
@@ -1594,10 +2433,17 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {portfolioPosts.map((post) => (
+                  {portfolioPosts.map((post, index) => (
                     <div
                       key={post.id}
-                      className="relative aspect-square bg-zinc-800 rounded-xl overflow-hidden group"
+                      onClick={() => {
+                        // 🔥 IMPORTANT : on NE ferme PAS le PortfolioManager
+                        // Le feed s'affiche par-dessus (z-150 > z-130)
+                        // → au retour, la grille est toujours là
+                        setFeedViewerIndex(index);
+                        setShowFeedViewer(true);
+                      }}
+                      className="relative aspect-square bg-zinc-800 rounded-xl overflow-hidden group cursor-pointer active:scale-95 transition"
                     >
                       {post.media_type === 'video' ? (
                         <video
@@ -1615,8 +2461,25 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                         />
                       )}
 
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-100 transition flex items-end p-2 pointer-events-none">
+                        <div className="flex items-center gap-3 text-white text-xs font-bold">
+                          <span className="flex items-center gap-1">
+                            <Heart className="w-3.5 h-3.5 fill-white" />
+                            {post.like_count || 0}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <MessageCircle className="w-3.5 h-3.5 fill-white" />
+                            {post.comment_count || 0}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Eye className="w-3.5 h-3.5" />
+                            {post.view_count || 0}
+                          </span>
+                        </div>
+                      </div>
+
                       {post.media_type === 'video' && (
-                        <div className="absolute top-2 left-2 bg-black/70 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <div className="absolute top-2 left-2 bg-black/70 text-white text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 pointer-events-none">
                           <Play className="w-3 h-3 fill-white" />
                           Vidéo
                         </div>
@@ -1627,7 +2490,7 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                           e.stopPropagation();
                           setPortfolioDeleteConfirm(post.id);
                         }}
-                        className="absolute top-2 right-2 bg-red-600 hover:bg-red-700 text-white rounded-full p-1.5 transition opacity-0 group-hover:opacity-100 sm:opacity-100"
+                        className="absolute top-2 right-2 bg-red-600/90 hover:bg-red-700 text-white rounded-full p-1.5 transition z-10"
                         title="Supprimer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1637,6 +2500,14 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
                 </div>
               )}
             </div>
+
+            {portfolioPosts.length > 0 && (
+              <div className="px-4 py-3 border-t border-zinc-800 bg-zinc-950/50 flex-shrink-0">
+                <p className="text-zinc-500 text-xs text-center">
+                  💡 Touchez une photo pour voir les likes, commentaires et vues
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1652,7 +2523,9 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-white font-bold text-lg mb-2">Supprimer cette réalisation ?</h3>
-            <p className="text-zinc-400 text-sm mb-4">Cette action est irréversible.</p>
+            <p className="text-zinc-400 text-sm mb-4">
+              Cette action est irréversible. Les likes et vues sont conservés dans l'historique.
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => {
@@ -1672,6 +2545,17 @@ export default function SalonProfile({ userId }: SalonProfileProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {showFeedViewer && portfolioPosts.length > 0 && (
+        <PortfolioFeedViewer
+          posts={portfolioPosts}
+          initialIndex={feedViewerIndex}
+          profile={profile}
+          onClose={() => setShowFeedViewer(false)}
+          onPostDeleted={handlePostDeleted}
+          onPostUpdated={handlePostUpdated}
+        />
       )}
 
       {locationEditorNode}
