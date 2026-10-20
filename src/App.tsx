@@ -575,6 +575,19 @@ function App({ authUser, onLogout, isAuthenticated, onNavigateToAuth }: AppProps
     );
   }
 
+  // ============================================================
+  // 🔒 GARDE : Utilisateur non authentifié hors page publique
+  // → Redirection vers la page de connexion (au lieu du spinner infini)
+  // ============================================================
+  if (!authUser && !showPublicHome) {
+    onNavigateToAuth('login');
+    return (
+      <div className="min-h-[100dvh] bg-zinc-950 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white" />
+      </div>
+    );
+  }
+
   if (checkingAdmin || !authUser) {
     return (
       <div className="min-h-[100dvh] bg-zinc-950 flex items-center justify-center">
