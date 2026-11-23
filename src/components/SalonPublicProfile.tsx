@@ -118,7 +118,6 @@ export function SalonPublicProfile({
   const mapRef = useRef<any>(null);
   const feedRef = useRef<HTMLDivElement>(null);
 
-  // 🔥 Sauvegarde de la position pour restauration au retour
   const savedScrollYRef = useRef<number>(0);
   const savedProfileTabRef = useRef<'grid' | 'reels'>('grid');
 
@@ -128,13 +127,11 @@ export function SalonPublicProfile({
   useEffect(() => {
     const handles: { pop: () => void }[] = [];
 
-    // 1. Profil complet (base)
     handles.push(navStack.push('SalonPublicProfile-Root', () => {
       onBack();
       return true;
     }));
 
-    // 2. Feed (au-dessus)
     if (feedIndex !== null) {
       handles.push(navStack.push('SalonPublicProfile-Feed', () => {
         setFeedIndex(null);
@@ -145,7 +142,6 @@ export function SalonPublicProfile({
       }));
     }
 
-    // 3. Commentaires du feed (au-dessus)
     if (showComments) {
       handles.push(navStack.push('SalonPublicProfile-FeedComments', () => {
         setShowComments(false);
@@ -154,7 +150,6 @@ export function SalonPublicProfile({
       }));
     }
 
-    // 4. Carte itinéraire (tout au-dessus)
     if (showRouteMap) {
       handles.push(navStack.push('SalonPublicProfile-RouteMap', () => {
         setShowRouteMap(false);
@@ -172,15 +167,12 @@ export function SalonPublicProfile({
   // 🔥 RESTAURER SCROLL + ONGLET quand on revient d'un écran
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
-    // Ne rien faire si un écran est encore ouvert
     if (feedIndex !== null || showRouteMap || showComments) return;
 
-    // Restaurer l'onglet sauvegardé
     if (savedProfileTabRef.current !== profileTab) {
       setProfileTab(savedProfileTabRef.current);
     }
 
-    // Restaurer le scroll après un petit délai (le temps que le DOM se mette à jour)
     const timer = setTimeout(() => {
       if (savedScrollYRef.current > 0) {
         window.scrollTo({
@@ -362,7 +354,6 @@ export function SalonPublicProfile({
     if (index < 0) return;
 
     if (feedIndex !== index) {
-      // 🔥 Sauvegarder la position avant d'ouvrir le feed
       savedScrollYRef.current = window.scrollY;
       setFeedIndex(index);
     }
@@ -546,7 +537,6 @@ export function SalonPublicProfile({
     }
   }, [salon, isAuthenticated, currentUserId, ratingLoading, showToast]);
 
-  // 🔥 Ouvrir le feed + sauvegarder la position
   const openFeedAtPost = useCallback((postId: string) => {
     savedScrollYRef.current = window.scrollY;
     savedProfileTabRef.current = profileTab;
@@ -557,7 +547,6 @@ export function SalonPublicProfile({
     }
   }, [posts, profileTab]);
 
-  // 🔥 Fermer le feed → restaurer la position
   const closeFeed = useCallback(() => {
     setFeedIndex(null);
     setShowComments(false);
@@ -824,7 +813,6 @@ export function SalonPublicProfile({
       return;
     }
 
-    // 🔥 Sauvegarder la position avant d'ouvrir la carte
     savedScrollYRef.current = window.scrollY;
 
     setShowRouteMap(true);
@@ -864,7 +852,6 @@ export function SalonPublicProfile({
     }
   }, [salon, userLocation, showToast]);
 
-  // 🔥 Fermer la carte → restaurer la position
   const closeRouteMap = useCallback(() => {
     setShowRouteMap(false);
     setRouteInfo(null);
@@ -961,7 +948,11 @@ export function SalonPublicProfile({
 
   const displayName = salon.salon_name || salon.full_name || 'Salon';
   const hasValidSlug = typeof salon.slug === 'string' && salon.slug.trim().length > 0;
+  
+  // 🔥 Le bouton dépend UNIQUEMENT du slug et de la fonction onBook.
+  // L'abonnement est vérifié par le trigger SQL au moment du paiement.
   const canBook = hasValidSlug && !!onBook;
+  
   const isOwnProfile = isAuthenticated && currentUserId === salon.user_id;
   const hasActiveStories = stories.length > 0;
 
@@ -1105,7 +1096,8 @@ export function SalonPublicProfile({
             <h1 className="flex-1 font-bold text-base truncate">
               @{displayName.toLowerCase().replace(/\s/g, '_')}
             </h1>
-            {canBook && !isOwnProfile && (
+            {/* 🔥 Bouton réserver dans le feed : visible pour tous si le salon est actif */}
+            {canBook && (
               <button
                 onClick={() => onBook?.(salon.slug)}
                 className="bg-white text-black text-xs font-bold px-3 py-1.5 rounded-full"
@@ -1558,7 +1550,8 @@ export function SalonPublicProfile({
         </div>
 
         <div className="space-y-2 mb-4">
-          {canBook && !isOwnProfile && (
+          {/* 🔥 Bouton Réserver : visible pour TOUS si le salon a un slug */}
+          {canBook && (
             <button
               onClick={() => onBook?.(salon.slug)}
               className="w-full bg-white text-black font-bold py-3.5 rounded-xl active:scale-[0.98] transition"

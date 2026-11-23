@@ -5,6 +5,7 @@ import {
   QrCode, RefreshCw, XCircle, Download, Loader, Sparkles, ArrowLeft
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { checkSalonSubscription, type SubscriptionState } from '../lib/subscription';
 import QRCode from 'qrcode';
 
 interface OpeningHour { open: string; close: string; closed: boolean; }
@@ -74,6 +75,9 @@ export function BookingPage({ slug }: BookingPageProps) {
   const [qrCodeUrl, setQrCodeUrl] = useState('');
   const [submitError, setSubmitError] = useState('');
 
+  // 🔥 État de l'abonnement du salon
+  const [subscription, setSubscription] = useState<SubscriptionState | null>(null);
+
   const [step, setStep] = useState<'form' | 'pay' | 'waiting' | 'success'>('form');
   const [bookingData, setBookingData] = useState<any>(null);
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -99,6 +103,10 @@ export function BookingPage({ slug }: BookingPageProps) {
         setSettings(data);
 
         if (data.user_id) {
+          // 🔥 Vérifier l'abonnement du salon AVANT tout
+          const sub = await checkSalonSubscription(data.user_id);
+          setSubscription(sub);
+
           const { data: bb } = await supabase
             .from('barbers').select('id, name, photo, user_id').eq('user_id', data.user_id);
           if (bb?.length) setBarbers(bb);
@@ -388,6 +396,10 @@ export function BookingPage({ slug }: BookingPageProps) {
 
   const goToPayment = () => {
     if (!validate() || !settings) return;
+    if (subscription && !subscription.isActive) {
+      setSubmitError('⛔ Les réservations sont désactivées pour ce salon (abonnement inactif).');
+      return;
+    }
     setStep('pay');
   };
 
@@ -395,6 +407,16 @@ export function BookingPage({ slug }: BookingPageProps) {
     if (isSubmittingRef.current) return;
     if (!form.paymentMethod) { setSubmitError('Choisissez un moyen de paiement'); return; }
     if (!settings || !form.eventService) return;
+
+    // 🔥 RE-VÉRIFIER L'ABONNEMENT AVANT PAIEMENT (anti-contournement)
+    const sub = await checkSalonSubscription(settings.user_id);
+    if (!sub.isActive) {
+      setSubmitError(
+        `⛔ Les réservations sont désactivées pour ce salon (${sub.reason || 'abonnement inactif'}).`
+      );
+      setStep('form');
+      return;
+    }
 
     const price = form.eventService.price;
     const name = form.eventService.name;
@@ -465,8 +487,8 @@ export function BookingPage({ slug }: BookingPageProps) {
           note: form.note.trim() || null,
           request_status: 'pending',
           payment_status: 'pending',
-          device_id: deviceId,      // 🔥 AJOUT CRUCIAL
-          user_id: userId,          // 🔥 AJOUT CRUCIAL
+          device_id: deviceId,
+          user_id: userId,
         })
         .select()
         .single();
@@ -580,6 +602,29 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
+  // 🔥 BLOQUER SI ABONNEMENT INACTIF (avant tout autre écran)
+  if (subscription && !subscription.isActive) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
+        <div className="text-center max-w-sm">
+          <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h2 className="text-white text-2xl font-bold mb-2">Réservations indisponibles</h2>
+          <p className="text-zinc-400 text-sm leading-relaxed">
+            Les réservations en ligne de{' '}
+            <strong className="text-white">{settings.salon_name}</strong>{' '}
+            sont temporairement désactivées.
+          </p>
+          <p className="text-zinc-600 text-xs mt-3">
+            {subscription.reason || 'Abonnement du salon inactif.'}
+          </p>
+          <p className="text-zinc-600 text-xs mt-1">
+            Contactez le salon directement pour réserver.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (step === 'waiting') {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
@@ -687,21 +732,33 @@ export function BookingPage({ slug }: BookingPageProps) {
               <div className="grid grid-cols-2 gap-3 sm:gap-4">
                 <div className="min-w-0">
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Date</p>
-                  <p className="font-bold text-xs sm:text-sm mt-0.5 break-words">{dateFmt}</p>
+                  <p className="font-bold text-sm break-words">{dateFmt}</p>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Heure</p>
-                  <p className="font-black text-lg sm:text-xl mt-0.5">{bookingData.booking_time?.slice(0, 5)}</p>
+                  <p className="font-bold text-sm">{bookingData.booking_time}</p>
                 </div>
               </div>
-            </div>
 
-            <div className="bg-zinc-100 p-3 sm:p-4 border-t-2 border-dashed border-zinc-300">
+              <div>
+                <p className="text-[10px] tracking-widest text-zinc-500 uppercase">Client</p>
+                <p className="font-bold text-sm break-words">{bookingData.client_name}</p>
+                <p className="text-zinc-500 text-xs">{bookingData.client_phone}</p>
+              </div>
+
+              <button
+                onClick={downloadQR}
+                disabled={!qrCodeUrl}
+                className="w-full bg-black text-white py-3 rounded-xl font-semibold text-sm hover:bg-zinc-800 transition disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <Download className="w-4 h-4" /> Télécharger le QR Code
+              </button>
+
               <button
                 onClick={resetForm}
-                className="w-full bg-black text-white font-bold py-3 rounded-xl text-xs sm:text-sm hover:bg-zinc-800 transition"
+                className="w-full border-2 border-black text-black py-3 rounded-xl font-semibold text-sm hover:bg-black hover:text-white transition"
               >
-                Nouvelle réservation
+                Faire une autre réservation
               </button>
             </div>
           </div>
@@ -710,455 +767,280 @@ export function BookingPage({ slug }: BookingPageProps) {
     );
   }
 
-  if (step === 'pay' && settings && form.eventService) {
-    const price = form.eventService.price;
-
-    return (
-      <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center p-4">
-        <div className="max-w-sm w-full">
-          <button onClick={() => setStep('form')} className="text-zinc-400 mb-6 text-sm">
-            ← Retour
-          </button>
-          <h2 className="text-2xl font-bold mb-2">Paiement</h2>
-          <p className="text-zinc-400 text-sm mb-6 break-words">
-            Réservation {form.eventService.name} — {formatCFA(price)}
-          </p>
-
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            {[
-              { id: 'wave', label: 'Wave' },
-              { id: 'orange_money', label: 'Orange Money' },
-            ].map((m) => (
-              <button
-                key={m.id}
-                onClick={() => setForm(prev => ({ ...prev, paymentMethod: m.id as any }))}
-                className={`border-2 rounded-xl p-4 font-bold transition text-sm ${
-                  form.paymentMethod === m.id ? 'border-white text-white' : 'border-zinc-700 text-zinc-400'
-                }`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-
-          {submitError && (
-            <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 mb-4 text-red-300 text-sm break-words">
-              {submitError}
-            </div>
-          )}
-
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-4 mb-6 flex justify-between items-center gap-3">
-            <span className="text-zinc-400 text-sm shrink-0">Total à payer</span>
-            <span className="text-white text-lg sm:text-xl font-bold text-right break-words">
-              {formatCFA(price)}
-            </span>
-          </div>
-
-          <button
-            onClick={handlePay}
-            disabled={submitting || !form.paymentMethod}
-            className="w-full bg-white text-black py-4 rounded-xl font-bold hover:bg-zinc-200 transition disabled:opacity-50"
-          >
-            {submitting ? (
-              <span className="flex items-center justify-center gap-2">
-                <Loader className="w-4 h-4 animate-spin" /> Traitement...
-              </span>
-            ) : `Payer ${formatCFA(price)}`}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
+  // ══════════════════════════════════════════════════════════════════════════
+  // STEP = 'form' OU 'pay'
+  // ══════════════════════════════════════════════════════════════════════════
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="bg-black border-b border-zinc-800 px-3 sm:px-4 py-3 sm:py-4 sticky top-0 z-10">
-        <div className="flex items-center gap-3 max-w-lg mx-auto">
-          {settings.logo_url ? (
-            <img
-              src={settings.logo_url}
-              alt="Logo"
-              className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl object-cover border border-zinc-700 shrink-0"
-            />
-          ) : (
-            <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white rounded-2xl flex items-center justify-center shrink-0">
-              <Scissors className="w-5 h-5 sm:w-6 sm:h-6 text-black" />
-            </div>
-          )}
+    <div className="min-h-screen bg-zinc-950 pb-24">
+      <div className="max-w-lg mx-auto px-4 pt-6">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-6">
+          {step === 'pay' ? (
+            <button onClick={() => setStep('form')} className="p-2 -ml-2 text-white hover:bg-zinc-800 rounded-lg transition">
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+          ) : null}
           <div className="flex-1 min-w-0">
-            <h1 className="text-white font-black text-base sm:text-lg tracking-tight truncate">
-              {settings.salon_name}
-            </h1>
-            <p className="text-zinc-400 text-[11px] sm:text-xs truncate">
-              {settings.welcome_message || 'Réservez votre coupe'}
-            </p>
+            <h1 className="text-white text-xl font-bold truncate">{settings.salon_name}</h1>
+            <p className="text-zinc-500 text-xs truncate">{settings.welcome_message}</p>
           </div>
         </div>
-      </div>
 
-      <div className="px-3 sm:px-4 py-5 sm:py-6 space-y-4 sm:space-y-5 max-w-lg mx-auto overflow-x-hidden">
-        {submitError && (
-          <div className="bg-red-500/20 border border-red-500 rounded-xl p-3 sm:p-4 flex items-start gap-3">
-            <XCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-            <p className="text-red-300 text-sm font-medium break-words">{submitError}</p>
-          </div>
-        )}
-
-        {!settings.event_services?.length ? (
-          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-2xl p-6 text-center">
-            <AlertCircle className="w-12 h-12 text-yellow-400 mx-auto mb-3" />
-            <p className="text-yellow-400 font-semibold text-sm">
-              Aucun service disponible pour le moment
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
+        {/* STEP: FORM */}
+        {step === 'form' && (
+          <div className="space-y-5">
+            {/* Service */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-3">
-                Service <span className="text-red-400">*</span>
+              <label className="text-white text-sm font-semibold mb-2 flex items-center gap-2">
+                <Sparkles className="w-4 h-4" /> Choisissez votre service
               </label>
-              <div className="flex flex-wrap gap-3 justify-center">
-                {settings.event_services.map((s) => {
-                  const isSelected = form.eventService?.id === s.id;
-                  return (
+              <div className="grid gap-2">
+                {(settings.event_services || []).map((srv) => (
+                  <button
+                    key={srv.id}
+                    onClick={() => setForm(prev => ({ ...prev, eventService: srv }))}
+                    className={`text-left p-4 rounded-xl border-2 transition ${
+                      form.eventService?.id === srv.id
+                        ? 'border-white bg-zinc-800'
+                        : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white font-bold text-sm break-words">{srv.name}</p>
+                        {srv.description && (
+                          <p className="text-zinc-400 text-xs mt-0.5 break-words">{srv.description}</p>
+                        )}
+                      </div>
+                      <p className="text-white font-black text-base flex-shrink-0">{formatCFA(srv.price)}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {errors.eventService && <p className="text-red-400 text-xs mt-1">{errors.eventService}</p>}
+            </div>
+
+            {/* Barber */}
+            {barbers.length > 0 && (
+              <div>
+                <label className="text-white text-sm font-semibold mb-2 flex items-center gap-2">
+                  <User className="w-4 h-4" /> Choisissez votre coiffeur
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {barbers.map((b) => (
                     <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => {
-                        setForm(prev => ({
-                          ...prev,
-                          eventService: prev.eventService?.id === s.id ? null : s,
-                          time: '',
-                        }));
-                        setErrors(prev => ({ ...prev, eventService: undefined }));
-                      }}
-                      className="flex flex-col items-center gap-2 shrink-0"
-                      style={{ width: 88 }}
+                      key={b.id}
+                      onClick={() => setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name }))}
+                      className={`flex items-center gap-2 p-3 rounded-xl border-2 transition ${
+                        form.barberId === b.id
+                          ? 'border-white bg-zinc-800'
+                          : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                      }`}
                     >
-                      <div
-                        className={`relative w-20 h-20 rounded-full flex items-center justify-center overflow-hidden border-2 transition ${
-                          isSelected
-                            ? 'border-green-500 bg-green-500/20'
-                            : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-                        }`}
-                      >
-                        <Sparkles
-                          className={`w-full h-full p-5 ${
-                            isSelected ? 'text-green-400' : 'text-zinc-400'
-                          }`}
-                        />
-                        {isSelected && (
-                          <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center">
-                            <Check className="w-3 h-3 text-black" strokeWidth={3} />
+                      <div className="w-10 h-10 rounded-full bg-zinc-700 overflow-hidden flex-shrink-0">
+                        {b.photo ? (
+                          <img src={b.photo} alt={b.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <User className="w-5 h-5 text-zinc-500" />
                           </div>
                         )}
                       </div>
-                      <p
-                        className={`text-[11px] font-semibold text-center leading-tight w-full ${
-                          isSelected ? 'text-green-400' : 'text-white'
-                        }`}
-                      >
-                        {s.name}
-                      </p>
-                      <p
-                        className={`text-[10px] font-bold w-full text-center ${
-                          isSelected ? 'text-green-400' : 'text-zinc-400'
-                        }`}
-                      >
-                        {s.price.toLocaleString()} CFA
-                      </p>
+                      <p className="text-white text-xs font-semibold text-left break-words">{b.name}</p>
                     </button>
-                  );
-                })}
-              </div>
-              {errors.eventService && (
-                <p className="text-red-400 text-xs mt-2 text-center">{errors.eventService}</p>
-              )}
-            </div>
-
-            {barbers.length > 0 && (
-              <div>
-                <label className="block text-sm font-semibold text-zinc-300 mb-3">
-                  Coiffeur <span className="text-red-400">*</span>
-                </label>
-                <div className="flex flex-wrap gap-3 justify-center">
-                  {barbers.map((b) => {
-                    const isSelected = form.barberId === b.id;
-                    return (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => {
-                          if (isSelected) {
-                            setForm(prev => ({ ...prev, barberId: null, barberName: '', time: '' }));
-                          } else {
-                            setForm(prev => ({ ...prev, barberId: b.id, barberName: b.name, time: '' }));
-                          }
-                          setErrors(prev => ({ ...prev, barberId: undefined }));
-                        }}
-                        className="flex flex-col items-center gap-2 shrink-0"
-                        style={{ width: 88 }}
-                      >
-                        <div
-                          className={`relative w-20 h-20 rounded-full overflow-hidden border-2 transition ${
-                            isSelected
-                              ? 'border-green-500 bg-green-500/20'
-                              : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-                          }`}
-                        >
-                          {b.photo?.trim() ? (
-                            <img
-                              src={b.photo}
-                              alt={b.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center text-3xl">
-                              💈
-                            </div>
-                          )}
-                          {isSelected && (
-                            <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-green-500 flex items-center justify-center">
-                              <Check className="w-3 h-3 text-black" strokeWidth={3} />
-                            </div>
-                          )}
-                        </div>
-                        <p
-                          className={`text-[11px] font-semibold text-center leading-tight w-full truncate ${
-                            isSelected ? 'text-green-400' : 'text-white'
-                          }`}
-                        >
-                          {b.name}
-                        </p>
-                      </button>
-                    );
-                  })}
+                  ))}
                 </div>
-                {errors.barberId && (
-                  <p className="text-red-400 text-xs mt-2 text-center">{errors.barberId}</p>
-                )}
+                {errors.barberId && <p className="text-red-400 text-xs mt-1">{errors.barberId}</p>}
               </div>
             )}
 
+            {/* Date */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">
-                Nom complet <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="Votre nom"
-                value={form.client_name}
-                onChange={e => {
-                  setForm(prev => ({ ...prev, client_name: e.target.value }));
-                  setErrors(prev => ({ ...prev, client_name: undefined }));
-                }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${
-                  errors.client_name ? 'border-red-500' : 'border-zinc-700 focus:border-white'
-                }`}
-              />
-              {errors.client_name && (
-                <p className="text-red-400 text-xs mt-1">{errors.client_name}</p>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">
-                Téléphone <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="tel"
-                inputMode="numeric"
-                placeholder="77 000 00 00"
-                value={form.client_phone}
-                onChange={e => {
-                  setForm(prev => ({ ...prev, client_phone: e.target.value }));
-                  setErrors(prev => ({ ...prev, client_phone: undefined }));
-                }}
-                className={`w-full px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-base ${
-                  errors.client_phone ? 'border-red-500' : 'border-zinc-700 focus:border-white'
-                }`}
-              />
-              {errors.client_phone && (
-                <p className="text-red-400 text-xs mt-1">{errors.client_phone}</p>
-              )}
-            </div>
-
-            <div className="w-full min-w-0">
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">
-                Date <span className="text-red-400">*</span>
+              <label className="text-white text-sm font-semibold mb-2 flex items-center gap-2">
+                <Calendar className="w-4 h-4" /> Date
               </label>
               <input
                 type="date"
                 min={todayISO}
                 max={maxDateISO}
                 value={form.date}
-                onChange={e => {
-                  setForm(prev => ({ ...prev, date: e.target.value, time: '' }));
-                  setErrors(prev => ({ ...prev, date: undefined }));
-                }}
-                className="w-full max-w-full min-w-0 px-3 sm:px-4 py-3 bg-zinc-900 border rounded-xl text-white focus:outline-none transition text-sm sm:text-base [color-scheme:dark] border-zinc-700 focus:border-white"
+                onChange={(e) => setForm(prev => ({ ...prev, date: e.target.value, time: '' }))}
+                className="w-full bg-zinc-900 border-2 border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:border-white transition"
               />
-              {errors.date && (
-                <p className="text-red-400 text-xs mt-1">{errors.date}</p>
-              )}
+              {errors.date && <p className="text-red-400 text-xs mt-1">{errors.date}</p>}
             </div>
 
-            {form.date && (
-              <div className="w-full min-w-0">
-                <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                  <label className="text-sm font-semibold text-zinc-300">
-                    Heure <span className="text-red-400">*</span>
+            {/* Time slots */}
+            {form.date && form.barberId && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-white text-sm font-semibold flex items-center gap-2">
+                    <Clock className="w-4 h-4" /> Heure
                   </label>
                   <button
-                    type="button"
                     onClick={() => refreshSlots(false)}
                     disabled={loadingSlots}
-                    className="flex items-center gap-1 text-xs text-zinc-400 hover:text-white transition px-2 py-1 rounded-lg bg-zinc-800/50"
+                    className="text-zinc-400 hover:text-white text-xs flex items-center gap-1"
                   >
-                    <RefreshCw className={`w-3 h-3 ${loadingSlots ? 'animate-spin' : ''}`} />
-                    Actualiser
+                    <RefreshCw className={`w-3 h-3 ${loadingSlots ? 'animate-spin' : ''}`} /> Actualiser
                   </button>
                 </div>
 
-                {form.barberId ? (
-                  <p className="text-[11px] text-zinc-500 mb-2 flex items-center gap-1.5">
-                    <Clock className="w-3 h-3" />
-                    Créneaux pour <span className="text-white font-semibold">{form.barberName}</span>
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-amber-400 mb-2 flex items-center gap-1.5">
-                    <AlertCircle className="w-3 h-3" />
-                    Sélectionnez un coiffeur pour voir ses disponibilités
-                  </p>
-                )}
-
                 {loadingSlots ? (
-                  <div className="text-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto" />
+                  <div className="flex justify-center py-6">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white" />
                   </div>
-                ) : allSlots.length === 0 ? (
-                  <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 text-center">
-                    <p className="text-yellow-400 text-sm">
-                      Aucun créneau disponible ce jour
-                    </p>
+                ) : noSlots ? (
+                  <div className="bg-yellow-500/10 border border-yellow-500/40 rounded-xl p-4 text-center">
+                    <XCircle className="w-6 h-6 text-yellow-400 mx-auto mb-2" />
+                    <p className="text-yellow-300 text-sm">Aucun créneau disponible pour ce coiffeur à cette date.</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-4 gap-2">
                     {allSlots.map((slot) => {
-                      const isBooked = form.barberId ? bookedSlots.includes(slot) : false;
-                      const isSelected = form.time === slot;
-                      const isDisabledSlot = !form.barberId || isBooked;
+                      const isBooked = bookedSlots.includes(slot);
                       return (
                         <button
                           key={slot}
-                          type="button"
-                          onClick={() => {
-                            if (form.barberId && !isBooked) {
-                              setForm(prev => ({ ...prev, time: slot }));
-                              setErrors(prev => ({ ...prev, time: undefined }));
-                            }
-                          }}
-                          disabled={isDisabledSlot}
-                          className={`w-full py-2.5 px-1 rounded-xl text-xs sm:text-sm font-medium transition-all duration-150 ${
-                            isSelected
-                              ? 'bg-green-500 text-black font-bold shadow-lg shadow-green-500/20 scale-[0.98]'
-                              : isBooked
-                              ? 'bg-red-500/10 border border-red-500/30 text-red-400/50 cursor-not-allowed line-through'
-                              : !form.barberId
-                              ? 'bg-zinc-800/50 border border-zinc-700/50 text-zinc-500 cursor-not-allowed'
-                              : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20 active:scale-95'
+                          disabled={isBooked}
+                          onClick={() => setForm(prev => ({ ...prev, time: slot }))}
+                          className={`py-2.5 rounded-lg text-sm font-semibold transition ${
+                            isBooked
+                              ? 'bg-zinc-800 text-zinc-600 cursor-not-allowed line-through'
+                              : form.time === slot
+                                ? 'bg-white text-black'
+                                : 'bg-zinc-800 text-white hover:bg-zinc-700'
                           }`}
                         >
-                          <span className="block">{slot}</span>
-                          {isBooked && (
-                            <span className="block text-[9px] mt-0.5">indispo.</span>
-                          )}
+                          {slot}
                         </button>
                       );
                     })}
                   </div>
                 )}
-                {errors.time && (
-                  <p className="text-red-400 text-xs mt-2">{errors.time}</p>
-                )}
+                {errors.time && <p className="text-red-400 text-xs mt-1">{errors.time}</p>}
               </div>
             )}
 
+            {/* Client info */}
             <div>
-              <label className="block text-sm font-semibold text-zinc-300 mb-2">
-                Note (optionnelle)
+              <label className="text-white text-sm font-semibold mb-2 flex items-center gap-2">
+                <User className="w-4 h-4" /> Vos informations
               </label>
-              <textarea
-                rows={3}
-                placeholder="Précisions..."
-                value={form.note}
-                onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))}
-                className="w-full px-4 py-3 bg-zinc-900 border border-zinc-700 focus:border-white rounded-xl text-white focus:outline-none transition resize-none text-base"
-              />
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  placeholder="Nom complet"
+                  value={form.client_name}
+                  onChange={(e) => setForm(prev => ({ ...prev, client_name: e.target.value }))}
+                  className="w-full bg-zinc-900 border-2 border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:border-white transition placeholder:text-zinc-600"
+                />
+                {errors.client_name && <p className="text-red-400 text-xs">{errors.client_name}</p>}
+                <input
+                  type="tel"
+                  placeholder="Téléphone (ex: 77 000 00 00)"
+                  value={form.client_phone}
+                  onChange={(e) => setForm(prev => ({ ...prev, client_phone: e.target.value }))}
+                  className="w-full bg-zinc-900 border-2 border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:border-white transition placeholder:text-zinc-600"
+                />
+                {errors.client_phone && <p className="text-red-400 text-xs">{errors.client_phone}</p>}
+                <textarea
+                  placeholder="Note (optionnel)"
+                  value={form.note}
+                  onChange={(e) => setForm(prev => ({ ...prev, note: e.target.value }))}
+                  rows={2}
+                  className="w-full bg-zinc-900 border-2 border-zinc-700 text-white rounded-xl px-4 py-3 focus:outline-none focus:border-white transition placeholder:text-zinc-600 resize-none"
+                />
+              </div>
             </div>
 
-            {form.eventService && form.date && form.time && (barbers.length === 0 || form.barberName) && (
-              <div className="bg-gradient-to-br from-zinc-900 to-zinc-800 border border-zinc-700 rounded-2xl p-4 mt-2">
-                <p className="text-zinc-400 text-[10px] uppercase tracking-wider mb-3">
-                  Résumé
-                </p>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between gap-2">
-                    <span className="text-zinc-400 shrink-0">Service</span>
-                    <span className="text-white font-semibold text-right break-words">
-                      {form.eventService.name}
-                    </span>
-                  </div>
-                  {form.barberName && (
-                    <div className="flex justify-between gap-2">
-                      <span className="text-zinc-400 shrink-0">Coiffeur</span>
-                      <span className="text-white text-right break-words">{form.barberName}</span>
-                    </div>
-                  )}
-                  <div className="flex justify-between gap-2">
-                    <span className="text-zinc-400 shrink-0">Date</span>
-                    <span className="text-white text-right">
-                      {new Date(form.date).toLocaleDateString('fr-FR', {
-                        day: 'numeric',
-                        month: 'long',
-                      })}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-2">
-                    <span className="text-zinc-400 shrink-0">Heure</span>
-                    <span className="text-green-400 font-bold">{form.time}</span>
-                  </div>
-                  <div className="border-t border-zinc-700 my-2"></div>
-                  <div className="flex justify-between gap-2 text-base">
-                    <span className="text-zinc-300 font-semibold shrink-0">Total à payer</span>
-                    <span className="text-white font-black text-base sm:text-lg text-right">
-                      {form.eventService.price.toLocaleString()} CFA
-                    </span>
-                  </div>
-                </div>
+            {submitError && (
+              <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 text-red-300 text-sm">
+                {submitError}
               </div>
             )}
 
             <button
-              type="button"
               onClick={goToPayment}
-              disabled={!!isDisabled}
-              className="w-full bg-white text-black font-bold py-4 rounded-2xl text-base hover:bg-zinc-200 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-4"
+              disabled={isDisabled}
+              className="w-full bg-white text-black font-bold py-4 rounded-xl text-base hover:bg-zinc-200 transition disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              Continuer vers le paiement <Check className="w-5 h-5" />
+              Continuer vers le paiement
             </button>
-
-            <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
-              <p className="text-blue-400 text-xs text-center">
-                ⚠️ Votre réservation sera confirmée automatiquement dès le paiement validé.
-              </p>
-            </div>
           </div>
         )}
 
-        <p className="text-center text-zinc-600 text-[10px] pb-4 pt-2">
-          Propulsé par <span className="text-white font-semibold">LE COUPE</span>
-        </p>
+        {/* STEP: PAY */}
+        {step === 'pay' && form.eventService && (
+          <div className="space-y-5">
+            <div className="bg-zinc-900 border-2 border-zinc-700 rounded-xl p-4 space-y-3">
+              <p className="text-zinc-400 text-xs uppercase tracking-wider">Récapitulatif</p>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-white text-sm break-words">{form.eventService.name}</span>
+                <span className="text-white font-bold text-base flex-shrink-0">{formatCFA(form.eventService.price)}</span>
+              </div>
+              {form.barberName && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-zinc-400 text-sm">Coiffeur</span>
+                  <span className="text-white text-sm">{form.barberName}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-zinc-400 text-sm">Date</span>
+                <span className="text-white text-sm">{form.date} à {form.time}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-white text-sm font-semibold mb-2 flex items-center gap-2">
+                <Phone className="w-4 h-4" /> Méthode de paiement
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: 'wave', label: 'Wave' },
+                  { id: 'orange_money', label: 'Orange Money' },
+                ].map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setForm(prev => ({ ...prev, paymentMethod: m.id as any }))}
+                    className={`py-3 rounded-xl border-2 font-bold text-sm transition ${
+                      form.paymentMethod === m.id
+                        ? 'border-white bg-zinc-800 text-white'
+                        : 'border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {submitError && (
+              <div className="bg-red-500/20 border border-red-500 rounded-xl p-4 text-red-300 text-sm">
+                {submitError}
+              </div>
+            )}
+
+            <div className="bg-zinc-900 border-2 border-zinc-700 rounded-xl p-4 flex items-center justify-between gap-3">
+              <span className="text-zinc-400 text-sm">Total à payer</span>
+              <span className="text-white text-xl font-bold flex-shrink-0">{formatCFA(form.eventService.price)}</span>
+            </div>
+
+            <button
+              onClick={handlePay}
+              disabled={submitting || !form.paymentMethod}
+              className="w-full bg-white text-black font-bold py-4 rounded-xl text-base hover:bg-zinc-200 transition disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {submitting ? (
+                <>
+                  <Loader className="w-4 h-4 animate-spin" /> Traitement...
+                </>
+              ) : (
+                <>Payer {formatCFA(form.eventService.price)}</>
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
