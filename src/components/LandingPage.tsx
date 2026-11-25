@@ -1,6 +1,6 @@
 // src/components/LandingPage.tsx
 import { useState, useEffect } from 'react';
-import { Scissors, TrendingUp, DollarSign, Users, Shield, Printer, Check, ChevronDown, Download, Smartphone, Apple, Chrome, Zap, Share, Plus, X, LogIn, UserPlus } from 'lucide-react';
+import { Scissors, TrendingUp, DollarSign, Users, Shield, Printer, Check, ChevronDown, Download, Smartphone, Apple, Chrome, Zap, Share, Plus, X, LogIn, UserPlus, User } from 'lucide-react';
 
 interface LandingPageProps {
   onGetStarted: () => void;
@@ -125,7 +125,6 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
     setDeviceIsIOS(ios);
     setDeviceIsMac(mac);
 
-    // Afficher les boutons Connexion/Inscription si on vient de la page publique
     if (initialScreen) {
       setShowAuthButtons(true);
     }
@@ -188,13 +187,9 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
 
-      {/* Modale iOS */}
       {showIOSModal && <IOSInstallModal onClose={() => setShowIOSModal(false)} />}
-
-      {/* Modale Mac Chrome */}
       {showMacModal && <MacChromeInstallModal onClose={() => setShowMacModal(false)} />}
 
-      {/* Notification succès installation */}
       {showInstallSuccess && (
         <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-300">
           <div className="bg-green-600 text-white px-6 py-3 rounded-full shadow-lg flex items-center gap-2">
@@ -214,7 +209,6 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
             <span className="font-bold tracking-widest text-xs sm:text-sm uppercase">La Coupe</span>
           </div>
           <div className="flex items-center gap-3">
-            {/* Bouton Retour (si on vient de la page publique) */}
             {onBack && (
               <button
                 onClick={onBack}
@@ -224,9 +218,6 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
               </button>
             )}
 
-            
-
-            {/* Si pas d'authentification affichée, montrer le bouton "Commencer" */}
             {!showAuthButtons && (
               <button
                 onClick={onGetStarted}
@@ -259,7 +250,6 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
             Le système de gestion tout-en-un pour les salons de coiffure professionnels.
           </p>
 
-          {/* ── BOUTONS HERO ── */}
           <div className="flex flex-col sm:flex-row gap-3 justify-center items-center">
             {showInstallButton && (
               <button
@@ -290,7 +280,6 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
             </button>
           </div>
 
-          {/* Badges plateforme */}
           <div className="flex items-center justify-center gap-3 mt-8">
             <span className="text-zinc-600 text-xs">Compatible :</span>
             <div className="flex items-center gap-2">
@@ -393,39 +382,65 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
         </div>
       </section>
 
-      {/* ── PLANS ── */}
+      {/* ── PLANS (MIS À JOUR AVEC BARBER) ── */}
       <section className="py-16 sm:py-24 px-4" id="plans">
-        <div className="max-w-2xl mx-auto text-center">
+        <div className="max-w-4xl mx-auto text-center">
           <p className="text-yellow-400 text-xs font-bold tracking-widest uppercase mb-3">Tarifs</p>
-          <h2 className="text-3xl sm:text-4xl font-black tracking-tight mb-12">Un prix simple,<br />transparent.</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-7 text-left">
-              <p className="text-zinc-400 text-xs font-bold tracking-widest uppercase mb-4">Mensuel</p>
-              <p className="text-4xl font-black tracking-tight mb-1">5 000 <span className="text-xl text-zinc-500 font-normal">F</span></p>
+          <h2 className="text-3xl sm:text-4xl font-black tracking-tight mb-4">Des prix adaptés à votre profil.</h2>
+          <p className="text-zinc-400 text-sm mb-12">Que vous soyez un salon ou un barber indépendant.</p>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            
+            {/* PLAN BARBER MENSUEL */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 text-left relative flex flex-col">
+              <div className="absolute top-4 right-4 bg-purple-500/20 text-purple-400 text-[10px] font-bold px-2 py-1 rounded-full">BARBER</div>
+              <p className="text-zinc-400 text-xs font-bold tracking-widest uppercase mb-2">Barber Mensuel</p>
+              <p className="text-4xl font-black tracking-tight mb-1">2 000 <span className="text-xl text-zinc-500 font-normal">F</span></p>
               <p className="text-zinc-500 text-sm mb-6">par mois</p>
-              <ul className="space-y-2.5 mb-7">
-                {['Accès complet', 'Coiffeurs illimités', 'Historique complet', 'Support Wave & OM'].map(f => (
+              <ul className="space-y-2.5 mb-8 flex-1">
+                {['Accès Accueil', 'Accès Réservations', 'Pas de Revenus/Dépenses', 'Support Wave & OM'].map(f => (
+                  <li key={f} className="flex items-center gap-2.5 text-sm text-zinc-300">
+                    <Check className="w-4 h-4 text-purple-400 shrink-0" /> {f}
+                  </li>
+                ))}
+              </ul>
+              <button onClick={onGetStarted} className="w-full bg-zinc-800 border border-zinc-700 text-white font-bold py-3 rounded-xl hover:bg-zinc-700 transition">Choisir Barber</button>
+            </div>
+
+            {/* PLAN BARBER ANNUEL */}
+            <div className="bg-zinc-900 border-2 border-purple-500/50 rounded-3xl p-6 text-left relative flex flex-col shadow-lg shadow-purple-500/10">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-purple-400 text-black text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full">Économisez 17%</div>
+              <div className="absolute top-4 right-4 bg-purple-500/20 text-purple-400 text-[10px] font-bold px-2 py-1 rounded-full">BARBER</div>
+              <p className="text-zinc-400 text-xs font-bold tracking-widest uppercase mb-2 mt-2">Barber Annuel</p>
+              <p className="text-4xl font-black tracking-tight mb-1">20 000 <span className="text-xl text-zinc-500 font-normal">F</span></p>
+              <p className="text-zinc-500 text-sm mb-6">par an — soit 1 666 F/mois</p>
+              <ul className="space-y-2.5 mb-8 flex-1">
+                {['Tout du plan Barber', 'Accueil + Réservations', 'Support prioritaire', 'Aucun accès Revenus/Dépenses'].map(f => (
+                  <li key={f} className="flex items-center gap-2.5 text-sm text-zinc-300">
+                    <Check className="w-4 h-4 text-purple-400 shrink-0" /> {f}
+                  </li>
+                ))}
+              </ul>
+              <button onClick={onGetStarted} className="w-full bg-purple-500 text-white font-bold py-3 rounded-xl hover:bg-purple-600 transition">Choisir Barber Annuel</button>
+            </div>
+
+            {/* PLAN SALON COMPLET */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 text-left relative flex flex-col">
+              <div className="absolute top-4 right-4 bg-yellow-500/20 text-yellow-400 text-[10px] font-bold px-2 py-1 rounded-full">SALON</div>
+              <p className="text-zinc-400 text-xs font-bold tracking-widest uppercase mb-2">Salon</p>
+              <p className="text-4xl font-black tracking-tight mb-1">5 000 <span className="text-xl text-zinc-500 font-normal">F</span></p>
+              <p className="text-zinc-500 text-sm mb-1">par mois</p>
+              <p className="text-zinc-500 text-xs mb-6">ou 50 000 F/an (2 mois offerts)</p>
+              <ul className="space-y-2.5 mb-8 flex-1">
+                {['Accès complet', 'Coiffeurs illimités', 'Tous les onglets', 'Support Wave & OM'].map(f => (
                   <li key={f} className="flex items-center gap-2.5 text-sm text-zinc-300">
                     <Check className="w-4 h-4 text-yellow-400 shrink-0" /> {f}
                   </li>
                 ))}
               </ul>
-              <button onClick={onGetStarted} className="w-full bg-zinc-800 border border-zinc-700 text-white font-bold py-3 rounded-xl hover:bg-zinc-700 transition">Commencer</button>
+              <button onClick={onGetStarted} className="w-full bg-white text-black font-bold py-3 rounded-xl hover:bg-zinc-200 transition">Choisir Salon</button>
             </div>
-            <div className="bg-zinc-900 border-2 border-yellow-500/50 rounded-3xl p-7 text-left relative">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-yellow-400 text-black text-[10px] font-black uppercase tracking-widest px-4 py-1 rounded-full">Meilleure offre</div>
-              <p className="text-zinc-400 text-xs font-bold tracking-widest uppercase mb-4">Annuel</p>
-              <p className="text-4xl font-black tracking-tight mb-1">50 000 <span className="text-xl text-zinc-500 font-normal">F</span></p>
-              <p className="text-zinc-500 text-sm mb-6">par an — économisez 17%</p>
-              <ul className="space-y-2.5 mb-7">
-                {['Tout du plan Mensuel', '2 mois offerts', 'Support prioritaire', 'Nouvelles fonctionnalités'].map(f => (
-                  <li key={f} className="flex items-center gap-2.5 text-sm text-zinc-300">
-                    <Check className="w-4 h-4 text-yellow-400 shrink-0" /> {f}
-                  </li>
-                ))}
-              </ul>
-              <button onClick={onGetStarted} className="w-full bg-yellow-400 text-black font-bold py-3 rounded-xl hover:bg-yellow-300 transition">Commencer →</button>
-            </div>
+
           </div>
         </div>
       </section>
@@ -457,8 +472,8 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
       <section className="py-16 sm:py-24 px-4">
         <div className="max-w-2xl mx-auto text-center">
           <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-10 sm:p-14">
-            <h2 className="text-3xl sm:text-4xl font-black tracking-tight mb-4">Prêt à gérer votre salon<br />comme un pro ?</h2>
-            <p className="text-zinc-400 text-sm mb-8 font-light">Rejoignez les salons qui font confiance à La Coupe.</p>
+            <h2 className="text-3xl sm:text-4xl font-black tracking-tight mb-4">Prêt à gérer votre activité<br />comme un pro ?</h2>
+            <p className="text-zinc-400 text-sm mb-8 font-light">Rejoignez les salons et barbers qui font confiance à La Coupe.</p>
 
             {showInstallButton && (
               <div className="mb-5">
@@ -483,7 +498,7 @@ export function LandingPage({ onGetStarted, onBack, initialScreen }: LandingPage
           <div className="w-7 h-7 bg-white rounded-lg flex items-center justify-center"><Scissors className="w-3.5 h-3.5 text-black" /></div>
           <span className="font-bold tracking-widest text-xs uppercase">La Coupe</span>
         </div>
-        <p className="text-zinc-500 text-xs">Salon de Coiffure — Dakar, Sénégal</p>
+        <p className="text-zinc-500 text-xs">Salon de Coiffure & Barber — Dakar, Sénégal</p>
         <p className="text-zinc-600 text-xs mt-2">© 2026 La Coupe. Tous droits réservés.</p>
       </footer>
 

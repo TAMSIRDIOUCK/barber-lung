@@ -1,12 +1,14 @@
 // src/components/AuthPage.tsx
 import { useState, useEffect } from 'react';
-import { Scissors, ArrowLeft, Eye, EyeOff } from 'lucide-react';
+import { Scissors, ArrowLeft, Eye, EyeOff, Store } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 const PROFILE_TABLE = import.meta.env.VITE_APP_PROFILE_TABLE ?? 'profiles_v3';
 const APP_NAME = import.meta.env.VITE_APP_NAME ?? 'LA COUPE';
+const PENDING_TYPE_KEY = 'pending_account_type';
 
 type Mode = 'login' | 'register' | 'reset';
+type AccountType = 'salon' | 'barber';
 
 interface PasswordInputProps {
   value: string;
@@ -81,8 +83,100 @@ const formatPhoneNumber = (phone: string): string => {
   return phone;
 };
 
+const translateError = (msg: string): string => {
+  if (!msg) return 'Une erreur est survenue';
+  if (msg.includes('already registered') || msg.includes('User already registered'))
+    return 'Cet email est déjà utilisé. Connectez-vous ou réinitialisez votre mot de passe.';
+  if (msg.includes('Password should be at least'))
+    return 'Mot de passe trop court (6 caractères minimum).';
+  if (msg.includes('Invalid login') || msg.includes('invalid_credentials'))
+    return 'Email ou mot de passe incorrect.';
+  if (msg.includes('Email not confirmed'))
+    return 'Email non confirmé. Vérifiez votre boîte mail.';
+  if (msg.includes('signup is disabled') || msg.includes('Signups not allowed'))
+    return 'Les inscriptions sont désactivées.';
+  if (msg.includes('rate limit'))
+    return 'Trop de tentatives. Attendez quelques minutes.';
+  if (msg.includes('Refresh Token Not Found') || msg.includes('Invalid Refresh Token'))
+    return 'Session expirée. Veuillez vous reconnecter.';
+  return msg;
+};
+
+const isAccountType = (v: unknown): v is AccountType => v === 'salon' || v === 'barber';
+
+// Type mémorisé avant une redirection Google (onglet « Créer un compte »)
+const readPendingType = (): AccountType | null => {
+  try {
+    const v = sessionStorage.getItem(PENDING_TYPE_KEY);
+    return isAccountType(v) ? v : null;
+  } catch {
+    return null;
+  }
+};
+
+const clearPendingType = () => {
+  try { sessionStorage.removeItem(PENDING_TYPE_KEY); } catch { /* ignore */ }
+};
+
+// Crée le profil s'il n'existe pas. Ne remplace jamais un type déjà choisi.
+const ensureProfile = async (
+  userId: string,
+  name: string,
+  phoneNum: string,
+  emailAddr: string,
+  type?: unknown
+) => {
+  const t: AccountType | null = isAccountType(type) ? type : readPendingType();
+
+  try {
+    const { data: existing } = await supabase
+      .from(PROFILE_TABLE)
+      .select('id, account_type')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (!existing) {
+      const now = new Date().toISOString();
+      const { error: insertErr } = await supabase.from(PROFILE_TABLE).upsert(
+        {
+          id: userId,
+          full_name: name,
+          phone: phoneNum,
+          email: emailAddr,
+          ...(t ? { account_type: t } : {}),
+          created_at: now,
+          updated_at: now,
+        },
+        { onConflict: 'id', ignoreDuplicates: true }
+      );
+      if (insertErr) console.error('ensureProfile insert error:', insertErr);
+      else if (t) clearPendingType();
+    } else if (!(existing as any).account_type && t) {
+      const { error: updErr } = await supabase
+        .from(PROFILE_TABLE)
+        .update({ account_type: t })
+        .eq('id', userId);
+      if (updErr) console.error('ensureProfile update error:', updErr);
+      else clearPendingType();
+    }
+  } catch (err) {
+    console.error('ensureProfile error:', err);
+  }
+};
+
+const profileFromUser = async (user: {
+  id: string;
+  email?: string | null;
+  user_metadata?: Record<string, any>;
+}) => {
+  const meta = user.user_metadata ?? {};
+  const name = meta.full_name || meta.name || user.email?.split('@')[0] || '';
+  await ensureProfile(user.id, name, meta.phone || '', user.email || '', meta.account_type);
+};
+
 export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
   const [mode, setMode] = useState<Mode>('login');
+  const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
@@ -97,134 +191,85 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
   const [verifEmail, setVerifEmail] = useState('');
   const [isProcessingCallback, setIsProcessingCallback] = useState(false);
 
-  // ✅ Gestion du callback OAuth (Google) - Version améliorée
+  // Gestion du callback OAuth (Google)
   useEffect(() => {
     const handleOAuthCallback = async () => {
       const params = new URLSearchParams(window.location.search);
       const code = params.get('code');
-      const error = params.get('error');
+      const oauthError = params.get('error');
       const errorDescription = params.get('error_description');
-      
-      console.log('🔐 Callback OAuth détecté:', { 
-        hasCode: !!code, 
-        error, 
-        errorDescription,
-        fullUrl: window.location.href 
-      });
 
-      // Si erreur OAuth
-      if (error) {
-        console.error('❌ Erreur OAuth:', error, errorDescription);
-        setError(`Erreur de connexion: ${errorDescription || error}`);
+      if (oauthError) {
+        console.error('❌ Erreur OAuth:', oauthError, errorDescription);
+        setError(`Erreur de connexion: ${errorDescription || oauthError}`);
         window.history.replaceState({}, document.title, window.location.pathname);
         setLoading(false);
         setIsProcessingCallback(false);
         return;
       }
 
-      // Si code présent, récupérer la session
-      if (code) {
-        setIsProcessingCallback(true);
-        console.log('🔐 Code OAuth trouvé, récupération de la session...');
+      if (!code) return;
 
-        try {
-          // Récupérer la session
-          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      setIsProcessingCallback(true);
 
-          if (sessionError) {
-            console.error('❌ Erreur récupération session:', sessionError);
-            setError(translateError(sessionError.message));
-            setIsProcessingCallback(false);
-            // Nettoyer l'URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-            return;
-          }
+      try {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-          if (session) {
-            console.log('✅ Session récupérée avec succès ! Utilisateur:', session.user?.email);
-            
-            // Créer le profil si nécessaire
-            if (session.user) {
-              const name = session.user.user_metadata?.full_name || 
-                           session.user.user_metadata?.name || 
-                           session.user.email?.split('@')[0] || '';
-              const phoneNum = session.user.user_metadata?.phone || '';
-              await ensureProfile(session.user.id, name, phoneNum, session.user.email || '');
-            }
-
-            // Nettoyer l'URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-            setIsProcessingCallback(false);
-            setLoading(false);
-            
-            // Rediriger vers l'app
-            if (onAuthSuccess) {
-              console.log('✅ Redirection vers l\'app...');
-              onAuthSuccess();
-            }
-          } else {
-            console.log('⏳ Aucune session trouvée, attente...');
-            
-            // Attendre un peu et réessayer
-            setTimeout(async () => {
-              const { data: { session: retrySession } } = await supabase.auth.getSession();
-              if (retrySession) {
-                console.log('✅ Session récupérée après attente');
-                window.history.replaceState({}, document.title, window.location.pathname);
-                setIsProcessingCallback(false);
-                if (onAuthSuccess) onAuthSuccess();
-              } else {
-                console.log('❌ Aucune session après attente');
-                setIsProcessingCallback(false);
-                setError('Impossible de récupérer la session. Réessayez.');
-              }
-            }, 3000);
-          }
-        } catch (err) {
-          console.error('❌ Erreur:', err);
-          setError('Erreur lors de la connexion');
+        if (sessionError) {
+          console.error('❌ Erreur récupération session:', sessionError);
+          setError(translateError(sessionError.message));
           setIsProcessingCallback(false);
           window.history.replaceState({}, document.title, window.location.pathname);
+          return;
         }
+
+        if (session) {
+          if (session.user) await profileFromUser(session.user);
+
+          window.history.replaceState({}, document.title, window.location.pathname);
+          setIsProcessingCallback(false);
+          setLoading(false);
+          onAuthSuccess?.();
+        } else {
+          // Attendre un peu et réessayer
+          setTimeout(async () => {
+            const { data: { session: retrySession } } = await supabase.auth.getSession();
+            if (retrySession) {
+              if (retrySession.user) await profileFromUser(retrySession.user);
+              window.history.replaceState({}, document.title, window.location.pathname);
+              setIsProcessingCallback(false);
+              onAuthSuccess?.();
+            } else {
+              setIsProcessingCallback(false);
+              setError('Impossible de récupérer la session. Réessayez.');
+            }
+          }, 3000);
+        }
+      } catch (err) {
+        console.error('❌ Erreur:', err);
+        setError('Erreur lors de la connexion');
+        setIsProcessingCallback(false);
+        window.history.replaceState({}, document.title, window.location.pathname);
       }
     };
 
     handleOAuthCallback();
   }, [onAuthSuccess]);
 
-  // ✅ Vérification de la session au chargement
+  // Vérification de la session au chargement + écoute des changements
   useEffect(() => {
     const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      console.log('🔍 Vérification session au chargement:', session ? '✅ Présente' : '❌ Absente');
-      
       if (session && onAuthSuccess) {
-        console.log('✅ Session existante trouvée, redirection...');
         onAuthSuccess();
       }
     };
     checkSession();
 
-    // Écouter les changements d'état d'authentification
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('🔐 Auth state change:', event);
-
       if (event === 'SIGNED_IN' && session) {
-        console.log('✅ Utilisateur connecté (SIGNED_IN), redirection...', session.user?.email);
-        
-        if (session.user) {
-          const name = session.user.user_metadata?.full_name || 
-                       session.user.user_metadata?.name || 
-                       session.user.email?.split('@')[0] || '';
-          const phoneNum = session.user.user_metadata?.phone || '';
-          await ensureProfile(session.user.id, name, phoneNum, session.user.email || '');
-        }
-        
-        if (onAuthSuccess) onAuthSuccess();
-      }
-
-      if (event === 'TOKEN_REFRESHED') {
-        console.log('🔄 Token rafraîchi');
+        if (session.user) await profileFromUser(session.user);
+        onAuthSuccess?.();
       }
     });
 
@@ -233,65 +278,24 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     };
   }, [onAuthSuccess]);
 
-  const translateError = (msg: string): string => {
-    if (!msg) return 'Une erreur est survenue';
-    if (msg.includes('already registered') || msg.includes('User already registered'))
-      return 'Cet email est déjà utilisé. Connectez-vous ou réinitialisez votre mot de passe.';
-    if (msg.includes('Password should be at least'))
-      return 'Mot de passe trop court (6 caractères minimum).';
-    if (msg.includes('Invalid login') || msg.includes('invalid_credentials'))
-      return 'Email ou mot de passe incorrect.';
-    if (msg.includes('Email not confirmed'))
-      return 'Email non confirmé. Vérifiez votre boîte mail.';
-    if (msg.includes('signup is disabled') || msg.includes('Signups not allowed'))
-      return 'Les inscriptions sont désactivées.';
-    if (msg.includes('rate limit'))
-      return 'Trop de tentatives. Attendez quelques minutes.';
-    if (msg.includes('Refresh Token Not Found') || msg.includes('Invalid Refresh Token'))
-      return 'Session expirée. Veuillez vous reconnecter.';
-    return msg;
-  };
-
-  const ensureProfile = async (userId: string, name: string, phoneNum: string, emailAddr: string) => {
-    try {
-      const { data: existing } = await supabase
-        .from(PROFILE_TABLE)
-        .select('id')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (!existing) {
-        const { error: insertErr } = await supabase.from(PROFILE_TABLE).insert({
-          id: userId,
-          full_name: name,
-          phone: phoneNum,
-          email: emailAddr,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        });
-        if (insertErr) console.error('ensureProfile insert error:', insertErr);
-        else console.log('✅ Profil créé avec succès');
-      }
-    } catch (err) {
-      console.error('ensureProfile error:', err);
-    }
-  };
-
-  // ✅ Connexion Google - Version corrigée
+  // Connexion Google
   const handleGoogleLogin = async () => {
     setError('');
     setLoading(true);
-    
+
     try {
-      // Nettoyer l'URL des anciens paramètres
+      // En mode inscription, on mémorise le type choisi (Google ne le transmet pas)
+      if (mode === 'register' && accountType) {
+        try { sessionStorage.setItem(PENDING_TYPE_KEY, accountType); } catch { /* ignore */ }
+      }
+
       if (window.location.hash || window.location.search.includes('code')) {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
 
       const redirectUrl = `${getBaseUrl()}/auth/callback`;
-      console.log('🔗 Redirection Google vers:', redirectUrl);
 
-      const { data, error: e } = await supabase.auth.signInWithOAuth({
+      const { error: e } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: redirectUrl,
@@ -299,7 +303,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
             access_type: 'offline',
             prompt: 'consent',
           },
-          scopes: 'email profile'
+          scopes: 'email profile',
         },
       });
 
@@ -309,10 +313,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
         setLoading(false);
         return;
       }
-
-      console.log('✅ Google OAuth initié avec succès');
       // La redirection est automatique
-      
     } catch (e: any) {
       console.error('❌ Exception Google:', e);
       setError(translateError(e?.message ?? ''));
@@ -355,7 +356,8 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     const cleanName = fullName.trim();
     const cleanPhone = phone.trim();
 
-    if (!cleanName) return setError('Nom du salon requis');
+    if (!accountType) return setError('Choisissez votre type de compte (Salon ou Barber)');
+    if (!cleanName) return setError(accountType === 'barber' ? 'Votre nom est requis' : 'Nom du salon requis');
     if (!cleanEmail) return setError('Email requis');
     if (!cleanEmail.includes('@')) return setError('Email invalide');
     if (!cleanPhone) return setError('Numéro de téléphone requis');
@@ -373,7 +375,7 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
         email: cleanEmail,
         password,
         options: {
-          data: { full_name: cleanName, phone: cleanPhone },
+          data: { full_name: cleanName, phone: cleanPhone, account_type: accountType },
           emailRedirectTo: redirectUrl,
         },
       });
@@ -391,10 +393,9 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
       }
 
       if (data.user && data.session) {
-        console.log('✅ Inscription avec session immédiate');
-        await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail);
+        await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail, accountType);
       } else if (data.user) {
-        await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail);
+        await ensureProfile(data.user.id, cleanName, cleanPhone, cleanEmail, accountType);
         setVerifEmail(cleanEmail);
         setShowVerification(true);
         setSuccess(`Un email de confirmation a été envoyé à ${cleanEmail}. Vérifiez votre boîte mail.`);
@@ -437,14 +438,14 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
       }
 
       if (data.user) {
-        console.log('✅ Connexion réussie');
         await ensureProfile(
           data.user.id,
           data.user.user_metadata?.full_name ?? cleanEmail.split('@')[0],
           data.user.user_metadata?.phone ?? '',
-          cleanEmail
+          cleanEmail,
+          data.user.user_metadata?.account_type
         );
-        if (onAuthSuccess) onAuthSuccess();
+        onAuthSuccess?.();
       }
     } catch (e: any) {
       setError(translateError(e?.message ?? ''));
@@ -469,12 +470,12 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
     setLoading(true);
     try {
       const redirectUrl = `${getBaseUrl()}/auth/callback`;
-      const { error } = await supabase.auth.resend({
+      const { error: resendErr } = await supabase.auth.resend({
         type: 'signup',
         email: verifEmail,
         options: { emailRedirectTo: redirectUrl },
       });
-      if (error) setError(translateError(error.message));
+      if (resendErr) setError(translateError(resendErr.message));
       else setSuccess(`Email renvoyé à ${verifEmail}`);
     } catch (e: any) {
       setError(translateError(e?.message ?? ''));
@@ -565,6 +566,11 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                   {success}
                 </div>
               )}
+              {error && (
+                <div className="mt-3 bg-red-950 border border-red-700 text-red-300 text-xs rounded-lg px-3 py-2">
+                  {error}
+                </div>
+              )}
             </div>
           )}
 
@@ -595,13 +601,39 @@ export function AuthPage({ onBack, onAuthSuccess }: AuthPageProps) {
                   <>
                     <div>
                       <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
-                        Nom du salon <span className="text-red-400">*</span>
+                        Vous êtes <span className="text-red-400">*</span>
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {([
+                          { id: 'salon', label: 'Salon', Icon: Store },
+                          { id: 'barber', label: 'Barber', Icon: Scissors },
+                        ] as const).map(({ id, label, Icon }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            onClick={() => setAccountType(id)}
+                            className={`flex items-center justify-center gap-2 py-3 rounded-xl border-2 font-bold text-sm transition ${
+                              accountType === id
+                                ? 'border-white bg-white text-black'
+                                : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                            }`}
+                          >
+                            <Icon className="w-4 h-4" /> {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-zinc-400 text-xs font-bold uppercase tracking-wider mb-1.5 block">
+                        {accountType === 'barber' ? 'Votre nom' : 'Nom du salon'}{' '}
+                        <span className="text-red-400">*</span>
                       </label>
                       <input
                         type="text"
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
-                        placeholder="Ex: Salon RELAX COUPE"
+                        placeholder={accountType === 'barber' ? 'Ex: Moussa Barber' : 'Ex: Salon RELAX COUPE'}
                         className="w-full bg-zinc-800 text-white rounded-xl px-4 py-3 border border-zinc-600 focus:outline-none focus:border-white transition"
                       />
                     </div>

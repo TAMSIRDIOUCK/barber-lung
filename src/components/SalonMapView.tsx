@@ -128,7 +128,7 @@ function SalonMapViewInner<T extends MapSalon>(
   const hasFitRouteRef = useRef(false);
 
   // ═══════════════════════════════════════════════════════
-  // INITIALISATION DE LA CARTE
+  // INITIALISATION DE LA CARTE (AVEC FIX SCROLL)
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -138,19 +138,37 @@ function SalonMapViewInner<T extends MapSalon>(
       zoom: 15,
       zoomControl: false,
       attributionControl: true,
+      scrollWheelZoom: false,
+      dragging: true,
+      touchZoom: true,
+      doubleClickZoom: true,
+      boxZoom: false,
     });
 
-    // 🔥 TUILES STYLE GOOGLE MAPS (rues, bâtiments, noms visibles)
-    // OpenStreetMap "standard" = celui utilisé par défaut par Google Maps
-    // en terme de rendu : bâtiments, rues nommées, POI, etc.
+    // 🔥 ACTIVE LE SCROLLWHEEL ZOOM UNIQUEMENT QUAND ON CLIQUE SUR LA CARTE
+    map.on('click', () => {
+      map.scrollWheelZoom.enable();
+    });
+    map.on('mouseout', () => {
+      map.scrollWheelZoom.disable();
+    });
 
-    // 1. Fond principal : rues, bâtiments, noms
+    // 🔥 FIX : cast `any` pour éviter l'erreur TypeScript sur `originalEvent`
+    map.on('mousedown touchstart', (e: any) => {
+      if (e.originalEvent) {
+        e.originalEvent.stopPropagation();
+      }
+    });
+
+    // Contrôles de zoom
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    // Tuiles
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
       maxZoom: 19,
     }).addTo(map);
 
-    // 2. Overlay : noms des rues et points d'intérêt plus visibles
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; CARTO',
       maxZoom: 19,
@@ -340,7 +358,6 @@ function SalonMapViewInner<T extends MapSalon>(
     if (routeOutlineRef.current) map.removeLayer(routeOutlineRef.current);
     if (routeLineRef.current) map.removeLayer(routeLineRef.current);
 
-    // 🔥 Contour noir épais (comme Google Maps)
     routeOutlineRef.current = L.polyline(routeCoords, {
       color: '#000000',
       weight: 12,
@@ -349,22 +366,17 @@ function SalonMapViewInner<T extends MapSalon>(
       lineJoin: 'round',
     }).addTo(map);
 
-    // 🔥 Trait bleu (comme Google Maps)
     routeLineRef.current = L.polyline(routeCoords, {
-      color: '#4285F4', // Bleu Google
+      color: '#4285F4',
       weight: 7,
       opacity: 1,
       lineCap: 'round',
       lineJoin: 'round',
     }).addTo(map);
 
-    // 🔥 Bonus : marqueur de départ (vert) et d'arrivée (rouge)
     if (routeCoords.length >= 2) {
-      const start = routeCoords[0];
       const end = routeCoords[routeCoords.length - 1];
 
-      // Marqueur départ (point bleu du user — déjà affiché)
-      // Marqueur arrivée (drapeau rouge)
       const endIcon = L.divIcon({
         html: `
           <div style="position:relative;display:flex;flex-direction:column;align-items:center;filter:drop-shadow(0 3px 5px rgba(0,0,0,0.5));">
@@ -384,7 +396,6 @@ function SalonMapViewInner<T extends MapSalon>(
         interactive: false,
       }).addTo(map);
 
-      // Cleanup automatique du marqueur d'arrivée
       setTimeout(() => {
         if (mapRef.current) {
           mapRef.current.removeLayer(endMarker);
@@ -401,7 +412,12 @@ function SalonMapViewInner<T extends MapSalon>(
   return (
     <div
       ref={containerRef}
-      style={{ height: height || '100%', width: '100%' }}
+      style={{ 
+        height: height || '100%', 
+        width: '100%',
+        touchAction: 'pan-x pan-y',
+        WebkitOverflowScrolling: 'touch',
+      }}
       className="bg-zinc-100"
     />
   );
