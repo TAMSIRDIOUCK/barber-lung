@@ -71,6 +71,16 @@ function getDeviceId(): string {
   return deviceId;
 }
 
+// 🔥 VÉRIFICATION DES 3 CONDITIONS OBLIGATOIRES
+function isSalonComplete(salon: any, posts: PortfolioPost[]): boolean {
+  if (!salon) return false;
+  const hasAvatar = !!salon.avatar_url && salon.avatar_url.trim() !== '';
+  const hasLocation = !!salon.latitude && !!salon.longitude && 
+                     salon.latitude !== 0 && salon.longitude !== 0;
+  const hasPost = posts && posts.length > 0;
+  return hasAvatar && hasLocation && hasPost;
+}
+
 export function SalonPublicProfile({
   salonId,
   initialPostId = null,
@@ -91,6 +101,9 @@ export function SalonPublicProfile({
   const [profileTab, setProfileTab] = useState<'grid' | 'reels'>('grid');
   const [following, setFollowing] = useState(initialFollowing);
   const [userLikes, setUserLikes] = useState<Set<string>>(new Set());
+  
+  // 🔥 État qui détermine si le profil doit être totalement masqué
+  const [hidden, setHidden] = useState(false);
 
   const [feedIndex, setFeedIndex] = useState<number | null>(null);
   const [feedSoundOn, setFeedSoundOn] = useState(false);
@@ -122,9 +135,11 @@ export function SalonPublicProfile({
   const savedProfileTabRef = useRef<'grid' | 'reels'>('grid');
 
   // ═══════════════════════════════════════════════════════
-  // 🔥 ENREGISTRER LES ÉCRANS DANS LA PILE (bas → haut)
+  // 🔥 ENREGISTRER LES ÉCRANS DANS LA PILE
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
+    if (hidden) return;
+
     const handles: { pop: () => void }[] = [];
 
     handles.push(navStack.push('SalonPublicProfile-Root', () => {
@@ -161,12 +176,13 @@ export function SalonPublicProfile({
     return () => {
       handles.forEach(h => h.pop());
     };
-  }, [feedIndex, showComments, showRouteMap, onBack]);
+  }, [feedIndex, showComments, showRouteMap, onBack, hidden]);
 
   // ═══════════════════════════════════════════════════════
-  // 🔥 RESTAURER SCROLL + ONGLET quand on revient d'un écran
+  // 🔥 RESTAURER SCROLL + ONGLET
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
+    if (hidden) return;
     if (feedIndex !== null || showRouteMap || showComments) return;
 
     if (savedProfileTabRef.current !== profileTab) {
@@ -183,7 +199,7 @@ export function SalonPublicProfile({
     }, 50);
 
     return () => clearTimeout(timer);
-  }, [feedIndex, showRouteMap, showComments]);
+  }, [feedIndex, showRouteMap, showComments, hidden]);
 
   // ═══════════════════════════════════════════════════════
   // CHARGEMENT INITIAL
@@ -206,7 +222,7 @@ export function SalonPublicProfile({
         }
 
         if (!profileData) {
-          setSalon(null);
+          setHidden(true);
           setLoading(false);
           return;
         }
@@ -262,13 +278,13 @@ export function SalonPublicProfile({
 
         if (cancelled) return;
 
-        setSalon({
+        const enrichedSalon = {
           ...profileData,
           slug: salonSlug,
           followers_count: followersCount,
           rating: rating,
           review_count: reviewCount,
-        });
+        };
 
         const { data: postsData } = await supabase
           .from('portfolio_posts')
@@ -314,6 +330,17 @@ export function SalonPublicProfile({
           comment_count: commentsCountMap[p.id] ?? (p.comment_count || 0),
         }));
 
+        // 🔥 VÉRIFICATION STRICTE : profil incomplet = masqué TOTALEMENT
+        const complete = isSalonComplete(enrichedSalon, postsWithRealCounts);
+        const isOwn = isAuthenticated && currentUserId === enrichedSalon.user_id;
+
+        if (!complete && !isOwn) {
+          setHidden(true);
+          setLoading(false);
+          return;
+        }
+
+        setSalon(enrichedSalon);
         setPosts(postsWithRealCounts);
 
         try {
@@ -337,6 +364,7 @@ export function SalonPublicProfile({
         ]);
       } catch (err) {
         console.error('❌ Erreur chargement profil:', err);
+        setHidden(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -345,9 +373,10 @@ export function SalonPublicProfile({
   }, [salonId, isAuthenticated, currentUserId]);
 
   // ═══════════════════════════════════════════════════════
-  // 🔥 AUTO-OUVRIR LE FEED + SAUVEGARDER POSITION
+  // 🔥 AUTO-OUVRIR LE FEED
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
+    if (hidden) return;
     if (!initialPostId || posts.length === 0) return;
 
     const index = posts.findIndex(p => p.id === initialPostId);
@@ -357,12 +386,13 @@ export function SalonPublicProfile({
       savedScrollYRef.current = window.scrollY;
       setFeedIndex(index);
     }
-  }, [initialPostId, posts]);
+  }, [initialPostId, posts, hidden]);
 
   // ═══════════════════════════════════════════════════════
   // SCROLLER VERS LE POST CIBLÉ
   // ═══════════════════════════════════════════════════════
   useEffect(() => {
+    if (hidden) return;
     if (feedIndex === null) return;
 
     const raf1 = requestAnimationFrame(() => {
@@ -386,7 +416,7 @@ export function SalonPublicProfile({
     });
 
     return () => cancelAnimationFrame(raf1);
-  }, [feedIndex]);
+  }, [feedIndex, hidden]);
 
   const loadUserLikes = useCallback(async () => {
     try {
@@ -587,16 +617,18 @@ export function SalonPublicProfile({
   }, []);
 
   useEffect(() => {
+    if (hidden) return;
     if (showComments && feedIndex !== null && posts[feedIndex]) {
       loadComments(posts[feedIndex].id);
     }
-  }, [showComments, feedIndex, posts, loadComments]);
+  }, [showComments, feedIndex, posts, loadComments, hidden]);
 
   useEffect(() => {
+    if (hidden) return;
     if (showComments) {
       setTimeout(() => commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
     }
-  }, [comments.length, showComments]);
+  }, [comments.length, showComments, hidden]);
 
   const handleAddComment = useCallback(async () => {
     const currentPost = feedIndex !== null ? posts[feedIndex] : null;
@@ -927,6 +959,13 @@ export function SalonPublicProfile({
     }
   };
 
+  // ═══════════════════════════════════════════════════════
+  // 🔥 AFFICHAGE : si hidden → null (écran totalement vide)
+  // ═══════════════════════════════════════════════════════
+  if (hidden || !salon) {
+    return null;
+  }
+
   if (loading) {
     return (
       <div translate="no" className="min-h-full bg-black flex items-center justify-center">
@@ -935,24 +974,9 @@ export function SalonPublicProfile({
     );
   }
 
-  if (!salon) {
-    return (
-      <div translate="no" className="min-h-full bg-black flex flex-col items-center justify-center gap-4 p-6">
-        <p className="text-zinc-400">Profil introuvable</p>
-        <button onClick={onBack} className="bg-white text-black px-4 py-2 rounded-full font-semibold">
-          Retour
-        </button>
-      </div>
-    );
-  }
-
   const displayName = salon.salon_name || salon.full_name || 'Salon';
   const hasValidSlug = typeof salon.slug === 'string' && salon.slug.trim().length > 0;
-  
-  // 🔥 Le bouton dépend UNIQUEMENT du slug et de la fonction onBook.
-  // L'abonnement est vérifié par le trigger SQL au moment du paiement.
   const canBook = hasValidSlug && !!onBook;
-  
   const isOwnProfile = isAuthenticated && currentUserId === salon.user_id;
   const hasActiveStories = stories.length > 0;
 
@@ -1096,7 +1120,6 @@ export function SalonPublicProfile({
             <h1 className="flex-1 font-bold text-base truncate">
               @{displayName.toLowerCase().replace(/\s/g, '_')}
             </h1>
-            {/* 🔥 Bouton réserver dans le feed : visible pour tous si le salon est actif */}
             {canBook && (
               <button
                 onClick={() => onBook?.(salon.slug)}
@@ -1385,7 +1408,7 @@ export function SalonPublicProfile({
   }
 
   // ═══════════════════════════════════════════════════════════
-  // 👤 PAGE PROFIL
+  // 👤 PAGE PROFIL (seulement si isComplete = true)
   // ═══════════════════════════════════════════════════════════
   return (
     <div translate="no" className="min-h-full bg-black text-white pb-20">
@@ -1550,7 +1573,6 @@ export function SalonPublicProfile({
         </div>
 
         <div className="space-y-2 mb-4">
-          {/* 🔥 Bouton Réserver : visible pour TOUS si le salon a un slug */}
           {canBook && (
             <button
               onClick={() => onBook?.(salon.slug)}

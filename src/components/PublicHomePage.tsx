@@ -1367,8 +1367,13 @@ export default function PublicHomePage({
         .order('created_at', { ascending: false })
         .limit(500);
 
+      // Seules les vraies publications photo actives comptent pour l'éligibilité.
+      // Une vidéo seule ne suffit pas pour rendre un profil visible sur la page publique.
       const portfolioMap: Record<string, PortfolioPost[]> = {};
       (portfolioData || []).forEach((p: any) => {
+        const hasPhoto = p.media_type === 'image' && typeof p.image_url === 'string' && p.image_url.trim().length > 0;
+        if (!hasPhoto || !p.profile_id) return;
+
         if (!portfolioMap[p.profile_id]) portfolioMap[p.profile_id] = [];
         if (portfolioMap[p.profile_id].length < 6) {
           portfolioMap[p.profile_id].push(p);
@@ -1408,9 +1413,39 @@ export default function PublicHomePage({
         };
       });
 
-      const followedSalons = salonsWithStats.filter(s => s.is_following || s.is_own_profile);
+      // Conditions obligatoires pour apparaître sur la page publique :
+      // 1) photo de profil ; 2) adresse + coordonnées GPS valides ;
+      // 3) au moins une photo publiée et active dans portfolio_posts.
+      const completeSalons = salonsWithStats.filter((salon) => {
+        const hasProfilePhoto =
+          typeof salon.avatar_url === 'string' && salon.avatar_url.trim().length > 0;
 
-      setSalons(salonsWithStats);
+        const latitude = Number(salon.latitude);
+        const longitude = Number(salon.longitude);
+        const hasLocation =
+          typeof salon.address === 'string' &&
+          salon.address.trim().length > 0 &&
+          Number.isFinite(latitude) &&
+          Number.isFinite(longitude) &&
+          latitude >= -90 &&
+          latitude <= 90 &&
+          longitude >= -180 &&
+          longitude <= 180 &&
+          !(latitude === 0 && longitude === 0);
+
+        const hasPublishedPhoto = (portfolioMap[salon.id] || []).some(
+          (post) =>
+            post.media_type === 'image' &&
+            typeof post.image_url === 'string' &&
+            post.image_url.trim().length > 0
+        );
+
+        return hasProfilePhoto && hasLocation && hasPublishedPhoto;
+      });
+
+      const followedSalons = completeSalons.filter(s => s.is_following || s.is_own_profile);
+
+      setSalons(completeSalons);
       setSubscriptionSalons(followedSalons);
       setStories(storiesWithViewCounts);
 
