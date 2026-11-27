@@ -79,6 +79,12 @@ export function SubscribePage({
 
   const isSubmittingRef = useRef(false);
 
+  // Garde toujours la dernière version de onSubscribed sans relancer le polling
+  const onSubscribedRef = useRef(onSubscribed);
+  useEffect(() => {
+    onSubscribedRef.current = onSubscribed;
+  }, [onSubscribed]);
+
   const isBarber = accountType === 'barber';
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
 
@@ -263,6 +269,9 @@ export function SubscribePage({
 
       usedPlanIds.add(dbPlan.id);
 
+      // ⚠️ Le prix affiché vient de BARBER_PLANS (front).
+      // Le serveur facture le prix de subscription_plans (base) :
+      // les deux doivent être identiques.
       result.push({
         ...dbPlan,
         name: cfg.name,
@@ -419,7 +428,7 @@ export function SubscribePage({
   }, [userId, accountType, profileLoaded, profileUserId, editingType]);
 
   // =====================================================
-  // 5. VÉRIFICATION DU PAIEMENT
+  // 5. VÉRIFICATION DU PAIEMENT (polling toutes les 5 s)
   // =====================================================
 
   useEffect(() => {
@@ -446,7 +455,7 @@ export function SubscribePage({
 
       if (data?.status === 'active') {
         clearInterval(interval);
-        onSubscribed();
+        onSubscribedRef.current();
       } else if (data?.status === 'cancelled') {
         clearInterval(interval);
         setError('Le paiement a été annulé.');
@@ -470,7 +479,7 @@ export function SubscribePage({
       cancelled = true;
       clearInterval(interval);
     };
-  }, [step, subscriptionId, userId, onSubscribed]);
+  }, [step, subscriptionId, userId]);
 
   // =====================================================
   // 6. ESSAI GRATUIT
@@ -505,6 +514,7 @@ export function SubscribePage({
         throw new Error('Vous avez déjà utilisé votre essai gratuit.');
       }
 
+      // Les dates sont de toute façon imposées par le trigger SQL côté serveur.
       const endDate = new Date(
         Date.now() + selectedPlan.duration_days * 24 * 60 * 60 * 1000
       ).toISOString();
@@ -531,7 +541,7 @@ export function SubscribePage({
         );
       }
 
-      onSubscribed();
+      onSubscribedRef.current();
     } catch (e: any) {
       setError(
         e.message ?? "Erreur lors de l'activation de l'essai gratuit."
@@ -641,7 +651,7 @@ export function SubscribePage({
         console.warn('Nettoyage pending :', cleanupErr.message);
       }
 
-      // Création abonnement.
+      // Création de l'abonnement.
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
         .insert({
@@ -658,7 +668,7 @@ export function SubscribePage({
       createdSubscriptionId = sub.id;
       setSubscriptionId(sub.id);
 
-      // Création paiement.
+      // Création du paiement.
       const { error: payErr } = await supabase
         .from('payments')
         .insert({
@@ -683,6 +693,7 @@ export function SubscribePage({
           ? 'wave_sn'
           : 'orange_money_sn';
 
+      // Le montant n'est plus envoyé : le serveur le relit en base.
       const response = await fetch(edgeFunctionUrl, {
         method: 'POST',
         headers: {
@@ -691,16 +702,12 @@ export function SubscribePage({
           apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
         body: JSON.stringify({
-          amount: selectedPlan.price,
           phone: internationalPhone,
           firstName,
           lastName,
           email: userEmail,
-          description: `Abonnement ${selectedPlan.name} - LA COUPE`,
           network,
           subscription_id: sub.id,
-          plan_id: selectedPlan.id,
-          account_type: accountType,
         }),
       });
 
@@ -727,19 +734,17 @@ export function SubscribePage({
         );
       }
 
-      if (
-        !data.checkout_url ||
-        typeof data.checkout_url !== 'string'
-      ) {
-        throw new Error(
-          data.error || "SasPay n'a pas retourné de lien de paiement."
-        );
-      }
-
+      // Succès : on attend la confirmation du webhook,
+      // avec ou sans lien de paiement.
       setStep('pending');
 
-      redirecting = true;
-      window.location.href = data.checkout_url;
+      if (
+        typeof data.checkout_url === 'string' &&
+        data.checkout_url
+      ) {
+        redirecting = true;
+        window.location.href = data.checkout_url;
+      }
     } catch (e: any) {
       console.error('[SASPAY] Erreur paiement :', e);
 
