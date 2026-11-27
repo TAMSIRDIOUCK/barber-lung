@@ -729,8 +729,18 @@ export function SubscribePage({
             ? data.error
             : JSON.stringify(data.error || data);
 
+        // Affiche la référence technique renvoyée par la fonction Edge
+        // pour retrouver facilement l'appel dans les logs Supabase.
+        const requestInfo = data.request_id
+          ? ` (Référence : ${data.request_id})`
+          : '';
+
+        const providerInfo = Array.isArray(data.provider_response_keys)
+          ? ` — Champs reçus de SasPay : ${data.provider_response_keys.join(', ')}`
+          : '';
+
         throw new Error(
-          serverError || `Erreur serveur (${response.status}).`
+          `${serverError || `Erreur serveur (${response.status}).`}${requestInfo}${providerInfo}`
         );
       }
 
