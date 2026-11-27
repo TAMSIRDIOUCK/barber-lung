@@ -1,0 +1,52 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@deno/installer-shell-setup@*": "0.3.4"
+  },
+  "jsr": {
+    "@deno/installer-shell-setup@0.3.4": {
+      "integrity": "48665d1a737d487cce6874bc97bba70a5aeffa7053aca3f60df93c6fab8963b4"
+    }
+  },
+  "redirects": {
+    "https://esm.sh/@supabase/supabase-js@2": "https://esm.sh/@supabase/supabase-js@2.119.2"
+  },
+  "remote": {
+    "https://esm.sh/@supabase/supabase-js@2.119.2": "e7729dec88af13b1d17953717407c06705450383f619c26efa6d542b8f73f8c3"
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@eslint/js@^9.9.1",
+        "npm:@stripe/stripe-js@^9.5.0",
+        "npm:@supabase/supabase-js@^2.108.1",
+        "npm:@types/leaflet@^1.9.22",
+        "npm:@types/node@^25.6.0",
+        "npm:@types/qrcode@^1.5.6",
+        "npm:@types/react-dom@^18.3.7",
+        "npm:@types/react@^18.3.28",
+        "npm:@vitejs/plugin-react@^4.7.0",
+        "npm:autoprefixer@^10.4.18",
+        "npm:eslint-plugin-react-hooks@^5.1.0-rc.0",
+        "npm:eslint-plugin-react-refresh@~0.4.11",
+        "npm:eslint@^9.9.1",
+        "npm:globals@^15.9.0",
+        "npm:html5-qrcode@^2.3.8",
+        "npm:jspdf@^4.2.1",
+        "npm:leaflet@^1.9.4",
+        "npm:lucide-react@0.545",
+        "npm:postcss@^8.4.35",
+        "npm:qrcode@^1.5.4",
+        "npm:react-dom@^18.3.1",
+        "npm:react-router-dom@^7.13.2",
+        "npm:react@^18.3.1",
+        "npm:recharts@^3.7.0",
+        "npm:tailwindcss@^3.4.1",
+        "npm:typescript-eslint@^8.3.0",
+        "npm:typescript@^5.5.3",
+        "npm:uuid@13",
+        "npm:vite@^5.4.2"
+      ]
+    }
+  }
+}

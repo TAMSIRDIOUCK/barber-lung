@@ -1,3 +1,4 @@
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const ALLOWED_ORIGINS = [
@@ -20,7 +21,11 @@ function corsFor(req: Request) {
   };
 }
 
-function jsonResponse(req: Request, body: unknown, status = 200) {
+function jsonResponse(
+  req: Request,
+  body: unknown,
+  status = 200,
+) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
@@ -28,6 +33,32 @@ function jsonResponse(req: Request, body: unknown, status = 200) {
       "Content-Type": "application/json",
     },
   });
+}
+
+function normalizePhone(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+
+  let phone = String(value).trim();
+
+  // Retirer espaces, tirets et parenthèses.
+  phone = phone.replace(/[\s\-().]/g, "");
+
+  // Convertir les préfixes internationaux.
+  if (phone.startsWith("00221")) {
+    phone = "+221" + phone.slice(5);
+  } else if (phone.startsWith("221") && !phone.startsWith("+221")) {
+    phone = "+" + phone;
+  } else if (/^(70|75|76|77|78)\d{7}$/.test(phone)) {
+    phone = "+221" + phone;
+  }
+
+  if (!/^\+221(70|75|76|77|78)\d{7}$/.test(phone)) {
+    return null;
+  }
+
+  return phone;
 }
 
 Deno.serve(async (req: Request) => {
@@ -48,7 +79,11 @@ Deno.serve(async (req: Request) => {
   }
 
   if (req.method !== "POST") {
-    return jsonResponse(req, { error: "Méthode non autorisée" }, 405);
+    return jsonResponse(
+      req,
+      { error: "Méthode non autorisée" },
+      405,
+    );
   }
 
   try {
@@ -57,20 +92,32 @@ Deno.serve(async (req: Request) => {
     const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const SASPAY_KEY = Deno.env.get("SASPAY_API_KEY");
 
-    if (!SUPABASE_URL || !ANON_KEY || !SERVICE_ROLE_KEY || !SASPAY_KEY) {
+    if (
+      !SUPABASE_URL ||
+      !ANON_KEY ||
+      !SERVICE_ROLE_KEY ||
+      !SASPAY_KEY
+    ) {
+      console.error("Configuration serveur incomplète");
+
       return jsonResponse(req, {
         error: "Configuration Supabase ou SASPAY incomplète",
       }, 500);
     }
 
+    // 1. Vérification de la session utilisateur.
     const authHeader = req.headers.get("Authorization");
 
     if (!authHeader?.startsWith("Bearer ")) {
-      return jsonResponse(req, { error: "Authentification requise" }, 401);
+      return jsonResponse(req, {
+        error: "Authentification requise",
+      }, 401);
     }
 
     const userClient = createClient(SUPABASE_URL, ANON_KEY, {
-      global: { headers: { Authorization: authHeader } },
+      global: {
+        headers: { Authorization: authHeader },
+      },
     });
 
     const {
@@ -79,50 +126,152 @@ Deno.serve(async (req: Request) => {
     } = await userClient.auth.getUser();
 
     if (authError || !user) {
-      return jsonResponse(req, { error: "Session invalide" }, 401);
+      console.error("Session utilisateur invalide");
+
+      return jsonResponse(req, {
+        error: "Session invalide",
+      }, 401);
     }
 
-    const body = await req.json();
+    // 2. Lecture du formulaire.
+    let body: Record<string, unknown>;
 
-    const {
-      phone,
-      firstName,
-      lastName,
-      email,
-      network,
-      subscription_id,
-    } = body;
+    try {
+      const receivedBody: unknown = await req.json();
 
-    if (!subscription_id || !phone || !network) {
-      return jsonResponse(req, { error: "Paramètres manquants" }, 400);
+      if (
+        !receivedBody ||
+        typeof receivedBody !== "object" ||
+        Array.isArray(receivedBody)
+      ) {
+        return jsonResponse(req, {
+          error: "Corps de requête invalide",
+        }, 400);
+      }
+
+      body = receivedBody as Record<string, unknown>;
+    } catch {
+      return jsonResponse(req, {
+        error: "Format JSON invalide",
+      }, 400);
     }
 
-    if (typeof subscription_id !== "string" || typeof phone !== "string") {
-      return jsonResponse(req, { error: "Paramètres invalides" }, 400);
+    const rawSubscriptionId = body.subscription_id;
+    const rawPhone = body.phone;
+    const rawNetwork = body.network;
+
+    // 3. Vérification et normalisation de l'identifiant.
+    const subscriptionId =
+      typeof rawSubscriptionId === "string"
+        ? rawSubscriptionId.trim()
+        : typeof rawSubscriptionId === "number"
+        ? String(rawSubscriptionId)
+        : "";
+
+    if (!subscriptionId) {
+      console.error("SASPAY diagnostic: subscription_id absent ou invalide", {
+        type: typeof rawSubscriptionId,
+        present: rawSubscriptionId !== undefined &&
+          rawSubscriptionId !== null,
+      });
+
+      return jsonResponse(req, {
+        error: "Identifiant d'abonnement invalide",
+        diagnostic: {
+          parameter: "subscription_id",
+          received_type: typeof rawSubscriptionId,
+        },
+      }, 400);
     }
 
-    if (!["wave_sn", "orange_money_sn"].includes(network)) {
-      return jsonResponse(req, { error: "Réseau invalide" }, 400);
+    // 4. Vérification et normalisation du téléphone.
+    const phone = normalizePhone(rawPhone);
+
+    if (!phone) {
+      console.error("SASPAY diagnostic: téléphone invalide", {
+        type: typeof rawPhone,
+        present: rawPhone !== undefined && rawPhone !== null,
+      });
+
+      return jsonResponse(req, {
+        error: "Numéro de téléphone invalide",
+        diagnostic: {
+          parameter: "phone",
+          received_type: typeof rawPhone,
+          expected: "Numéro sénégalais valide",
+        },
+      }, 400);
     }
 
-    if (!/^\+221(70|75|76|77|78)\d{7}$/.test(phone)) {
-      return jsonResponse(req, { error: "Numéro invalide" }, 400);
+    // 5. Vérification du réseau de paiement.
+    if (
+      typeof rawNetwork !== "string" ||
+      !["wave_sn", "orange_money_sn"].includes(rawNetwork)
+    ) {
+      console.error("SASPAY diagnostic: réseau invalide", {
+        received_type: typeof rawNetwork,
+        received_value: typeof rawNetwork === "string"
+          ? rawNetwork
+          : null,
+      });
+
+      return jsonResponse(req, {
+        error: "Réseau de paiement invalide",
+        diagnostic: {
+          parameter: "network",
+          received_type: typeof rawNetwork,
+          expected: ["wave_sn", "orange_money_sn"],
+        },
+      }, 400);
     }
 
+    const network = rawNetwork;
+
+    const firstName = typeof body.firstName === "string"
+      ? body.firstName.trim()
+      : "";
+
+    const lastName = typeof body.lastName === "string"
+      ? body.lastName.trim()
+      : "";
+
+    const email = typeof body.email === "string"
+      ? body.email.trim()
+      : "";
+
+    // 6. Connexion administrateur Supabase.
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
     });
 
+    // 7. Vérification de l'abonnement.
     const { data: sub, error: subError } = await admin
       .from("subscriptions")
       .select("id, user_id, status, plan_id")
-      .eq("id", subscription_id)
+      .eq("id", subscriptionId)
       .single();
 
-    if (subError || !sub || sub.user_id !== user.id || sub.status !== "pending") {
-      return jsonResponse(req, { error: "Abonnement invalide" }, 400);
+    if (
+      subError ||
+      !sub ||
+      sub.user_id !== user.id ||
+      sub.status !== "pending"
+    ) {
+      console.error("Abonnement invalide:", {
+        found: Boolean(sub),
+        status: sub?.status ?? null,
+        databaseError: subError?.message ?? null,
+      });
+
+      return jsonResponse(req, {
+        error: "Abonnement invalide ou non autorisé",
+      }, 400);
     }
 
+    // 8. Vérification de la formule.
     const { data: plan, error: planError } = await admin
       .from("subscription_plans")
       .select("name, price, is_free, is_active")
@@ -136,15 +285,25 @@ Deno.serve(async (req: Request) => {
       plan.is_free ||
       Number(plan.price) <= 0
     ) {
-      return jsonResponse(req, { error: "Formule indisponible" }, 400);
+      console.error("Formule indisponible:", {
+        databaseError: planError?.message ?? null,
+      });
+
+      return jsonResponse(req, {
+        error: "Formule indisponible",
+      }, 400);
     }
 
+    // 9. Vérification de l'adresse email.
     const customerEmail = user.email || email;
 
-    if (!customerEmail || typeof customerEmail !== "string") {
-      return jsonResponse(req, { error: "Email invalide" }, 400);
+    if (!customerEmail || !customerEmail.includes("@")) {
+      return jsonResponse(req, {
+        error: "Adresse email invalide",
+      }, 400);
     }
 
+    // 10. Préparation du paiement SASPAY.
     const payload = {
       amount: String(plan.price),
       currency: "XOF",
@@ -152,13 +311,21 @@ Deno.serve(async (req: Request) => {
       description: `Abonnement ${plan.name} - LA COUPE`,
       customer: {
         email: customerEmail,
-        first_name: firstName || "",
-        last_name: lastName || "",
+        first_name: firstName,
+        last_name: lastName,
         phone,
       },
       network,
     };
 
+    console.log("Initialisation paiement SASPAY:", {
+      subscription_id: sub.id,
+      amount: plan.price,
+      network,
+      phone_valid: true,
+    });
+
+    // 11. Appel de l'API SASPAY.
     const res = await fetch(
       "https://api.saspay.me/api/v1/payments/softpay/",
       {
@@ -173,6 +340,7 @@ Deno.serve(async (req: Request) => {
     );
 
     const responseText = await res.text();
+
     let data: Record<string, any> = {};
 
     try {
@@ -185,20 +353,29 @@ Deno.serve(async (req: Request) => {
 
     if (!res.ok) {
       console.error("SASPAY error:", data);
+
       return jsonResponse(req, {
         error: "SASPAY a refusé le paiement",
         details: data,
       }, 502);
     }
 
+    // 12. Récupération du lien de paiement.
     const checkoutUrl =
-      data.checkout_url ?? data.payment_url ?? data.url ?? null;
+      data.checkout_url ??
+      data.payment_url ??
+      data.url ??
+      null;
 
     const providerRef =
-      data.id ?? data.payment_id ?? data.reference ?? null;
+      data.id ??
+      data.payment_id ??
+      data.reference ??
+      null;
 
-    if (!checkoutUrl) {
-      console.error("SASPAY sans URL:", data);
+    if (!checkoutUrl || typeof checkoutUrl !== "string") {
+      console.error("SASPAY sans URL de paiement:", data);
+
       return jsonResponse(req, {
         error: "SASPAY n'a pas retourné de lien de paiement",
       }, 502);
@@ -208,32 +385,46 @@ Deno.serve(async (req: Request) => {
 
     try {
       safeUrl = new URL(checkoutUrl);
-      if (safeUrl.protocol !== "https:") throw new Error("URL non sécurisée");
+
+      if (safeUrl.protocol !== "https:") {
+        throw new Error("URL non sécurisée");
+      }
     } catch {
-      return jsonResponse(req, { error: "URL de paiement invalide" }, 502);
+      return jsonResponse(req, {
+        error: "URL de paiement invalide",
+      }, 502);
     }
 
+    // 13. Enregistrement de la référence du paiement.
     if (providerRef) {
       const { error: updateError } = await admin
         .from("payments")
-        .update({ provider_reference: String(providerRef) })
+        .update({
+          provider_reference: String(providerRef),
+        })
         .eq("subscription_id", sub.id)
         .eq("status", "pending");
 
       if (updateError) {
-        console.error("Erreur référence paiement:", updateError);
+        console.error(
+          "Erreur enregistrement référence paiement:",
+          updateError.message,
+        );
       }
     }
 
+    // 14. Réponse au frontend.
     return jsonResponse(req, {
       success: true,
       checkout_url: safeUrl.toString(),
-      payment_reference: providerRef ? String(providerRef) : null,
+      payment_reference: providerRef
+        ? String(providerRef)
+        : null,
       amount: plan.price,
       currency: "XOF",
     });
   } catch (error) {
-    console.error("Erreur SASPAY:", error);
+    console.error("Erreur interne SASPAY:", error);
 
     return jsonResponse(req, {
       error: "Erreur interne lors de la création du paiement",
