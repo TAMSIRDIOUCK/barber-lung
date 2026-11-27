@@ -3,29 +3,58 @@
   <head>
     <meta charset="UTF-8" />
 
+    <!-- ✅ Vérification Google Search Console -->
+    <meta name="google-site-verification" content="ROmFiYwR6_GVXdCvSV67liZHNmqhFsQvOUCs-Hv0NyE" />
+
     <!-- 🖼️ Favicon & icônes -->
     <link rel="icon" type="image/png" href="/logo.png" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    
-    <!-- ⛔ LIGNE SUPPRIMÉE : Le fichier manifest.webmanifest causait une erreur de syntaxe dans la console -->
-    <!-- <link rel="manifest" href="/manifest.webmanifest" /> -->
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#10b981" />
-    <meta name="description" content="Logiciel de gestion pour salons de coiffure" />
 
-    <title>LE COUPE POS Software</title>
+    <!-- 🔎 SEO -->
+    <title>LA COUPE – Réservation et gestion de salon de coiffure à Dakar</title>
+    <meta name="description" content="LA COUPE : réservez votre coupe chez un barber ou un salon de coiffure à Dakar, et gérez vos services, revenus et réservations en ligne." />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://lecoupe.store/" />
 
-    <!-- 🛡️ Bloque Google Translate -->
+    <!-- 📣 Aperçu lors du partage (WhatsApp, Facebook, etc.) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="LA COUPE" />
+    <meta property="og:locale" content="fr_FR" />
+    <meta property="og:title" content="LA COUPE – Salon de coiffure et barber à Dakar" />
+    <meta property="og:description" content="Réservez votre coupe en ligne à Dakar." />
+    <meta property="og:url" content="https://lecoupe.store/" />
+    <meta property="og:image" content="https://lecoupe.store/logo.png" />
+    <meta name="twitter:card" content="summary" />
+
+    <!-- 🧭 Données structurées : nom du site dans Google -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "LA COUPE",
+      "alternateName": ["LE COUPE", "lecoupe.store"],
+      "url": "https://lecoupe.store/"
+    }
+    </script>
+
+    <!-- 🛡️ Bloque Google Translate (n'empêche pas l'indexation) -->
     <meta name="google" content="notranslate" />
     <meta http-equiv="Content-Language" content="fr" />
-    <meta name="robots" content="notranslate" />
   </head>
   <body class="notranslate" translate="no">
     <div id="root"></div>
 
-    <!-- 🛡️ Script défensif anti-Google-Translate (garde celui d'avant) -->
+    <!-- Texte lu par Google si le JavaScript n'est pas exécuté -->
+    <noscript>
+      <h1>LA COUPE – Salon de coiffure et barber à Dakar</h1>
+      <p>Réservez votre coupe en ligne chez un barber ou un salon de coiffure à Dakar, Sénégal. Gérez vos services, revenus, dépenses et réservations clients.</p>
+    </noscript>
+
+    <!-- 🛡️ Script défensif anti-Google-Translate -->
     <script>
       (function () {
         function cleanTranslatedClass() {
