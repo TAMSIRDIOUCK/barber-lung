@@ -1,5 +1,3 @@
-
-// src/components/Subscribepage.tsx
 import { useState, useEffect, useRef } from 'react';
 import {
   Scissors,
@@ -55,8 +53,6 @@ export function SubscribePage({
 }: SubscribePageProps) {
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
-  // Identifie l'utilisateur auquel appartient le profil chargé.
-  // Empêche d'afficher l'ancien compte pendant une reconnexion Google.
   const [profileUserId, setProfileUserId] = useState<string | null>(null);
   const [plansContext, setPlansContext] = useState<string | null>(null);
 
@@ -88,8 +84,9 @@ export function SubscribePage({
 
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 
+  // SASPAY
   const edgeFunctionUrl = supabaseUrl
-    ? `${supabaseUrl}/functions/v1/initiate-payment`
+    ? `${supabaseUrl.replace(/\/$/, '')}/functions/v1/initiate-saspay-payment`
     : null;
 
   // =====================================================
@@ -99,8 +96,6 @@ export function SubscribePage({
   useEffect(() => {
     let cancelled = false;
 
-    // Dès que l'identité change (notamment après OAuth Google),
-    // masquer tout ce qui appartenait à la session précédente.
     setProfileLoaded(false);
     setProfileUserId(null);
     setTypeError('');
@@ -111,17 +106,20 @@ export function SubscribePage({
     setPlansContext(null);
     setSelectedPlan(null);
     setHasUsedFreeTrial(false);
+    setSubscriptionId(null);
     setStep('choose');
 
     const loadAccountType = async () => {
       try {
-        // SOURCE DE VÉRITÉ : relire systématiquement le profil dans Supabase.
-        // Ne jamais utiliser accountTypeFromApp ici : cette prop peut être
-        // momentanément ancienne pendant le changement de session / OAuth.
-        const { data: authData, error: authError } = await supabase.auth.getUser();
+        const { data: authData, error: authError } =
+          await supabase.auth.getUser();
+
         if (authError) throw authError;
+
         if (!authData.user || authData.user.id !== userId) {
-          throw new Error('La session utilisateur a changé ou a expiré. Reconnectez-vous.');
+          throw new Error(
+            'La session utilisateur a changé ou a expiré. Reconnectez-vous.'
+          );
         }
 
         const { data, error: profErr } = await supabase
@@ -135,29 +133,32 @@ export function SubscribePage({
 
         const type = data?.account_type;
         const typeConfirmed = data?.account_type_confirmed === true;
+
         const validType: AccountType | null =
           typeConfirmed && (type === 'barber' || type === 'salon')
             ? type
             : null;
+
         setAccountType(validType);
         setProfileUserId(userId);
-        console.log('[SUBSCRIBE] PROFIL SUPABASE :', {
-          userId,
-          accountType: validType ?? 'À CONFIRMER',
-          confirmed: typeConfirmed,
-        });
       } catch (err) {
         if (cancelled) return;
+
         console.error('[SUBSCRIBE] Erreur lecture profil :', err);
+
         setAccountType(null);
         setProfileUserId(userId);
-        setTypeError("Impossible de vérifier votre type de compte. Vérifiez votre connexion puis réessayez.");
+
+        setTypeError(
+          'Impossible de vérifier votre type de compte. Vérifiez votre connexion puis réessayez.'
+        );
       } finally {
         if (!cancelled) setProfileLoaded(true);
       }
     };
 
     loadAccountType();
+
     return () => {
       cancelled = true;
     };
@@ -168,11 +169,12 @@ export function SubscribePage({
   // =====================================================
 
   const handleChooseType = async (type: AccountType) => {
+    if (savingType) return;
+
     setTypeError('');
     setSavingType(true);
 
     try {
-      // Masquer immédiatement les anciennes offres
       setPlans([]);
       setPlansLoaded(false);
       setSelectedPlan(null);
@@ -182,7 +184,10 @@ export function SubscribePage({
 
       const { data: updated, error: updErr } = await supabase
         .from('profiles_v3')
-        .update({ account_type: type, account_type_confirmed: true })
+        .update({
+          account_type: type,
+          account_type_confirmed: true,
+        })
         .eq('id', userId)
         .select('id')
         .maybeSingle();
@@ -216,7 +221,6 @@ export function SubscribePage({
           (e.message ?? 'erreur inconnue')
       );
 
-      // Recharger le type réellement enregistré
       const { data } = await supabase
         .from('profiles_v3')
         .select('account_type, account_type_confirmed')
@@ -237,27 +241,26 @@ export function SubscribePage({
   };
 
   // =====================================================
-  // 3. CONSTRUCTION DES OFFRES BARBER UNIQUEMENT
+  // 3. CONSTRUCTION DES OFFRES BARBER
   // =====================================================
 
   const buildBarberPlans = (dbPlans: Plan[]): Plan[] => {
-    const paidPlans = dbPlans.filter(
-      (plan) => !plan.is_free
-    );
+    const paidPlans = dbPlans.filter((plan) => !plan.is_free);
 
     const result: Plan[] = [];
-
     const usedPlanIds = new Set<number>();
 
     for (const cfg of BARBER_PLANS) {
-      const dbPlan = paidPlans.find((plan) =>
-        !usedPlanIds.has(plan.id) &&
-        (cfg.durationMonths >= 12
-          ? plan.duration_days >= 365
-          : plan.duration_days < 365)
+      const dbPlan = paidPlans.find(
+        (plan) =>
+          !usedPlanIds.has(plan.id) &&
+          (cfg.durationMonths >= 12
+            ? plan.duration_days >= 365
+            : plan.duration_days < 365)
       );
 
       if (!dbPlan) continue;
+
       usedPlanIds.add(dbPlan.id);
 
       result.push({
@@ -275,18 +278,23 @@ export function SubscribePage({
   };
 
   // =====================================================
-  // 4. CHARGEMENT STRICT DES ABONNEMENTS
+  // 4. CHARGEMENT DES ABONNEMENTS
   // =====================================================
 
   useEffect(() => {
-    if (!profileLoaded || profileUserId !== userId || !accountType || editingType) return;
+    if (
+      !profileLoaded ||
+      profileUserId !== userId ||
+      !accountType ||
+      editingType
+    ) {
+      return;
+    }
 
     let cancelled = false;
-
     const currentType = accountType;
 
     const loadPlans = async () => {
-      // Toujours vider les anciennes offres
       setPlans([]);
       setFreeTrialPlan(null);
       setSelectedPlan(null);
@@ -295,7 +303,6 @@ export function SubscribePage({
       setPlansError('');
 
       try {
-        // Essai gratuit réservé à la gestion Salon
         if (currentType === 'salon') {
           const { data: trial, error: trialError } = await supabase
             .from('subscriptions')
@@ -305,7 +312,6 @@ export function SubscribePage({
             .maybeSingle();
 
           if (cancelled) return;
-
           if (trialError) throw trialError;
 
           setHasUsedFreeTrial(!!trial);
@@ -313,7 +319,6 @@ export function SubscribePage({
           setHasUsedFreeTrial(false);
         }
 
-        // Récupération exclusivement du type sélectionné
         const { data, error: fetchError } = await supabase
           .from('subscription_plans')
           .select('*')
@@ -322,22 +327,8 @@ export function SubscribePage({
           .order('price');
 
         if (cancelled) return;
-
         if (fetchError) throw fetchError;
 
-        console.log('[SUBSCRIBE] OFFRES RETOURNÉES :', {
-          userId,
-          accountType: currentType,
-          plans: (data ?? []).map((plan: any) => ({
-            id: plan.id,
-            name: plan.name,
-            account_type: plan.account_type,
-            is_free: plan.is_free,
-            price: plan.price,
-          })),
-        });
-
-        // Protection supplémentaire contre les offres mélangées
         const filteredPlans = ((data ?? []) as Plan[]).filter(
           (plan) => plan.account_type === currentType
         );
@@ -355,21 +346,26 @@ export function SubscribePage({
         }
 
         if (currentType === 'salon') {
-          // L'essai gratuit reste disponible, mais n'est pas mélangé
-          // aux deux abonnements payants affichés.
-          const trialPlan = filteredPlans.find(
-            (plan) => plan.is_free === true
-          ) ?? null;
+          const trialPlan =
+            filteredPlans.find((plan) => plan.is_free === true) ?? null;
+
           setFreeTrialPlan(trialPlan);
 
           const paidSalonPlans = filteredPlans
-            .filter((plan) => !plan.is_free && !/barber/i.test(plan.name))
-            .sort((a, b) => a.duration_days - b.duration_days || a.price - b.price);
+            .filter(
+              (plan) =>
+                !plan.is_free && !/barber/i.test(plan.name)
+            )
+            .sort(
+              (a, b) =>
+                a.duration_days - b.duration_days ||
+                a.price - b.price
+            );
 
-          // Une seule formule mensuelle et une seule formule annuelle.
           const monthlyPlan = paidSalonPlans.find(
             (plan) => plan.duration_days < 365
           );
+
           const annualPlan = paidSalonPlans.find(
             (plan) => plan.duration_days >= 365
           );
@@ -392,10 +388,10 @@ export function SubscribePage({
         }
 
         if (!cancelled) {
-          // Barrière finale : le résultat est associé à cet utilisateur ET à ce type.
           const safePlans = finalPlans
             .filter((plan) => plan.account_type === currentType)
             .slice(0, 2);
+
           setPlans(safePlans);
           setPlansContext(`${userId}:${currentType}`);
         }
@@ -404,15 +400,14 @@ export function SubscribePage({
           setPlans([]);
           setFreeTrialPlan(null);
           setPlansContext(`${userId}:${currentType}`);
+
           setPlansError(
             'Erreur de chargement des abonnements : ' +
               (e.message ?? 'erreur inconnue')
           );
         }
       } finally {
-        if (!cancelled) {
-          setPlansLoaded(true);
-        }
+        if (!cancelled) setPlansLoaded(true);
       }
     };
 
@@ -431,32 +426,51 @@ export function SubscribePage({
     if (step !== 'pending' || !subscriptionId) return;
 
     let attempts = 0;
+    let cancelled = false;
 
     const interval = setInterval(async () => {
       attempts++;
 
-      const { data } = await supabase
+      const { data, error: statusError } = await supabase
         .from('subscriptions')
         .select('status')
         .eq('id', subscriptionId)
+        .eq('user_id', userId)
         .maybeSingle();
+
+      if (cancelled) return;
+
+      if (statusError) {
+        console.error('[SASPAY] Vérification :', statusError);
+      }
 
       if (data?.status === 'active') {
         clearInterval(interval);
         onSubscribed();
-      } else if (attempts > 20) {
+      } else if (data?.status === 'cancelled') {
+        clearInterval(interval);
+        setError('Le paiement a été annulé.');
+        setStep('choose');
+        setLoading(false);
+        isSubmittingRef.current = false;
+      } else if (attempts >= 60) {
         clearInterval(interval);
 
         setError(
-          'Le paiement prend plus de temps que prévu. Vérifiez votre compte ou contactez le support.'
+          'Le paiement prend plus de temps que prévu. Vérifiez votre compte avant de réessayer.'
         );
 
         setStep('choose');
+        setLoading(false);
+        isSubmittingRef.current = false;
       }
     }, 5000);
 
-    return () => clearInterval(interval);
-  }, [step, subscriptionId, onSubscribed]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [step, subscriptionId, userId, onSubscribed]);
 
   // =====================================================
   // 6. ESSAI GRATUIT
@@ -478,20 +492,21 @@ export function SubscribePage({
     setLoading(true);
 
     try {
-      const { data: existingTrial } = await supabase
+      const { data: existingTrial, error: trialCheckError } = await supabase
         .from('subscriptions')
         .select('id')
         .eq('user_id', userId)
         .eq('is_free_trial', true)
         .maybeSingle();
 
+      if (trialCheckError) throw trialCheckError;
+
       if (existingTrial) {
         throw new Error('Vous avez déjà utilisé votre essai gratuit.');
       }
 
       const endDate = new Date(
-        Date.now() +
-          selectedPlan.duration_days * 24 * 60 * 60 * 1000
+        Date.now() + selectedPlan.duration_days * 24 * 60 * 60 * 1000
       ).toISOString();
 
       const { error: subErr } = await supabase
@@ -528,7 +543,7 @@ export function SubscribePage({
   };
 
   // =====================================================
-  // 7. PAIEMENT
+  // 7. PAIEMENT SASPAY
   // =====================================================
 
   const handlePay = async () => {
@@ -539,21 +554,29 @@ export function SubscribePage({
       return;
     }
 
-    // Vérification stricte du type de compte
     if (
       !accountType ||
       selectedPlan.account_type !== accountType
     ) {
-      setError(
-        'Cette offre ne correspond pas à votre type de compte.'
-      );
+      setError('Cette offre ne correspond pas à votre type de compte.');
       return;
     }
 
-    if (!edgeFunctionUrl || !supabaseUrl) {
-      setError(
-        "Configuration manquante : VITE_SUPABASE_URL n'est pas défini dans votre fichier .env."
-      );
+    if (!edgeFunctionUrl) {
+      setError('Configuration Supabase manquante.');
+      return;
+    }
+
+    const cleanPhone = phone.replace(/\s/g, '').replace(/-/g, '');
+
+    const internationalPhone = cleanPhone.startsWith('+221')
+      ? cleanPhone
+      : cleanPhone.startsWith('221')
+        ? `+${cleanPhone}`
+        : `+221${cleanPhone}`;
+
+    if (!/^\+221(70|75|76|77|78)\d{7}$/.test(internationalPhone)) {
+      setError('Numéro sénégalais invalide. Exemple : +221770000000.');
       return;
     }
 
@@ -562,17 +585,52 @@ export function SubscribePage({
     setLoading(true);
 
     let redirecting = false;
+    let createdSubscriptionId: number | null = null;
 
     try {
       const {
         data: { session },
+        error: sessionError,
       } = await supabase.auth.getSession();
 
+      if (sessionError) throw sessionError;
+
       if (!session?.access_token) {
-        throw new Error('Session expirée. Merci de vous reconnecter.');
+        throw new Error('Session expirée. Reconnectez-vous.');
       }
 
-      // Annuler les anciens paiements en attente
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles_v3')
+        .select('account_type, account_type_confirmed')
+        .eq('id', userId)
+        .single();
+
+      if (profileError) throw profileError;
+
+      if (
+        profile.account_type !== accountType ||
+        profile.account_type_confirmed !== true
+      ) {
+        throw new Error('Votre type de compte a changé. Rechargez la page.');
+      }
+
+      const { data: dbPlan, error: planError } = await supabase
+        .from('subscription_plans')
+        .select('id, account_type, is_active, is_free')
+        .eq('id', selectedPlan.id)
+        .single();
+
+      if (planError) throw planError;
+
+      if (
+        dbPlan.account_type !== accountType ||
+        dbPlan.is_active !== true ||
+        dbPlan.is_free === true
+      ) {
+        throw new Error('Cette formule est indisponible.');
+      }
+
+      // Nettoyage des anciennes tentatives en attente.
       const { error: cleanupErr } = await supabase
         .from('subscriptions')
         .update({ status: 'cancelled' })
@@ -583,113 +641,127 @@ export function SubscribePage({
         console.warn('Nettoyage pending :', cleanupErr.message);
       }
 
+      // Création abonnement.
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
-        .insert([
-          {
-            user_id: userId,
-            plan_id: selectedPlan.id,
-            status: 'pending',
-            is_free_trial: false,
-          },
-        ])
+        .insert({
+          user_id: userId,
+          plan_id: selectedPlan.id,
+          status: 'pending',
+          is_free_trial: false,
+        })
         .select()
         .single();
 
-      if (subErr) {
-        throw new Error(
-          'Erreur création abonnement : ' + subErr.message
-        );
-      }
+      if (subErr) throw subErr;
 
-      const { error: payErr } = await supabase
-        .from('payments')
-        .insert([
-          {
-            user_id: userId,
-            subscription_id: sub.id,
-            amount: selectedPlan.price,
-            provider: paymentMethod,
-            status: 'pending',
-          },
-        ]);
-
-      if (payErr) {
-        throw new Error(
-          'Erreur création paiement : ' + payErr.message
-        );
-      }
-
+      createdSubscriptionId = sub.id;
       setSubscriptionId(sub.id);
 
-      const appUrl = window.location.origin;
-      const token = session.access_token;
+      // Création paiement.
+      const { error: payErr } = await supabase
+        .from('payments')
+        .insert({
+          user_id: userId,
+          subscription_id: sub.id,
+          amount: selectedPlan.price,
+          provider: paymentMethod,
+          status: 'pending',
+        });
 
-      const returnUrl =
-        `${appUrl}/auth/callback#payment_success?subscription_id=${sub.id}&token=${token}`;
+      if (payErr) throw payErr;
 
-      const cancelUrl =
-        `${appUrl}/auth/callback#payment_cancelled?subscription_id=${sub.id}&token=${token}`;
+      const nameParts = (userFullName || 'Client LA COUPE')
+        .trim()
+        .split(/\s+/);
 
-      const callbackUrl =
-        `${supabaseUrl}/functions/v1/ipn?subscription_id=${sub.id}`;
+      const firstName = nameParts[0] || 'Client';
+      const lastName = nameParts.slice(1).join(' ') || 'LA COUPE';
 
-      const res = await fetch(edgeFunctionUrl, {
+      const network =
+        paymentMethod === 'wave'
+          ? 'wave_sn'
+          : 'orange_money_sn';
+
+      const response = await fetch(edgeFunctionUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${session.access_token}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
         },
         body: JSON.stringify({
+          amount: selectedPlan.price,
+          phone: internationalPhone,
+          firstName,
+          lastName,
+          email: userEmail,
+          description: `Abonnement ${selectedPlan.name} - LA COUPE`,
+          network,
           subscription_id: sub.id,
           plan_id: selectedPlan.id,
           account_type: accountType,
-          plan_key: selectedPlan.planKey,
-          duration_months: selectedPlan.durationMonths,
-          amount: selectedPlan.price,
-          phone: phone.replace(/\s/g, '').replace(/^\+221/, ''),
-          method: paymentMethod,
-          customer_name: salonName,
-          customer_email: userEmail,
-          description: `Abonnement ${selectedPlan.name} - ID:${sub.id}`,
-          plan_name: selectedPlan.name,
-          return_url: returnUrl,
-          cancel_url: cancelUrl,
-          callback_url: callbackUrl,
         }),
       });
 
-      const data = await res.json();
+      const responseText = await response.text();
 
-      if (!res.ok) {
+      let data: any;
+
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
         throw new Error(
-          data.error || `Erreur ${res.status}: ${res.statusText}`
+          `Réponse invalide du serveur SasPay : ${responseText.slice(0, 300)}`
         );
       }
 
-      if (data.success && data.invoice_url) {
-        redirecting = true;
-        setStep('pending');
-        window.location.href = data.invoice_url;
-        return;
-      }
+      if (!response.ok) {
+        const serverError =
+          typeof data.error === 'string'
+            ? data.error
+            : JSON.stringify(data.error || data);
 
-      throw new Error(
-        data.error || "Erreur lors de l'initiation du paiement."
-      );
-    } catch (e: any) {
-      console.error('Erreur paiement :', e);
+        throw new Error(
+          serverError || `Erreur serveur (${response.status}).`
+        );
+      }
 
       if (
-        e.message?.includes('fetch') ||
-        e.message?.includes('network')
+        !data.checkout_url ||
+        typeof data.checkout_url !== 'string'
       ) {
-        setError(
-          'Impossible de contacter le serveur de paiement. Vérifiez votre connexion internet.'
+        throw new Error(
+          data.error || "SasPay n'a pas retourné de lien de paiement."
         );
-      } else {
-        setError(e.message || 'Erreur lors du paiement.');
       }
+
+      setStep('pending');
+
+      redirecting = true;
+      window.location.href = data.checkout_url;
+    } catch (e: any) {
+      console.error('[SASPAY] Erreur paiement :', e);
+
+      if (createdSubscriptionId !== null) {
+        const { error: cancelError } = await supabase
+          .from('subscriptions')
+          .update({ status: 'cancelled' })
+          .eq('id', createdSubscriptionId)
+          .eq('user_id', userId);
+
+        if (cancelError) {
+          console.error(
+            '[SASPAY] Impossible d’annuler la tentative :',
+            cancelError
+          );
+        }
+      }
+
+      setError(
+        e.message ||
+          "Une erreur est survenue lors de l'initiation du paiement."
+      );
 
       setStep('choose');
     } finally {
@@ -827,13 +899,15 @@ export function SubscribePage({
   }
 
   // =====================================================
-  // 11. PROTECTION FINALE DES OFFRES
+  // 11. PROTECTION DES OFFRES
   // =====================================================
 
-  // Dernière barrière : aucune offre d'un autre type ne peut être rendue.
   const expectedPlansContext = `${userId}:${accountType}`;
+
   const visiblePlans =
-    plansContext === expectedPlansContext && profileLoaded && profileUserId === userId
+    plansContext === expectedPlansContext &&
+    profileLoaded &&
+    profileUserId === userId
       ? plans
           .filter(
             (plan) =>
@@ -887,9 +961,7 @@ export function SubscribePage({
           </div>
         )}
 
-        {/* =================================================
-            ÉTAPE 1 : CHOIX DE L'ABONNEMENT
-        ================================================= */}
+        {/* ÉTAPE 1 : CHOIX ABONNEMENT */}
 
         {step === 'choose' && (
           <div>
@@ -925,52 +997,52 @@ export function SubscribePage({
               </div>
             )}
 
-            {accountType === 'salon' && freeTrialPlan?.account_type === 'salon' && (
-              <button
-                type="button"
-                onClick={() => {
-                  if (hasUsedFreeTrial) return;
-                  setSelectedPlan(freeTrialPlan);
-                  setError('');
-                }}
-                disabled={hasUsedFreeTrial || loading}
-                className={`w-full mb-5 rounded-2xl border-2 p-4 text-left transition ${
-                  selectedPlan?.is_free
-                    ? 'border-white bg-zinc-900'
-                    : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
-                } ${hasUsedFreeTrial ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-white font-bold">Essai gratuit</p>
-                    <p className="text-zinc-400 text-xs mt-1">
-                      {freeTrialPlan.duration_days} jours pour découvrir LA COUPE
-                    </p>
-                  </div>
-                  <span className="text-green-400 font-bold text-sm">
-                    {hasUsedFreeTrial ? 'DÉJÀ UTILISÉ' : 'GRATUIT'}
-                  </span>
-                </div>
-              </button>
-            )}
+            {accountType === 'salon' &&
+              freeTrialPlan?.account_type === 'salon' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (hasUsedFreeTrial) return;
+                    setSelectedPlan(freeTrialPlan);
+                    setError('');
+                  }}
+                  disabled={hasUsedFreeTrial || loading}
+                  className={`w-full mb-5 rounded-2xl border-2 p-4 text-left transition ${
+                    selectedPlan?.is_free
+                      ? 'border-white bg-zinc-900'
+                      : 'border-zinc-700 bg-zinc-900 hover:border-zinc-500'
+                  } ${hasUsedFreeTrial ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-white font-bold">Essai gratuit</p>
+                      <p className="text-zinc-400 text-xs mt-1">
+                        {freeTrialPlan.duration_days} jours pour découvrir LA COUPE
+                      </p>
+                    </div>
 
-            {plansContext === expectedPlansContext && plansLoaded && visiblePlans.length > 0 && (
-              <div className="mb-4 text-xs text-zinc-500 uppercase tracking-widest">
-                {isBarber
-                  ? 'Offres réservées aux Barbers'
-                  : 'Offres réservées aux Salons'}
-              </div>
-            )}
+                    <span className="text-green-400 font-bold text-sm">
+                      {hasUsedFreeTrial ? 'DÉJÀ UTILISÉ' : 'GRATUIT'}
+                    </span>
+                  </div>
+                </button>
+              )}
+
+            {plansContext === expectedPlansContext &&
+              plansLoaded &&
+              visiblePlans.length > 0 && (
+                <div className="mb-4 text-xs text-zinc-500 uppercase tracking-widest">
+                  {isBarber
+                    ? 'Offres réservées aux Barbers'
+                    : 'Offres réservées aux Salons'}
+                </div>
+              )}
 
             <div className="grid gap-4 mb-8">
-
               {visiblePlans.map((plan) => {
                 const isAnnual = plan.duration_days >= 365;
                 const isFree = plan.is_free === true;
                 const isSelected = selectedPlan?.id === plan.id;
-
-                const isFreeDisabled =
-                  isFree && hasUsedFreeTrial;
 
                 const savings = getSavingsPercent(plan);
 
@@ -978,20 +1050,13 @@ export function SubscribePage({
                   <button
                     key={plan.id}
                     onClick={() => {
-                      if (!isFreeDisabled) {
-                        setSelectedPlan(plan);
-                        setError('');
-                      }
+                      setSelectedPlan(plan);
+                      setError('');
                     }}
-                    disabled={isFreeDisabled}
                     className={`relative w-full bg-zinc-900 border-2 rounded-2xl p-6 text-left transition ${
                       isSelected
                         ? 'border-white'
                         : 'border-zinc-700 hover:border-zinc-500'
-                    } ${
-                      isFreeDisabled
-                        ? 'opacity-50 cursor-not-allowed'
-                        : ''
                     }`}
                   >
                     {plan.badge ? (
@@ -1003,18 +1068,6 @@ export function SubscribePage({
                         ÉCONOMIE {savings}%
                       </span>
                     ) : null}
-
-                    {isFree && !hasUsedFreeTrial && (
-                      <span className="absolute top-4 right-4 bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-full">
-                        OFFERT
-                      </span>
-                    )}
-
-                    {isFree && hasUsedFreeTrial && (
-                      <span className="absolute top-4 right-4 bg-zinc-700 text-zinc-400 text-xs font-bold px-3 py-1 rounded-full">
-                        DÉJÀ UTILISÉ
-                      </span>
-                    )}
 
                     <div className="flex items-center gap-3 mb-1">
                       <div
@@ -1035,9 +1088,7 @@ export function SubscribePage({
                     </div>
 
                     <p className="text-3xl font-bold text-white ml-8">
-                      {isFree
-                        ? 'GRATUIT'
-                        : formatCFA(plan.price)}
+                      {isFree ? 'GRATUIT' : formatCFA(plan.price)}
                     </p>
 
                     <p className="text-zinc-400 text-sm ml-8 mt-0.5">
@@ -1051,12 +1102,6 @@ export function SubscribePage({
                     {isBarber && isAnnual && plan.badge && (
                       <p className="text-green-400 text-xs ml-8 mt-2">
                         ✨ {plan.badge}
-                      </p>
-                    )}
-
-                    {isFree && !hasUsedFreeTrial && (
-                      <p className="text-green-400 text-xs ml-8 mt-2">
-                        ✨ Offre valable une seule fois
                       </p>
                     )}
                   </button>
@@ -1102,9 +1147,7 @@ export function SubscribePage({
           </div>
         )}
 
-        {/* =================================================
-            ÉTAPE 2 : PAIEMENT
-        ================================================= */}
+        {/* ÉTAPE 2 : PAIEMENT SASPAY */}
 
         {step === 'pay' && selectedPlan && (
           <div>
@@ -1116,7 +1159,7 @@ export function SubscribePage({
             </button>
 
             <h2 className="text-white text-2xl font-bold mb-2">
-              Paiement
+              Paiement sécurisé
             </h2>
 
             <p className="text-zinc-400 text-sm mb-8">
@@ -1204,24 +1247,26 @@ export function SubscribePage({
 
             <button
               onClick={handlePay}
-              disabled={loading}
+              disabled={loading || !paymentMethod || !phone.trim()}
               className="w-full bg-white text-black py-4 rounded-xl font-bold text-base hover:bg-zinc-200 transition disabled:opacity-50"
             >
               {loading ? (
                 <span className="flex items-center justify-center gap-2">
                   <Loader className="w-4 h-4 animate-spin" />
-                  Traitement...
+                  Connexion à SasPay...
                 </span>
               ) : (
                 `Payer ${formatCFA(selectedPlan.price)}`
               )}
             </button>
+
+            <p className="text-center text-zinc-600 text-xs mt-4">
+              Paiement sécurisé avec SasPay
+            </p>
           </div>
         )}
 
-        {/* =================================================
-            ÉTAPE 3 : PAIEMENT EN ATTENTE
-        ================================================= */}
+        {/* ÉTAPE 3 : PAIEMENT EN ATTENTE */}
 
         {step === 'pending' && selectedPlan && (
           <div className="text-center py-12">
@@ -1236,7 +1281,7 @@ export function SubscribePage({
             <p className="text-zinc-400 text-sm leading-relaxed max-w-sm mx-auto">
               Confirmez le paiement sur votre téléphone.
               <br />
-              Cette page se mettra à jour automatiquement une fois le paiement validé.
+              Votre abonnement sera activé après confirmation du paiement par le serveur.
             </p>
 
             <div className="mt-8 bg-zinc-900 border border-zinc-700 rounded-xl px-6 py-4 inline-block">
@@ -1258,9 +1303,7 @@ export function SubscribePage({
         )}
       </div>
 
-      {/* =================================================
-          NAVIGATION INFÉRIEURE
-      ================================================= */}
+      {/* NAVIGATION INFÉRIEURE */}
 
       <nav className="fixed bottom-0 left-0 right-0 z-40 bg-black border-t border-zinc-800 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-around px-2 py-2 max-w-lg mx-auto">
