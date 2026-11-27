@@ -78,6 +78,7 @@ export function SubscribePage({
   const [hasUsedFreeTrial, setHasUsedFreeTrial] = useState(false);
 
   const isSubmittingRef = useRef(false);
+  const restoringPendingRef = useRef(false);
 
   // Garde toujours la dernière version de onSubscribed sans relancer le polling
   const onSubscribedRef = useRef(onSubscribed);
@@ -428,52 +429,111 @@ export function SubscribePage({
   }, [userId, accountType, profileLoaded, profileUserId, editingType]);
 
   // =====================================================
-  // 5. VÉRIFICATION DU PAIEMENT (polling toutes les 5 s)
+  // 5. REPRISE ET VÉRIFICATION DU PAIEMENT
   // =====================================================
 
+  // Après un retour depuis Wave ou une réouverture de l'application,
+  // retrouver la dernière tentative en attente pour cet utilisateur.
+  useEffect(() => {
+    if (
+      !profileLoaded ||
+      profileUserId !== userId ||
+      !accountType ||
+      subscriptionId !== null ||
+      restoringPendingRef.current
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    restoringPendingRef.current = true;
+
+    const restorePendingSubscription = async () => {
+      try {
+        const { data: pendingSub, error: pendingError } = await supabase
+          .from('subscriptions')
+          .select('id, plan_id')
+          .eq('user_id', userId)
+          .eq('status', 'pending')
+          .eq('is_free_trial', false)
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (pendingError) throw pendingError;
+        if (!pendingSub || cancelled) return;
+
+        const { data: plan, error: planError } = await supabase
+          .from('subscription_plans')
+          .select('*')
+          .eq('id', pendingSub.plan_id)
+          .maybeSingle();
+
+        if (planError) throw planError;
+        if (!plan || plan.account_type !== accountType || cancelled) return;
+
+        setSelectedPlan(plan as Plan);
+        setSubscriptionId(Number(pendingSub.id));
+        setStep('pending');
+        setError('');
+        console.info('[SASPAY] Tentative de paiement en attente restaurée.');
+      } catch (restoreError) {
+        console.error('[SASPAY] Erreur reprise paiement :', restoreError);
+      } finally {
+        restoringPendingRef.current = false;
+      }
+    };
+
+    restorePendingSubscription();
+
+    return () => {
+      cancelled = true;
+      restoringPendingRef.current = false;
+    };
+  }, [profileLoaded, profileUserId, userId, accountType, subscriptionId]);
+
+  // Vérifier immédiatement, puis toutes les 5 secondes.
+  // Ne jamais quitter l'écran d'attente automatiquement : un débit peut
+  // avoir eu lieu même si le webhook met du temps à confirmer le paiement.
   useEffect(() => {
     if (step !== 'pending' || !subscriptionId) return;
 
-    let attempts = 0;
     let cancelled = false;
+    let checking = false;
 
-    const interval = setInterval(async () => {
-      attempts++;
+    const checkSubscription = async () => {
+      if (checking) return;
+      checking = true;
 
-      const { data, error: statusError } = await supabase
-        .from('subscriptions')
-        .select('status')
-        .eq('id', subscriptionId)
-        .eq('user_id', userId)
-        .maybeSingle();
+      try {
+        const { data, error: statusError } = await supabase
+          .from('subscriptions')
+          .select('status')
+          .eq('id', subscriptionId)
+          .eq('user_id', userId)
+          .maybeSingle();
 
-      if (cancelled) return;
+        if (cancelled) return;
+        if (statusError) throw statusError;
 
-      if (statusError) {
-        console.error('[SASPAY] Vérification :', statusError);
+        if (data?.status === 'active') {
+          onSubscribedRef.current();
+        } else if (data?.status === 'cancelled') {
+          setError(
+            'Cette tentative est indiquée comme annulée. Si Wave a débité votre compte, ne payez pas une deuxième fois et contactez le support pour vérifier la transaction.'
+          );
+        }
+      } catch (statusError) {
+        if (!cancelled) {
+          console.error('[SASPAY] Vérification abonnement :', statusError);
+        }
+      } finally {
+        checking = false;
       }
+    };
 
-      if (data?.status === 'active') {
-        clearInterval(interval);
-        onSubscribedRef.current();
-      } else if (data?.status === 'cancelled') {
-        clearInterval(interval);
-        setError('Le paiement a été annulé.');
-        setStep('choose');
-        setLoading(false);
-        isSubmittingRef.current = false;
-      } else if (attempts >= 60) {
-        clearInterval(interval);
-
-        setError(
-          'Le paiement prend plus de temps que prévu. Vérifiez votre compte avant de réessayer.'
-        );
-
-        setStep('choose');
-        setLoading(false);
-        isSubmittingRef.current = false;
-      }
-    }, 5000);
+    checkSubscription();
+    const interval = setInterval(checkSubscription, 5000);
 
     return () => {
       cancelled = true;
@@ -640,16 +700,8 @@ export function SubscribePage({
         throw new Error('Cette formule est indisponible.');
       }
 
-      // Nettoyage des anciennes tentatives en attente.
-      const { error: cleanupErr } = await supabase
-        .from('subscriptions')
-        .update({ status: 'cancelled' })
-        .eq('user_id', userId)
-        .eq('status', 'pending');
-
-      if (cleanupErr) {
-        console.warn('Nettoyage pending :', cleanupErr.message);
-      }
+      // Ne pas annuler les anciennes tentatives en attente :
+      // un paiement Wave peut avoir été débité sans retour immédiat du webhook.
 
       // Création de l'abonnement.
       const { data: sub, error: subErr } = await supabase
@@ -744,41 +796,72 @@ export function SubscribePage({
         );
       }
 
-      // Succès : on attend la confirmation du webhook,
-      // avec ou sans lien de paiement.
+      // La transaction reste en attente jusqu'à confirmation serveur.
       setStep('pending');
+      setSubscriptionId(sub.id);
 
-      if (
-        typeof data.checkout_url === 'string' &&
-        data.checkout_url
-      ) {
-        redirecting = true;
-        window.location.href = data.checkout_url;
+      const checkoutUrl =
+        typeof data.checkout_url === 'string'
+          ? data.checkout_url.trim()
+          : '';
+
+      if (checkoutUrl) {
+        let parsedCheckoutUrl: URL | null = null;
+
+        try {
+          parsedCheckoutUrl = new URL(checkoutUrl);
+        } catch {
+          parsedCheckoutUrl = null;
+        }
+
+        const isExampleDomain = Boolean(
+          parsedCheckoutUrl &&
+          (parsedCheckoutUrl.hostname === 'example.com' ||
+            parsedCheckoutUrl.hostname.endsWith('.example.com'))
+        );
+
+        if (
+          !parsedCheckoutUrl ||
+          parsedCheckoutUrl.protocol !== 'https:' ||
+          isExampleDomain
+        ) {
+          console.error('[SASPAY] URL de redirection refusée :', {
+            validUrl: Boolean(parsedCheckoutUrl),
+            protocol: parsedCheckoutUrl?.protocol ?? null,
+            host: parsedCheckoutUrl?.hostname ?? null,
+          });
+
+          setError(
+            'Le paiement a été initié, mais SASPAY a renvoyé une adresse de redirection invalide. Ne payez pas une deuxième fois. Votre abonnement reste en attente de confirmation.'
+          );
+        } else {
+          redirecting = true;
+          window.location.assign(parsedCheckoutUrl.toString());
+        }
+      } else {
+        setError(
+          'Demande de paiement envoyée. Confirmez sur votre téléphone si une notification est affichée. Nous attendons la confirmation SASPAY.'
+        );
       }
     } catch (e: any) {
       console.error('[SASPAY] Erreur paiement :', e);
 
+      // IMPORTANT : ne jamais annuler automatiquement l'abonnement ici.
+      // L'appel SASPAY a pu être accepté et le compte Wave débité même si
+      // le navigateur n'a pas reçu une réponse exploitable.
       if (createdSubscriptionId !== null) {
-        const { error: cancelError } = await supabase
-          .from('subscriptions')
-          .update({ status: 'cancelled' })
-          .eq('id', createdSubscriptionId)
-          .eq('user_id', userId);
-
-        if (cancelError) {
-          console.error(
-            '[SASPAY] Impossible d’annuler la tentative :',
-            cancelError
-          );
-        }
+        setSubscriptionId(createdSubscriptionId);
+        setStep('pending');
+        setError(
+          `${e.message || 'Réponse incertaine du service de paiement.'} Si votre compte Wave a été débité, ne recommencez pas le paiement. Nous conservons cette tentative pour vérification.`
+        );
+      } else {
+        setError(
+          e.message ||
+            "Une erreur est survenue avant la création du paiement."
+        );
+        setStep('choose');
       }
-
-      setError(
-        e.message ||
-          "Une erreur est survenue lors de l'initiation du paiement."
-      );
-
-      setStep('choose');
     } finally {
       if (!redirecting) {
         setLoading(false);
@@ -1256,7 +1339,7 @@ export function SubscribePage({
               </span>
 
               <span className="text-white text-xl font-bold">
-                {formatCFA(selectedPlan.price)}
+                {selectedPlan ? formatCFA(selectedPlan.price) : 'En vérification'}
               </span>
             </div>
 
@@ -1283,7 +1366,7 @@ export function SubscribePage({
 
         {/* ÉTAPE 3 : PAIEMENT EN ATTENTE */}
 
-        {step === 'pending' && selectedPlan && (
+        {step === 'pending' && (
           <div className="text-center py-12">
             <div className="w-16 h-16 bg-yellow-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
               <Loader className="w-8 h-8 text-yellow-400 animate-spin" />
@@ -1294,9 +1377,9 @@ export function SubscribePage({
             </h2>
 
             <p className="text-zinc-400 text-sm leading-relaxed max-w-sm mx-auto">
-              Confirmez le paiement sur votre téléphone.
+              Si vous avez déjà confirmé le paiement, ne recommencez pas.
               <br />
-              Votre abonnement sera activé après confirmation du paiement par le serveur.
+              Votre abonnement sera activé après confirmation du paiement par SASPAY.
             </p>
 
             <div className="mt-8 bg-zinc-900 border border-zinc-700 rounded-xl px-6 py-4 inline-block">
@@ -1305,7 +1388,7 @@ export function SubscribePage({
               </p>
 
               <p className="text-white text-2xl font-bold">
-                {formatCFA(selectedPlan.price)}
+                {selectedPlan ? formatCFA(selectedPlan.price) : 'En vérification'}
               </p>
             </div>
 

@@ -360,43 +360,51 @@ Deno.serve(async (req: Request) => {
       }, 502);
     }
 
-    // 12. Récupération du lien de paiement.
-    const checkoutUrl =
+    // 12. Normaliser la réponse SASPAY.
+    // Certaines réponses placent les informations dans data.data.
+    const paymentData =
+      data.data && typeof data.data === "object" &&
+        !Array.isArray(data.data)
+        ? data.data as Record<string, any>
+        : data;
+
+    const checkoutUrlValue =
+      paymentData.checkout_url ??
+      paymentData.payment_url ??
+      paymentData.url ??
       data.checkout_url ??
       data.payment_url ??
       data.url ??
       null;
 
     const providerRef =
+      paymentData.id ??
+      paymentData.payment_id ??
+      paymentData.reference ??
       data.id ??
       data.payment_id ??
       data.reference ??
       null;
 
-    if (!checkoutUrl || typeof checkoutUrl !== "string") {
-      console.error("SASPAY sans URL de paiement:", data);
+    const providerStatus =
+      paymentData.status ??
+      data.status ??
+      "PENDING";
 
-      return jsonResponse(req, {
-        error: "SASPAY n'a pas retourné de lien de paiement",
-      }, 502);
-    }
+    console.log("SASPAY réponse analysée:", {
+      httpStatus: res.status,
+      hasCheckoutUrl: typeof checkoutUrlValue === "string" &&
+        checkoutUrlValue.trim().length > 0,
+      hasProviderReference: providerRef !== null &&
+        providerRef !== undefined,
+      providerStatus: String(providerStatus),
+      responseKeys: Object.keys(data),
+      paymentDataKeys: Object.keys(paymentData),
+    });
 
-    let safeUrl: URL;
-
-    try {
-      safeUrl = new URL(checkoutUrl);
-
-      if (safeUrl.protocol !== "https:") {
-        throw new Error("URL non sécurisée");
-      }
-    } catch {
-      return jsonResponse(req, {
-        error: "URL de paiement invalide",
-      }, 502);
-    }
-
-    // 13. Enregistrement de la référence du paiement.
-    if (providerRef) {
+    // 13. Enregistrer la référence SASPAY dès qu'elle existe,
+    // même si SASPAY utilise le push téléphone sans URL.
+    if (providerRef !== null && providerRef !== undefined) {
       const { error: updateError } = await admin
         .from("payments")
         .update({
@@ -413,16 +421,74 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // 14. Réponse au frontend.
-    return jsonResponse(req, {
-      success: true,
-      checkout_url: safeUrl.toString(),
-      payment_reference: providerRef
-        ? String(providerRef)
-        : null,
-      amount: plan.price,
-      currency: "XOF",
+    // 14. Si SASPAY fournit un lien, le valider et le renvoyer.
+    if (
+      typeof checkoutUrlValue === "string" &&
+      checkoutUrlValue.trim().length > 0
+    ) {
+      let safeUrl: URL;
+
+      try {
+        safeUrl = new URL(checkoutUrlValue.trim());
+
+        if (safeUrl.protocol !== "https:") {
+          throw new Error("URL non sécurisée");
+        }
+      } catch {
+        return jsonResponse(req, {
+          error: "SASPAY a retourné une URL de paiement invalide",
+          payment_reference: providerRef
+            ? String(providerRef)
+            : null,
+        }, 502);
+      }
+
+      return jsonResponse(req, {
+        success: true,
+        checkout_url: safeUrl.toString(),
+        payment_reference: providerRef
+          ? String(providerRef)
+          : null,
+        payment_status: String(providerStatus),
+        payment_pending: true,
+        amount: plan.price,
+        currency: "XOF",
+      });
+    }
+
+    // 15. SASPAY peut envoyer une demande de paiement directement
+    // sur le téléphone. Dans ce cas, l'absence d'URL n'est pas
+    // une erreur si une référence de paiement a été créée.
+    if (providerRef !== null && providerRef !== undefined) {
+      return jsonResponse(req, {
+        success: true,
+        checkout_url: null,
+        payment_reference: String(providerRef),
+        payment_status: String(providerStatus),
+        payment_pending: true,
+        message: "Demande de paiement envoyée. Vérifiez votre téléphone pour confirmer.",
+        amount: plan.price,
+        currency: "XOF",
+      });
+    }
+
+    // Sans URL ni référence, impossible de confirmer que SASPAY
+    // a créé une transaction : retourner un diagnostic exploitable.
+    console.error("SASPAY sans lien ni référence de paiement:", {
+      httpStatus: res.status,
+      responseKeys: Object.keys(data),
+      paymentDataKeys: Object.keys(paymentData),
+      providerMessage: paymentData.message ?? data.message ?? null,
     });
+
+    return jsonResponse(req, {
+      error: "SASPAY n'a retourné ni lien ni référence de paiement",
+      diagnostic: {
+        http_status: res.status,
+        response_keys: Object.keys(data),
+        payment_data_keys: Object.keys(paymentData),
+      },
+    }, 502);
   } catch (error) {
     console.error("Erreur interne SASPAY:", error);
 
