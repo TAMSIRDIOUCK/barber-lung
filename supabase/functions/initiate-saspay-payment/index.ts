@@ -431,8 +431,14 @@ Deno.serve(async (req: Request) => {
       try {
         safeUrl = new URL(checkoutUrlValue.trim());
 
-        if (safeUrl.protocol !== "https:") {
-          throw new Error("URL non sécurisée");
+        console.log("DIAGNOSTIC SASPAY - DOMAINE :", safeUrl.hostname);
+
+        if (
+          safeUrl.protocol !== "https:" ||
+          safeUrl.hostname === "example.com" ||
+          safeUrl.hostname.endsWith(".example.com")
+        ) {
+          throw new Error("URL de paiement non valide");
         }
       } catch {
         return jsonResponse(req, {
