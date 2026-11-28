@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useRef } from 'react';
 import {
   Scissors,
@@ -19,7 +18,6 @@ import {
 } from './AccountTypeSelect';
 
 type NavPage = 'publicHome' | 'home' | 'revenue' | 'expenses' | 'bookings';
-type SubscriptionId = string | number;
 
 interface Plan {
   id: number;
@@ -56,8 +54,8 @@ export function SubscribePage({
   const [accountType, setAccountType] = useState<AccountType | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profileUserId, setProfileUserId] = useState<string | null>(null);
-
   const [plansContext, setPlansContext] = useState<string | null>(null);
+
   const [editingType, setEditingType] = useState(false);
   const [savingType, setSavingType] = useState(false);
   const [typeError, setTypeError] = useState('');
@@ -76,16 +74,14 @@ export function SubscribePage({
   const [step, setStep] = useState<'choose' | 'pay' | 'pending'>('choose');
 
   const [error, setError] = useState('');
-  const [subscriptionId, setSubscriptionId] =
-    useState<SubscriptionId | null>(null);
-
+  const [subscriptionId, setSubscriptionId] = useState<number | null>(null);
   const [hasUsedFreeTrial, setHasUsedFreeTrial] = useState(false);
 
   const isSubmittingRef = useRef(false);
   const restoringPendingRef = useRef(false);
-  const activatedSubscriptionRef = useRef<SubscriptionId | null>(null);
-  const onSubscribedRef = useRef(onSubscribed);
 
+  // Garde toujours la dernière version de onSubscribed sans relancer le polling
+  const onSubscribedRef = useRef(onSubscribed);
   useEffect(() => {
     onSubscribedRef.current = onSubscribed;
   }, [onSubscribed]);
@@ -93,16 +89,15 @@ export function SubscribePage({
   const isBarber = accountType === 'barber';
   const salonName = userFullName?.trim() || userEmail || 'LA COUPE';
 
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as
-    | string
-    | undefined;
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 
+  // SASPAY
   const edgeFunctionUrl = supabaseUrl
     ? `${supabaseUrl.replace(/\/$/, '')}/functions/v1/initiate-saspay-payment`
     : null;
 
   // =====================================================
-  // 1. CHARGEMENT DU PROFIL
+  // 1. CHARGEMENT DU TYPE DE COMPTE
   // =====================================================
 
   useEffect(() => {
@@ -120,7 +115,6 @@ export function SubscribePage({
     setHasUsedFreeTrial(false);
     setSubscriptionId(null);
     setStep('choose');
-    setError('');
 
     const loadAccountType = async () => {
       try {
@@ -145,10 +139,10 @@ export function SubscribePage({
         if (cancelled) return;
 
         const type = data?.account_type;
-        const confirmed = data?.account_type_confirmed === true;
+        const typeConfirmed = data?.account_type_confirmed === true;
 
         const validType: AccountType | null =
-          confirmed && (type === 'barber' || type === 'salon')
+          typeConfirmed && (type === 'barber' || type === 'salon')
             ? type
             : null;
 
@@ -224,9 +218,10 @@ export function SubscribePage({
 
       setAccountType(type);
       setEditingType(false);
+
       onAccountTypeChosen?.(type);
     } catch (e: any) {
-      console.error('[SUBSCRIBE] Erreur changement de compte :', e);
+      console.error('Erreur changement de compte :', e);
 
       setTypeError(
         "Impossible d'enregistrer votre choix : " +
@@ -240,10 +235,10 @@ export function SubscribePage({
         .maybeSingle();
 
       const actualType = data?.account_type;
-      const confirmed = data?.account_type_confirmed === true;
+      const actualConfirmed = data?.account_type_confirmed === true;
 
       setAccountType(
-        confirmed && (actualType === 'barber' || actualType === 'salon')
+        actualConfirmed && (actualType === 'barber' || actualType === 'salon')
           ? actualType
           : null
       );
@@ -258,6 +253,7 @@ export function SubscribePage({
 
   const buildBarberPlans = (dbPlans: Plan[]): Plan[] => {
     const paidPlans = dbPlans.filter((plan) => !plan.is_free);
+
     const result: Plan[] = [];
     const usedPlanIds = new Set<number>();
 
@@ -274,6 +270,9 @@ export function SubscribePage({
 
       usedPlanIds.add(dbPlan.id);
 
+      // ⚠️ Le prix affiché vient de BARBER_PLANS (front).
+      // Le serveur facture le prix de subscription_plans (base) :
+      // les deux doivent être identiques.
       result.push({
         ...dbPlan,
         name: cfg.name,
@@ -289,7 +288,7 @@ export function SubscribePage({
   };
 
   // =====================================================
-  // 4. CHARGEMENT DES OFFRES
+  // 4. CHARGEMENT DES ABONNEMENTS
   // =====================================================
 
   useEffect(() => {
@@ -320,7 +319,6 @@ export function SubscribePage({
             .select('id')
             .eq('user_id', userId)
             .eq('is_free_trial', true)
-            .limit(1)
             .maybeSingle();
 
           if (cancelled) return;
@@ -365,11 +363,13 @@ export function SubscribePage({
 
           const paidSalonPlans = filteredPlans
             .filter(
-              (plan) => !plan.is_free && !/barber/i.test(plan.name)
+              (plan) =>
+                !plan.is_free && !/barber/i.test(plan.name)
             )
             .sort(
               (a, b) =>
-                a.duration_days - b.duration_days || a.price - b.price
+                a.duration_days - b.duration_days ||
+                a.price - b.price
             );
 
           const monthlyPlan = paidSalonPlans.find(
@@ -398,12 +398,11 @@ export function SubscribePage({
         }
 
         if (!cancelled) {
-          setPlans(
-            finalPlans
-              .filter((plan) => plan.account_type === currentType)
-              .slice(0, 2)
-          );
+          const safePlans = finalPlans
+            .filter((plan) => plan.account_type === currentType)
+            .slice(0, 2);
 
+          setPlans(safePlans);
           setPlansContext(`${userId}:${currentType}`);
         }
       } catch (e: any) {
@@ -430,14 +429,11 @@ export function SubscribePage({
   }, [userId, accountType, profileLoaded, profileUserId, editingType]);
 
   // =====================================================
-  // 5. RESTAURATION D'UNE TENTATIVE EXISTANTE
+  // 5. REPRISE ET VÉRIFICATION DU PAIEMENT
   // =====================================================
 
-  // IMPORTANT :
-  // Cette fonction ne lance JAMAIS un nouveau paiement.
-  // Elle retrouve uniquement une tentative déjà enregistrée.
-  // Elle exige également qu'une ligne existe dans payments.
-
+  // Après un retour depuis Wave ou une réouverture de l'application,
+  // retrouver la dernière tentative en attente pour cet utilisateur.
   useEffect(() => {
     if (
       !profileLoaded ||
@@ -467,35 +463,6 @@ export function SubscribePage({
         if (pendingError) throw pendingError;
         if (!pendingSub || cancelled) return;
 
-        // Vérifier qu'un paiement existe réellement pour cet abonnement.
-        const { data: payment, error: paymentError } = await supabase
-          .from('payments')
-          .select('id, status, provider')
-          .eq('subscription_id', pendingSub.id)
-          .order('id', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        if (paymentError) throw paymentError;
-        if (!payment || cancelled) {
-          console.info(
-            '[SASPAY] Aucune ligne de paiement associée. Aucune reprise.'
-          );
-          return;
-        }
-
-        const paymentStatus = String(payment.status || '').toLowerCase();
-
-        // On ne restaure que les paiements encore en attente
-        // ou déjà confirmés mais dont l'abonnement attend encore l'activation.
-        if (!['pending', 'completed'].includes(paymentStatus)) {
-          console.info(
-            '[SASPAY] Ancienne tentative non restaurée. Statut :',
-            paymentStatus
-          );
-          return;
-        }
-
         const { data: plan, error: planError } = await supabase
           .from('subscription_plans')
           .select('*')
@@ -506,18 +473,12 @@ export function SubscribePage({
         if (!plan || plan.account_type !== accountType || cancelled) return;
 
         setSelectedPlan(plan as Plan);
-        setSubscriptionId(pendingSub.id as SubscriptionId);
+        setSubscriptionId(Number(pendingSub.id));
         setStep('pending');
         setError('');
-
-        console.info(
-          '[SASPAY] Ancienne tentative restaurée. Aucun nouveau paiement lancé.'
-        );
+        console.info('[SASPAY] Tentative de paiement en attente restaurée.');
       } catch (restoreError) {
-        console.error(
-          '[SASPAY] Erreur restauration paiement :',
-          restoreError
-        );
+        console.error('[SASPAY] Erreur reprise paiement :', restoreError);
       } finally {
         restoringPendingRef.current = false;
       }
@@ -531,12 +492,11 @@ export function SubscribePage({
     };
   }, [profileLoaded, profileUserId, userId, accountType, subscriptionId]);
 
-  // =====================================================
-  // 6. VÉRIFICATION DU STATUT
-  // =====================================================
-
+  // Vérifier immédiatement, puis toutes les 5 secondes.
+  // Ne jamais quitter l'écran d'attente automatiquement : un débit peut
+  // avoir eu lieu même si le webhook met du temps à confirmer le paiement.
   useEffect(() => {
-    if (step !== 'pending' || subscriptionId === null) return;
+    if (step !== 'pending' || !subscriptionId) return;
 
     let cancelled = false;
     let checking = false;
@@ -557,26 +517,15 @@ export function SubscribePage({
         if (statusError) throw statusError;
 
         if (data?.status === 'active') {
-          // Éviter d'appeler onSubscribed toutes les 5 secondes.
-          if (activatedSubscriptionRef.current !== subscriptionId) {
-            activatedSubscriptionRef.current = subscriptionId;
-            console.info('[SASPAY] Abonnement confirmé et actif.');
-            onSubscribedRef.current();
-          }
-        } else if (
-          data?.status === 'cancelled' ||
-          data?.status === 'failed'
-        ) {
+          onSubscribedRef.current();
+        } else if (data?.status === 'cancelled') {
           setError(
-            'Cette tentative est indiquée comme annulée ou échouée. Si Wave a débité votre compte, ne payez pas une deuxième fois. Contactez le support pour vérifier la transaction.'
+            'Cette tentative est indiquée comme annulée. Si Wave a débité votre compte, ne payez pas une deuxième fois et contactez le support pour vérifier la transaction.'
           );
         }
       } catch (statusError) {
         if (!cancelled) {
-          console.error(
-            '[SASPAY] Erreur vérification abonnement :',
-            statusError
-          );
+          console.error('[SASPAY] Vérification abonnement :', statusError);
         }
       } finally {
         checking = false;
@@ -584,7 +533,6 @@ export function SubscribePage({
     };
 
     checkSubscription();
-
     const interval = setInterval(checkSubscription, 5000);
 
     return () => {
@@ -594,7 +542,7 @@ export function SubscribePage({
   }, [step, subscriptionId, userId]);
 
   // =====================================================
-  // 7. ESSAI GRATUIT
+  // 6. ESSAI GRATUIT
   // =====================================================
 
   const handleFreeTrial = async () => {
@@ -618,7 +566,6 @@ export function SubscribePage({
         .select('id')
         .eq('user_id', userId)
         .eq('is_free_trial', true)
-        .limit(1)
         .maybeSingle();
 
       if (trialCheckError) throw trialCheckError;
@@ -627,21 +574,26 @@ export function SubscribePage({
         throw new Error('Vous avez déjà utilisé votre essai gratuit.');
       }
 
+      // Les dates sont de toute façon imposées par le trigger SQL côté serveur.
       const endDate = new Date(
         Date.now() + selectedPlan.duration_days * 24 * 60 * 60 * 1000
       ).toISOString();
 
       const { error: subErr } = await supabase
         .from('subscriptions')
-        .insert({
-          user_id: userId,
-          plan_id: selectedPlan.id,
-          status: 'active',
-          is_free_trial: true,
-          start_date: new Date().toISOString(),
-          end_date: endDate,
-          expires_at: endDate,
-        });
+        .insert([
+          {
+            user_id: userId,
+            plan_id: selectedPlan.id,
+            status: 'active',
+            is_free_trial: true,
+            start_date: new Date().toISOString(),
+            end_date: endDate,
+            expires_at: endDate,
+          },
+        ])
+        .select()
+        .single();
 
       if (subErr) {
         throw new Error(
@@ -661,7 +613,7 @@ export function SubscribePage({
   };
 
   // =====================================================
-  // 8. PAIEMENT SASPAY
+  // 7. PAIEMENT SASPAY
   // =====================================================
 
   const handlePay = async () => {
@@ -672,7 +624,10 @@ export function SubscribePage({
       return;
     }
 
-    if (!accountType || selectedPlan.account_type !== accountType) {
+    if (
+      !accountType ||
+      selectedPlan.account_type !== accountType
+    ) {
       setError('Cette offre ne correspond pas à votre type de compte.');
       return;
     }
@@ -700,8 +655,7 @@ export function SubscribePage({
     setLoading(true);
 
     let redirecting = false;
-    let providerRequestStarted = false;
-    let createdSubscriptionId: SubscriptionId | null = null;
+    let createdSubscriptionId: number | null = null;
 
     try {
       const {
@@ -727,14 +681,12 @@ export function SubscribePage({
         profile.account_type !== accountType ||
         profile.account_type_confirmed !== true
       ) {
-        throw new Error(
-          'Votre type de compte a changé. Rechargez la page.'
-        );
+        throw new Error('Votre type de compte a changé. Rechargez la page.');
       }
 
       const { data: dbPlan, error: planError } = await supabase
         .from('subscription_plans')
-        .select('id, account_type, is_active, is_free, price')
+        .select('id, account_type, is_active, is_free')
         .eq('id', selectedPlan.id)
         .single();
 
@@ -748,14 +700,10 @@ export function SubscribePage({
         throw new Error('Cette formule est indisponible.');
       }
 
-      // Vérifier que le prix affiché correspond au prix en base.
-      if (Number(dbPlan.price) !== Number(selectedPlan.price)) {
-        throw new Error(
-          'Le prix de cette formule a changé. Rechargez la page avant de payer.'
-        );
-      }
+      // Ne pas annuler les anciennes tentatives en attente :
+      // un paiement Wave peut avoir été débité sans retour immédiat du webhook.
 
-      // Création de l'abonnement en attente.
+      // Création de l'abonnement.
       const { data: sub, error: subErr } = await supabase
         .from('subscriptions')
         .insert({
@@ -764,29 +712,26 @@ export function SubscribePage({
           status: 'pending',
           is_free_trial: false,
         })
-        .select('id')
+        .select()
         .single();
 
       if (subErr) throw subErr;
 
-      createdSubscriptionId = sub.id as SubscriptionId;
+      createdSubscriptionId = sub.id;
+      setSubscriptionId(sub.id);
 
-      // Création de la ligne de paiement.
+      // Création du paiement.
       const { error: payErr } = await supabase
         .from('payments')
         .insert({
           user_id: userId,
           subscription_id: sub.id,
-          amount: dbPlan.price,
+          amount: selectedPlan.price,
           provider: paymentMethod,
           status: 'pending',
         });
 
-      if (payErr) {
-        throw new Error(
-          'Impossible de créer la ligne de paiement : ' + payErr.message
-        );
-      }
+      if (payErr) throw payErr;
 
       const nameParts = (userFullName || 'Client LA COUPE')
         .trim()
@@ -796,12 +741,11 @@ export function SubscribePage({
       const lastName = nameParts.slice(1).join(' ') || 'LA COUPE';
 
       const network =
-        paymentMethod === 'wave' ? 'wave_sn' : 'orange_money_sn';
+        paymentMethod === 'wave'
+          ? 'wave_sn'
+          : 'orange_money_sn';
 
-      // À partir de ce point, la demande peut atteindre SASPAY.
-      // En cas de réponse réseau incertaine, on conserve la tentative.
-      providerRequestStarted = true;
-
+      // Le montant n'est plus envoyé : le serveur le relit en base.
       const response = await fetch(edgeFunctionUrl, {
         method: 'POST',
         headers: {
@@ -827,7 +771,7 @@ export function SubscribePage({
         data = responseText ? JSON.parse(responseText) : {};
       } catch {
         throw new Error(
-          `Réponse invalide du serveur SASPAY : ${responseText.slice(0, 300)}`
+          `Réponse invalide du serveur SasPay : ${responseText.slice(0, 300)}`
         );
       }
 
@@ -837,12 +781,14 @@ export function SubscribePage({
             ? data.error
             : JSON.stringify(data.error || data);
 
+        // Affiche la référence technique renvoyée par la fonction Edge
+        // pour retrouver facilement l'appel dans les logs Supabase.
         const requestInfo = data.request_id
           ? ` (Référence : ${data.request_id})`
           : '';
 
         const providerInfo = Array.isArray(data.provider_response_keys)
-          ? ` — Champs reçus de SASPAY : ${data.provider_response_keys.join(', ')}`
+          ? ` — Champs reçus de SasPay : ${data.provider_response_keys.join(', ')}`
           : '';
 
         throw new Error(
@@ -850,9 +796,9 @@ export function SubscribePage({
         );
       }
 
-      // On attend toujours la confirmation du webhook.
-      setSubscriptionId(sub.id as SubscriptionId);
+      // La transaction reste en attente jusqu'à confirmation serveur.
       setStep('pending');
+      setSubscriptionId(sub.id);
 
       const checkoutUrl =
         typeof data.checkout_url === 'string'
@@ -860,61 +806,53 @@ export function SubscribePage({
           : '';
 
       if (checkoutUrl) {
-        let parsedCheckoutUrl: URL | null = null;
-
         try {
-          parsedCheckoutUrl = new URL(checkoutUrl);
-        } catch {
-          parsedCheckoutUrl = null;
-        }
+          const parsedCheckoutUrl = new URL(checkoutUrl);
 
-        const isExampleDomain = Boolean(
-          parsedCheckoutUrl &&
-            (parsedCheckoutUrl.hostname === 'example.com' ||
-              parsedCheckoutUrl.hostname.endsWith('.example.com'))
-        );
+          // N'autoriser que le domaine officiel du checkout SASPAY.
+          // Refuser les domaines de démonstration, les ports et identifiants intégrés.
+          const isAllowedUrl =
+            parsedCheckoutUrl.protocol === 'https:' &&
+            parsedCheckoutUrl.origin === 'https://pay.saspay.me' &&
+            parsedCheckoutUrl.username === '' &&
+            parsedCheckoutUrl.password === '';
 
-        if (
-          !parsedCheckoutUrl ||
-          parsedCheckoutUrl.protocol !== 'https:' ||
-          isExampleDomain
-        ) {
-          console.error('[SASPAY] URL de redirection refusée.');
+          if (!isAllowedUrl) {
+            throw new Error('URL de paiement SASPAY non autorisée');
+          }
 
-          setError(
-            'Le paiement a été initié, mais SASPAY a renvoyé une adresse de redirection invalide. Ne payez pas une deuxième fois. Nous attendons la confirmation.'
-          );
-        } else {
           redirecting = true;
           window.location.assign(parsedCheckoutUrl.toString());
+        } catch (urlError) {
+          console.error('[SASPAY] URL de redirection refusée :', urlError);
+
+          setError(
+            'Le paiement a été initié, mais SASPAY a renvoyé une adresse de redirection invalide. Ne payez pas une deuxième fois. Votre abonnement reste en attente de confirmation.'
+          );
         }
       } else {
         setError(
-          'Demande envoyée à SASPAY. Confirmez sur votre téléphone si une notification est affichée. Nous attendons la confirmation.'
+          'Demande de paiement envoyée. Confirmez sur votre téléphone si une notification est affichée. Nous attendons la confirmation SASPAY.'
         );
       }
     } catch (e: any) {
       console.error('[SASPAY] Erreur paiement :', e);
 
-      if (createdSubscriptionId !== null && providerRequestStarted) {
-        // La requête a pu être acceptée malgré une erreur réseau.
-        // On ne relance donc pas automatiquement le paiement.
+      // IMPORTANT : ne jamais annuler automatiquement l'abonnement ici.
+      // L'appel SASPAY a pu être accepté et le compte Wave débité même si
+      // le navigateur n'a pas reçu une réponse exploitable.
+      if (createdSubscriptionId !== null) {
         setSubscriptionId(createdSubscriptionId);
         setStep('pending');
-
         setError(
-          `${e.message || 'Réponse incertaine du service de paiement.'} Si votre compte a été débité, ne recommencez pas le paiement. Nous conservons cette tentative pour vérification.`
+          `${e.message || 'Réponse incertaine du service de paiement.'} Si votre compte Wave a été débité, ne recommencez pas le paiement. Nous conservons cette tentative pour vérification.`
         );
       } else {
-        // L'erreur est arrivée avant l'envoi de la demande à SASPAY.
-        // On ne présente pas cela comme un paiement en cours.
-        setSubscriptionId(null);
-        setStep('choose');
-
         setError(
           e.message ||
-            "Une erreur est survenue avant l'envoi de la demande de paiement."
+            "Une erreur est survenue avant la création du paiement."
         );
+        setStep('choose');
       }
     } finally {
       if (!redirecting) {
@@ -925,7 +863,7 @@ export function SubscribePage({
   };
 
   // =====================================================
-  // 9. NAVIGATION ET OUTILS
+  // 8. NAVIGATION ET OUTILS
   // =====================================================
 
   const handleLogout = async () => {
@@ -933,7 +871,7 @@ export function SubscribePage({
   };
 
   const formatCFA = (value: number) =>
-    Number(value).toLocaleString('fr-FR') + ' CFA';
+    value.toLocaleString('fr-FR') + ' CFA';
 
   const monthlyRef = plans.find(
     (plan) =>
@@ -1014,7 +952,7 @@ export function SubscribePage({
   );
 
   // =====================================================
-  // 10. CHARGEMENT
+  // 9. CHARGEMENT
   // =====================================================
 
   if (!profileLoaded || profileUserId !== userId) {
@@ -1026,7 +964,7 @@ export function SubscribePage({
   }
 
   // =====================================================
-  // 11. CHOIX DU TYPE DE COMPTE
+  // 10. CHOIX DU TYPE DE COMPTE
   // =====================================================
 
   if (!accountType || editingType) {
@@ -1051,7 +989,7 @@ export function SubscribePage({
   }
 
   // =====================================================
-  // 12. PROTECTION DES OFFRES
+  // 11. PROTECTION DES OFFRES
   // =====================================================
 
   const expectedPlansContext = `${userId}:${accountType}`;
@@ -1070,7 +1008,7 @@ export function SubscribePage({
       : [];
 
   // =====================================================
-  // 13. AFFICHAGE
+  // 12. AFFICHAGE
   // =====================================================
 
   return (
@@ -1193,7 +1131,9 @@ export function SubscribePage({
             <div className="grid gap-4 mb-8">
               {visiblePlans.map((plan) => {
                 const isAnnual = plan.duration_days >= 365;
+                const isFree = plan.is_free === true;
                 const isSelected = selectedPlan?.id === plan.id;
+
                 const savings = getSavingsPercent(plan);
 
                 return (
@@ -1238,13 +1178,15 @@ export function SubscribePage({
                     </div>
 
                     <p className="text-3xl font-bold text-white ml-8">
-                      {formatCFA(plan.price)}
+                      {isFree ? 'GRATUIT' : formatCFA(plan.price)}
                     </p>
 
                     <p className="text-zinc-400 text-sm ml-8 mt-0.5">
-                      {isAnnual
-                        ? `par an — soit ${formatCFA(Math.round(plan.price / 12))}/mois`
-                        : 'par mois'}
+                      {isFree
+                        ? `${plan.duration_days} jours d'essai gratuit`
+                        : isAnnual
+                          ? `par an — soit ${formatCFA(Math.round(plan.price / 12))}/mois`
+                          : 'par mois'}
                     </p>
 
                     {isBarber && isAnnual && plan.badge && (
@@ -1276,7 +1218,6 @@ export function SubscribePage({
                   handleFreeTrial();
                 } else {
                   setStep('pay');
-                  setError('');
                 }
               }}
               disabled={!selectedPlan || loading}
@@ -1301,10 +1242,7 @@ export function SubscribePage({
         {step === 'pay' && selectedPlan && (
           <div>
             <button
-              onClick={() => {
-                setStep('choose');
-                setError('');
-              }}
+              onClick={() => setStep('choose')}
               className="text-zinc-400 mb-6 text-sm"
             >
               ← Retour
@@ -1393,7 +1331,7 @@ export function SubscribePage({
               </span>
 
               <span className="text-white text-xl font-bold">
-                {formatCFA(selectedPlan.price)}
+                {selectedPlan ? formatCFA(selectedPlan.price) : 'En vérification'}
               </span>
             </div>
 
@@ -1405,7 +1343,7 @@ export function SubscribePage({
               {loading ? (
                 <span className="flex items-center justify-center gap-2">
                   <Loader className="w-4 h-4 animate-spin" />
-                  Connexion à SASPAY...
+                  Connexion à SasPay...
                 </span>
               ) : (
                 `Payer ${formatCFA(selectedPlan.price)}`
@@ -1413,7 +1351,7 @@ export function SubscribePage({
             </button>
 
             <p className="text-center text-zinc-600 text-xs mt-4">
-              Paiement sécurisé avec SASPAY
+              Paiement sécurisé avec SasPay
             </p>
           </div>
         )}
@@ -1442,9 +1380,7 @@ export function SubscribePage({
               </p>
 
               <p className="text-white text-2xl font-bold">
-                {selectedPlan
-                  ? formatCFA(selectedPlan.price)
-                  : 'Vérification en cours'}
+                {selectedPlan ? formatCFA(selectedPlan.price) : 'En vérification'}
               </p>
             </div>
 
@@ -1453,10 +1389,6 @@ export function SubscribePage({
                 {error}
               </div>
             )}
-
-            <p className="text-zinc-600 text-xs mt-6">
-              Nous vérifions automatiquement le statut de votre abonnement.
-            </p>
           </div>
         )}
       </div>
@@ -1476,7 +1408,9 @@ export function SubscribePage({
               >
                 <div
                   className={`p-1.5 rounded-xl transition-all flex items-center justify-center ${
-                    isHome ? 'bg-white' : 'group-hover:bg-white/10'
+                    isHome
+                      ? 'bg-white'
+                      : 'group-hover:bg-white/10'
                   }`}
                 >
                   <Icon

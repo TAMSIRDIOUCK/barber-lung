@@ -431,14 +431,13 @@ Deno.serve(async (req: Request) => {
       try {
         safeUrl = new URL(checkoutUrlValue.trim());
 
-        console.log("DIAGNOSTIC SASPAY - DOMAINE :", safeUrl.hostname);
-
         if (
           safeUrl.protocol !== "https:" ||
-          safeUrl.hostname === "example.com" ||
-          safeUrl.hostname.endsWith(".example.com")
+          safeUrl.origin !== "https://pay.saspay.me" ||
+          safeUrl.username !== "" ||
+          safeUrl.password !== ""
         ) {
-          throw new Error("URL de paiement non valide");
+          throw new Error("URL de paiement SASPAY non autorisée");
         }
       } catch {
         return jsonResponse(req, {
